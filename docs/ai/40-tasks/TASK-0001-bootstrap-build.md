@@ -18,8 +18,9 @@ verified: partial
 - [x] upstream 서브모듈 추가 및 커밋 고정 → `a72eb348` = `v2.14-301-ga72eb348`, 13MB
   ⚠️ 서브모듈의 `submodules/googletest`는 SSH URL이므로 재귀 초기화하지 말 것 (`CONFIG+=UNITTESTS` 미사용)
 - [ ] **🚧 BLOCKED (sudo 필요)** `sudo dnf install -y gcc-toolset-13 gcc-toolset-13-gcc-c++`
-- [ ] **🚧 BLOCKED (sudo 필요, GUI 실행 시에만)** `sudo dnf install -y libxcb-util xcb-util-image xcb-util-keysyms xcb-util-renderutil xcb-util-wm xcb-util-cursor`
-- [ ] `./scripts/setup-toolchain.sh` (Qt 6.5.3 qtbase — **sudo 불필요**)
+- [ ] **🚧 BLOCKED (sudo 필요, 링크 단계)** `sudo dnf install -y mesa-libGL-devel`
+- [ ] **🚧 BLOCKED (sudo 필요, GUI 실행 시에만)** `sudo dnf install -y xcb-util-wm xcb-util-image xcb-util-keysyms xcb-util-renderutil xcb-util-cursor`
+- [x] Qt 6.5.3 설치 → `~/Qt/6.5.3/gcc_64` (**sudo 불필요**, aqtinstall v3.3.0 / python3.11 venv)
 - [ ] `./scripts/build.sh`
 - [ ] 실행 확인 — X11/Wayland 없으면 `QT_QPA_PLATFORM=offscreen` 으로 최소 기동만 확인
 - [ ] YUV 파일 하나 열어보기 (B 기능 동작 확인)
@@ -44,20 +45,32 @@ verified: partial
 → **`gcc-toolset-10` 이상 필수.** ADR-0002의 13 권고 유지.
 대체 컴파일러 경로도 없음: Environment Modules에 컴파일러 모듈 없음, conda/spack 없음, clang 없음, `/opt/rh`에 gcc-toolset-9 하나뿐.
 
-### Qt 런타임 라이브러리 현황 (빌드에는 무관, GUI 실행 시 필요)
+### Qt 6.5.3 설치 완료 및 의존성 실측
 
-`ldconfig -p` 실측. **빌드는 `-devel` 패키지 없이 prebuilt Qt로 가능**하고, 아래는 xcb 플랫폼 플러그인이 로드될 때만 필요하다.
+`aqt install-qt linux desktop 6.5.3 gcc_64 --outputdir ~/Qt` → 성공 (106초).
+`qmake -query QT_VERSION` → `6.5.3`. **glibc 2.28에서 prebuilt 정상 동작 → ADR-0002의 6.5 LTS 선택 실증됨.**
 
-```
-OK       libGL libxkbcommon libxkbcommon-x11 libX11 libX11-xcb libXi libxcb
-         libxcb-randr/shape/sync/xfixes/xinerama/xkb libatspi libpcre2-16
-         libfontconfig libfreetype libdbus-1 libglib-2.0
-MISSING  libxcb-icccm.so.4  libxcb-image.so.0  libxcb-keysyms.so.1
-         libxcb-render-util.so.0  libxcb-cursor.so.0
-```
+⚠️ **`-m qtbase` 는 에러다.** qtbase는 모듈이 아니라 기본 패키지이며, 기본 설치가 YUView 요구 모듈을 전부 포함한다:
+`Qt6Core/Gui/Widgets/OpenGL/OpenGLWidgets/Xml/Concurrent/Network` 8개 모두 존재 확인.
 
-Qt 6 공식 바이너리는 `libxcb-*` util 계열을 자체 번들하는 경우가 많으므로 **Qt 설치 후 재확인 필요** (미검증).
-`libxcb-cursor`는 Qt 6.5+에서 요구되며 번들되지 않는 편이다. GUI가 안 뜨면 `QT_DEBUG_PLUGINS=1`로 확인할 것.
+**링크 단계 (빌드에 필수)**
+`libQt6Gui.prl` → `QMAKE_PRL_LIBS = -lpthread -lGL`.
+`/usr/lib64/libGL.so.1`은 있으나 링커가 찾는 **`libGL.so` 심볼릭이 없다** → `mesa-libGL-devel` 필요.
+
+**GUI 실행 (헤드리스 빌드에는 불필요)**
+`ldd ~/Qt/6.5.3/gcc_64/plugins/platforms/libqxcb.so` 실측 — **Qt는 xcb-util 계열을 번들하지 않는다** (`$QT/lib/libxcb*` 없음):
+
+| 미해결 심볼 | RPM 패키지 |
+|---|---|
+| `libxcb-cursor.so.0` | `xcb-util-cursor` (**EPEL**) |
+| `libxcb-icccm.so.4` | `xcb-util-wm` |
+| `libxcb-image.so.0` | `xcb-util-image` |
+| `libxcb-keysyms.so.1` | `xcb-util-keysyms` |
+| `libxcb-render-util.so.0` | `xcb-util-renderutil` |
+
+이미 있는 것: `libGL.so.1`, `libxkbcommon(-x11)`, `libX11(-xcb)`, `libXi`, `libxcb`, `libxcb-randr/shape/sync/xfixes/xinerama/xkb`, `libatspi`, `libpcre2-16`, `libfontconfig`, `libfreetype`, `libdbus-1`, `libglib-2.0`, `fuse-libs`.
+
+GUI가 안 뜨면 `QT_DEBUG_PLUGINS=1`로 확인할 것.
 
 ## 예상 실패 지점
 

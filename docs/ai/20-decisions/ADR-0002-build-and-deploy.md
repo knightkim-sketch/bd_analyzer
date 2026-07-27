@@ -59,17 +59,27 @@ C++20 *언어* 기능은 문제가 아니다 — YUView가 실제로 쓰는 건 
 
 **Phase 0 — qmake 그대로 부트스트랩.** upstream을 손대지 않고 먼저 빌드가 되는 것을 확인한다. 이게 안 되면 나머지 논의는 무의미하다.
 ```bash
-sudo dnf install gcc-toolset-13 gcc-toolset-13-gcc-c++
-sudo dnf install mesa-libGL-devel libxkbcommon-x11-devel libxkbcommon-devel \
-     libX11-devel libXi-devel at-spi2-atk-devel fuse-libs
+# 컴파일러 (필수). gcc-toolset-9 는 실측으로 탈락 -> TASK-0001
+sudo dnf install -y gcc-toolset-13 gcc-toolset-13-gcc-c++
+# 링크 (필수). Qt6Gui.prl 이 -lGL 을 요구하는데 libGL.so 심볼릭은 devel 에만 있다
+sudo dnf install -y mesa-libGL-devel
+# GUI 실행에만 필요 (헤드리스 빌드는 불필요). Qt 는 xcb-util 계열을 번들하지 않는다 (실측)
+sudo dnf install -y xcb-util-wm xcb-util-image xcb-util-keysyms \
+                    xcb-util-renderutil xcb-util-cursor   # cursor 는 EPEL
 
-python3.11 -m venv ~/qtenv && ~/qtenv/bin/pip install -U aqtinstall
-~/qtenv/bin/aqt install-qt linux desktop 6.5.3 gcc_64 -m qtbase --outputdir ~/Qt
+python3.11 -m venv ~/.venv-aqt && ~/.venv-aqt/bin/pip install -U aqtinstall
+# 주의: qtbase 는 모듈이 아니라 기본 패키지다. '-m qtbase' 는 에러가 난다.
+# 기본 설치가 YUView 요구 모듈 7개를 모두 포함한다 (검증 완료).
+~/.venv-aqt/bin/aqt install-qt linux desktop 6.5.3 gcc_64 --outputdir ~/Qt
 
 scl enable gcc-toolset-13 -- bash -c '
   export PATH=~/Qt/6.5.3/gcc_64/bin:$PATH
   mkdir -p build && cd build && qmake .. && make -j$(nproc)'
 ```
+
+> ✅ **Qt 6.5.3 설치 검증 완료 (2026-07-27)** — `~/Qt/6.5.3/gcc_64`, `qmake -query QT_VERSION` → `6.5.3`.
+> 요구 모듈 8개(Core/Gui/Widgets/OpenGL/OpenGLWidgets/Xml/Concurrent/Network) 전부 존재.
+> glibc 2.28 머신에서 prebuilt 가 정상 동작 → **6.5 LTS 선택이 실증됨**.
 - **out-of-tree 빌드 필수** — `.qmake.conf`가 `top_builddir=$$shadowed($$PWD)`, `YUViewApp.pro`가 `PRE_TARGETDEPS += $$top_builddir/YUViewLib/libYUViewLib.a` 하드코딩
 - `CONFIG+=UNITTESTS` 생략 — googletest 서브모듈이 SSH URL이고 미초기화
 - `.git` + 태그 유지 (없으면 `YUVIEW_VERSION`이 `0`)
