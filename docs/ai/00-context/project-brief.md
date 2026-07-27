@@ -23,7 +23,7 @@ verified: partial
 [YUView](https://github.com/IENT/YUView) (RWTH Aachen, GPLv3) 하드 fork.
 → [ADR-0001](../20-decisions/ADR-0001-fork-vs-library.md)
 
-현재 기준 upstream: `a72eb3488097313511e60ed70db4af6071cbe9fe` (2026-04-28, v2.14-262)
+현재 기준 upstream: `a72eb3488097313511e60ed70db4af6071cbe9fe` (2026-04-28, `v2.14-301-ga72eb348`)
 
 ## 우선순위 (초안 — 사용자 확인 필요)
 

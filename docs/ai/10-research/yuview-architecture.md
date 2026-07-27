@@ -5,7 +5,7 @@ created: 2026-07-27
 updated: 2026-07-27
 author: claude-opus-5
 verified: yes
-upstream: IENT/YUView @ a72eb3488097313511e60ed70db4af6071cbe9fe (2026-04-28, v2.14-262)
+upstream: IENT/YUView @ a72eb3488097313511e60ed70db4af6071cbe9fe (2026-04-28, v2.14-301-ga72eb348)
 ---
 
 ## 결론 요약
