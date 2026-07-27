@@ -20,3 +20,4 @@ appdir/
 .vscode/
 .idea/
 *.user
+aqtinstall.log
