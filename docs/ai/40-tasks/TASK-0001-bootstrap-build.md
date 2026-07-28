@@ -1,11 +1,21 @@
 ---
 title: TASK-0001 빌드 부트스트랩 (Phase 0)
-status: in-progress (sudo 대기)
+status: done (빌드 성공) — 기능 검증은 TASK-0002 로 이관
 created: 2026-07-27
-updated: 2026-07-27
+updated: 2026-07-28
 author: claude-opus-5
-verified: partial
+verified: yes
 ---
+
+## ✅ 결과: 빌드 성공
+
+```
+build/YUViewApp/YUView          7.9 MB   (v2.14-301-ga72eb348)
+build/YUViewLib/libYUViewLib.a  16.7 MB
+컴파일 에러 0건
+```
+
+Qt 6.5.3 + gcc-toolset-13 + `-static-libstdc++ -static-libgcc`, out-of-tree, upstream 무수정 (패치 0개).
 
 ## 목표
 
@@ -21,10 +31,10 @@ verified: partial
 - [ ] **🚧 BLOCKED (sudo 필요, 링크 단계)** `sudo dnf install -y mesa-libGL-devel`
 - [ ] **🚧 BLOCKED (sudo 필요, GUI 실행 시에만)** `sudo dnf install -y xcb-util-wm xcb-util-image xcb-util-keysyms xcb-util-renderutil xcb-util-cursor`
 - [x] Qt 6.5.3 설치 → `~/Qt/6.5.3/gcc_64` (**sudo 불필요**, aqtinstall v3.3.0 / python3.11 venv)
-- [ ] `./scripts/build.sh`
-- [ ] 실행 확인 — X11/Wayland 없으면 `QT_QPA_PLATFORM=offscreen` 으로 최소 기동만 확인
-- [ ] YUV 파일 하나 열어보기 (B 기능 동작 확인)
-- [ ] AV1/H.264/HEVC 스트림 하나씩 열어 Bitstream Analysis 탭 확인 (A 기능 동작 확인)
+- [x] `./scripts/build.sh` → 성공, 에러 0건
+- [x] 실행 확인 — `QT_QPA_PLATFORM=offscreen` 에서 MainWindow 생성 후 20초 이상 안정 구동 (rc=124)
+- [x] 배포 이식성 검증 (아래 참조)
+- [ ] **→ TASK-0002 로 이관** YUV / AV1 / H.264 / HEVC 실제 로드·파싱 확인 (GUI 상호작용 필요)
 
 ## 실측 검증 결과 (2026-07-27)
 
@@ -71,6 +81,44 @@ verified: partial
 이미 있는 것: `libGL.so.1`, `libxkbcommon(-x11)`, `libX11(-xcb)`, `libXi`, `libxcb`, `libxcb-randr/shape/sync/xfixes/xinerama/xkb`, `libatspi`, `libpcre2-16`, `libfontconfig`, `libfreetype`, `libdbus-1`, `libglib-2.0`, `fuse-libs`.
 
 GUI가 안 뜨면 `QT_DEBUG_PLUGINS=1`로 확인할 것.
+
+### 배포 이식성 — 실측 (ADR-0002 의 핵심 가정 검증)
+
+```
+바이너리가 요구하는 GLIBCXX_* / CXXABI_* 심볼 :  없음 (0개)
+바이너리가 요구하는 glibc 최고 버전            :  GLIBC_2.25   (빌드 머신은 2.28)
+미해결 동적 의존성                             :  없음
+```
+
+`-static-libstdc++ -static-libgcc` 가 의도대로 동작했다. `ldd` 에 `libstdc++.so.6` 이 보이지만
+이는 Qt 라이브러리가 끌어오는 것이고, **우리 바이너리 자체는 버전 심볼을 하나도 요구하지 않는다.**
+→ gcc-toolset 의 새 libstdc++ 가 타겟에 누출되지 않는다. `GLIBCXX_3.4.26 not found` 위험 해소.
+→ glibc 2.25 요구는 RHEL 7 세대까지 커버. **AppImage 이식성 가정이 실증됨.**
+
+### ⚠️ FFmpeg 공유 라이브러리 부재 — feature A 에 직접 영향
+
+`ldconfig -p` 에 `libavcodec/libavformat/libavutil/libswresample` **없음**.
+(`/usr/local/bin/ffmpeg` 는 static 빌드라 공유 라이브러리를 제공하지 않는다.)
+
+YUView 는 이들을 런타임 `dlopen` 한다. 없을 때 잃는 것:
+- 컨테이너 demux (mp4 / ivf / mkv) 불가
+- **AV1 분석 전면 불가** — `ParserAV1OBU` 는 `ParserAVFormat` 경유로만 도달하고
+  `ParserAV1OBU::runParsingOfFile` 은 `assert(false)` 이다 (raw `.obu` 경로 없음)
+- H.264 MV 통계 불가 (`decoderFFmpeg` 경유)
+
+영향 없는 것: raw YUV 뷰잉, H.264 / HEVC AnnexB **파싱**(파서는 내장).
+
+**해결**: `sudo dnf install -y ffmpeg-libs` (rpmfusion-free, 이미 활성).
+4.4.8 이 제공하는 avutil 56 / avcodec 58 / avformat 58 / swresample 3 은
+`ffmpeg/FFmpegVersionHandler.cpp:107` 의 `LibraryVersion(56, 58, 58, 3)` 과 정확히 일치한다.
+
+### 무해한 런타임 경고
+
+```
+qt.tlsbackend.ossl: Incompatible version of OpenSSL (built with OpenSSL >= 3.x, runtime version is < 3.x)
+```
+Qt 6.5.3 공식 바이너리는 OpenSSL 3.x 기준, RHEL 8 은 1.1.1. **무시해도 된다** —
+네트워크는 자동 업데이트에만 쓰이고 그건 `common/Typedef.h:105` `UPDATE_FEATURE_ENABLE 0` 으로 꺼져 있다.
 
 ## 예상 실패 지점
 

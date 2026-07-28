@@ -47,9 +47,12 @@ declare -A XCB=(
     [libxcb-keysyms.so.1]=xcb-util-keysyms
     [libxcb-render-util.so.0]=xcb-util-renderutil
 )
+# ldconfig -p 출력의 공백 처리는 환경마다 미묘하게 달라 오탐이 나기 쉽다.
+# soname 이 캐시 어딘가에 등장하기만 하면 설치된 것으로 본다 (이 이름들은 부분일치 충돌이 없다).
+LDCACHE="$(ldconfig -p 2>/dev/null)"
 xcb_missing=()
 for so in "${!XCB[@]}"; do
-    ldconfig -p 2>/dev/null | grep -q "	$so " || xcb_missing+=("${XCB[$so]}")
+    grep -qF "$so" <<<"$LDCACHE" || xcb_missing+=("${XCB[$so]}")
 done
 if (( ${#xcb_missing[@]} )); then
     echo "   MISSING: ${xcb_missing[*]}"
@@ -57,6 +60,19 @@ if (( ${#xcb_missing[@]} )); then
     echo "      (GUI 를 띄울 때만 필요. 빌드/헤드리스 테스트는 이것 없이 진행 가능)"
 else
     echo "   OK"
+fi
+
+echo "== 3b. FFmpeg 공유 라이브러리 (런타임 dlopen; 빌드 의존 아님) =="
+# YUView 는 avutil/swresample/avcodec/avformat 를 런타임에 dlopen 한다.
+# 없으면: 컨테이너 demux 불가, H.264 MV 통계 불가,
+#         그리고 AV1 분석이 전면 불가 (ParserAV1OBU 는 ParserAVFormat 경유로만 도달).
+# 지원 조합 (FFmpegVersionHandler.cpp:103-110) 중 FFmpeg 4.x = (56,58,58,3).
+if grep -qF "libavformat.so." <<<"$LDCACHE"; then
+    echo "   OK: $(grep -oE 'libavformat\.so\.[0-9]+' <<<"$LDCACHE" | sort -u | tr '\n' ' ')"
+else
+    echo "   MISSING: libavformat / libavcodec / libavutil / libswresample"
+    echo "   -> sudo dnf install -y ffmpeg-libs        # rpmfusion-free, 4.4.8 = 지원 조합 (56,58,58,3)"
+    echo "      (없어도 빌드/실행/raw YUV/H.264·HEVC AnnexB 분석은 가능. AV1 분석은 불가)"
 fi
 
 echo "== 4. aqtinstall (python3.11 venv) =="

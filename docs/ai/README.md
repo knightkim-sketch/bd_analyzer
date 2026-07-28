@@ -64,3 +64,7 @@ verified: yes | partial | no      # 도구 출력으로 교차검증했는가
 - [ADR-0002-build-and-deploy.md](20-decisions/ADR-0002-build-and-deploy.md) — 빌드 툴체인과 다중 머신 배포 방식
 - [ADR-0003-plugin-strategy.md](20-decisions/ADR-0003-plugin-strategy.md) — 플러그인 시스템을 어디까지 만들 것인가
 - [template.md](20-decisions/template.md)
+
+### 40-tasks
+- [TASK-0001](40-tasks/TASK-0001-bootstrap-build.md) — 빌드 부트스트랩 (**완료** — 빌드 성공, 이식성 실증)
+- [TASK-0002](40-tasks/TASK-0002-feature-verification.md) — A~D 기능 실동작 검증 (GUI 세션 필요)
