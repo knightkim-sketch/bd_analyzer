@@ -39,7 +39,11 @@ exec scl enable "$TOOLSET" -- bash -c "
     set -euo pipefail
     export PATH='$QT_DIR/$QT_VERSION/gcc_64/bin:\$PATH'
     cd '$BUILD'
-    qmake \
+    # -r (recursive) is required, not optional: YUViewLib.pro globs its sources with
+    # \$\$files(src/*.cpp, true), and that glob is only re-evaluated when the sub-project Makefile is
+    # regenerated. Without -r, make leaves YUViewLib/Makefile alone (the .pro did not change) and
+    # newly added source files are silently never compiled - it fails at link time instead.
+    qmake -r \
         QMAKE_LFLAGS+='-static-libstdc++ -static-libgcc' \
         '$UPSTREAM/YUView.pro'
     make -j$JOBS

@@ -16,7 +16,7 @@ index e0507f3e..50d05bfe 100644
  /* This class is the abstract base class for all decoders. All decoders work like this:
   * 1. Create an instance and configure it (if required)
 diff --git a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
-index 30dd3dfc..5eba3b6c 100644
+index 30dd3dfc..0dd84f77 100644
 --- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
 +++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
 @@ -334,6 +345,11 @@ playlistItemCompressedVideo::playlistItemCompressedVideo(const QString &compress

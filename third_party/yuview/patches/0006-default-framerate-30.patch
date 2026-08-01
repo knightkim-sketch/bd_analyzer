@@ -12,7 +12,7 @@ index 155e6f11..18857ffc 100644
  // The default duration in seconds of static items (like text, images ...)
  #define PLAYLISTITEMTEXT_DEFAULT_DURATION 5.0
 diff --git a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
-index 30dd3dfc..5eba3b6c 100644
+index 30dd3dfc..0dd84f77 100644
 --- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
 +++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
 @@ -258,6 +258,17 @@ playlistItemCompressedVideo::playlistItemCompressedVideo(const QString &compress

@@ -1,8 +1,8 @@
 diff --git a/YUViewLib/src/decoder/decoderDav1d.cpp b/YUViewLib/src/decoder/decoderDav1d.cpp
-index 7792a962..17184d69 100644
+index 7792a962..8aa11982 100644
 --- a/YUViewLib/src/decoder/decoderDav1d.cpp
 +++ b/YUViewLib/src/decoder/decoderDav1d.cpp
-@@ -1054,10 +1054,15 @@ IntPair decoderDav1d::calculateIntraPredDirection(IntraPredMode predMode, int an
+@@ -1054,10 +1068,15 @@ IntPair decoderDav1d::calculateIntraPredDirection(IntraPredMode predMode, int an
      return {};
  
    // angleDelta should be between -4 and 3

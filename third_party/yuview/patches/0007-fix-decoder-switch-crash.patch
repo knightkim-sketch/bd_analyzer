@@ -26,34 +26,8 @@ index d4ffa014..9e7e38a0 100644
      auto success = lib.load();
      this->log("Loading library " + libPath + (success ? " succeded" : " failed"));
      return success;
-diff --git a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
-index e6c74aa9..0256b9d2 100644
---- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
-+++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
-@@ -32,6 +32,8 @@
- 
- #pragma once
- 
-+#include <QMutex>
-+
- #include <common/Typedef.h>
- #include <decoder/decoderBase.h>
- #include <filesource/FileSourceFFmpegFile.h>
-@@ -162,6 +164,12 @@ protected:
-   // TODO: Could we somehow make shure that caching is always performed in display order?
-   QMutex cachingMutex;
- 
-+  // Guards the lifetime of loadingDecoder/cachingDecoder against their use. allocateDecoder()
-+  // destroys and recreates both from the GUI thread (decoder combo box), while the loading and
-+  // caching threads dereference them in loadRawData()/loadStatistics(). Without this the switch
-+  // is a use-after-free.
-+  QRecursiveMutex decoderAccessMutex;
-+
-   stats::StatisticUIHandler statisticsUIHandler;
-   stats::StatisticsData     statisticsData;
- 
 diff --git a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
-index 30dd3dfc..5eba3b6c 100644
+index 30dd3dfc..0dd84f77 100644
 --- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
 +++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
 @@ -600,8 +630,15 @@ void playlistItemCompressedVideo::drawItem(QPainter *painter,
@@ -169,18 +143,7 @@ index 30dd3dfc..5eba3b6c 100644
    if (!this->loadingDecoder->statisticsSupported())
      return;
    if (!this->loadingDecoder->statisticsEnabled())
-@@ -1137,7 +1218,9 @@ ValuePairListSets playlistItemCompressedVideo::getPixelValues(const QPoint &pixe
-   ValuePairListSets newSet;
- 
-   newSet.append("YUV", this->video->getPixelValues(pixelPos, frameIdx));
--  if (this->loadingDecoder->statisticsSupported() && this->loadingDecoder->statisticsEnabled())
-+  // The decoder can be absent when allocateDecoder() failed; this is called from painting.
-+  if (this->loadingDecoder && this->loadingDecoder->statisticsSupported() &&
-+      this->loadingDecoder->statisticsEnabled())
-     newSet.append("Stats", this->statisticsData.getValuesAt(pixelPos));
- 
-   return newSet;
-@@ -1288,16 +1371,23 @@ void playlistItemCompressedVideo::loadFrame(int  frameIdx,
+@@ -1288,16 +1401,23 @@ void playlistItemCompressedVideo::loadFrame(int  frameIdx,
  
  void playlistItemCompressedVideo::displaySignalComboBoxChanged(int idx)
  {
@@ -206,7 +169,7 @@ index 30dd3dfc..5eba3b6c 100644
  
        // Reset the decoded frame indices so that decoding of the current frame is triggered
        this->currentFrameIdx[0] = -1;
-@@ -1319,9 +1409,24 @@ void playlistItemCompressedVideo::decoderComboxBoxChanged(int idx)
+@@ -1319,9 +1439,24 @@ void playlistItemCompressedVideo::decoderComboxBoxChanged(int idx)
    auto e = this->possibleDecoders.at(idx);
    if (e != this->decoderEngine)
    {
@@ -234,7 +197,7 @@ index 30dd3dfc..5eba3b6c 100644
  
      // A different display signal was chosen. Invalidate the cache and signal that we will need a
      // redraw.
-@@ -1330,12 +1435,6 @@ void playlistItemCompressedVideo::decoderComboxBoxChanged(int idx)
+@@ -1330,12 +1465,6 @@ void playlistItemCompressedVideo::decoderComboxBoxChanged(int idx)
        yuvVideo->showPixelValuesAsDiff = this->loadingDecoder->isSignalDifference(idx);
      yuvVideo->invalidateAllBuffers();
  
@@ -247,3 +210,29 @@ index 30dd3dfc..5eba3b6c 100644
      // Update the list of display signals
      if (this->loadingDecoder)
      {
+diff --git a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
+index e6c74aa9..cb513574 100644
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
+@@ -32,6 +32,8 @@
+ 
+ #pragma once
+ 
++#include <QMutex>
++
+ #include <common/Typedef.h>
+ #include <decoder/decoderBase.h>
+ #include <filesource/FileSourceFFmpegFile.h>
+@@ -162,6 +167,12 @@ protected:
+   // TODO: Could we somehow make shure that caching is always performed in display order?
+   QMutex cachingMutex;
+ 
++  // Guards the lifetime of loadingDecoder/cachingDecoder against their use. allocateDecoder()
++  // destroys and recreates both from the GUI thread (decoder combo box), while the loading and
++  // caching threads dereference them in loadRawData()/loadStatistics(). Without this the switch
++  // is a use-after-free.
++  QRecursiveMutex decoderAccessMutex;
++
+   stats::StatisticUIHandler statisticsUIHandler;
+   stats::StatisticsData     statisticsData;
+ 

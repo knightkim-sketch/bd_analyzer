@@ -1,0 +1,1252 @@
+diff --git a/YUViewLib/src/playlistitem/playlistItem.h b/YUViewLib/src/playlistitem/playlistItem.h
+index c5f74636..a5217ae3 100644
+--- a/YUViewLib/src/playlistitem/playlistItem.h
++++ b/YUViewLib/src/playlistitem/playlistItem.h
+@@ -36,6 +36,7 @@
+ #include <common/SaveUi.h>
+ #include <common/Typedef.h>
+ #include <common/YUViewDomElement.h>
++#include <statistics/BlockInfo.h>
+ #include <statistics/StatisticUIHandler.h>
+ 
+ #include <QDir>
+@@ -182,6 +183,18 @@ public:
+   // A difference item will return values from both items and the differences.
+   virtual ValuePairListSets getPixelValues(const QPoint &, int) { return ValuePairListSets(); }
+ 
++  /* The block covering the given position in the given frame, with its mode information.
++   * The default is "this item has no block statistics", which is correct for everything but the
++   * compressed video item. Returns an invalid BlockInfo when the statistics for that frame are not
++   * (yet) available - see stats::BlockInfo.
++   */
++  virtual stats::BlockInfo getBlockInfoAt(const QPoint &, int) { return {}; }
++
++  /* Ask this item to collect block statistics even when none are being rendered. Needed by the
++   * block info pane: without it nothing is collected at all.
++   */
++  virtual void setBlockInfoRequested(bool) {}
++
+   // If you want your item to be droppable onto a difference/resample object, return true here and
+   // return a valid video handler.
+   virtual bool                 canBeUsedInProcessing() const { return false; }
+diff --git a/YUViewLib/src/statistics/StatisticsData.h b/YUViewLib/src/statistics/StatisticsData.h
+index 4f171b3d..ac17f54d 100644
+--- a/YUViewLib/src/statistics/StatisticsData.h
++++ b/YUViewLib/src/statistics/StatisticsData.h
+@@ -32,11 +32,13 @@
+ 
+ #pragma once
+ 
++#include "BlockInfo.h"
+ #include "FrameTypeData.h"
+ #include "StatisticsType.h"
+ 
+ #include <map>
+ #include <mutex>
++#include <optional>
+ #include <vector>
+ 
+ namespace stats
+@@ -55,10 +57,29 @@ public:
+   ItemLoadingState    needsLoading(int frameIndex) const;
+   std::vector<int>    getTypesThatNeedLoading(int frameIndex) const;
+   QStringPairList     getValuesAt(const QPoint &pos) const;
++  /* Like getValuesAt() but also reports the block geometry, and does not care whether a type is
++   * currently being rendered. Used by the block info pane and the block highlight.
++   * getValuesAt() is deliberately left untouched so the zoom box cannot regress.
++   */
++  BlockInfo getBlockInfoAt(const QPoint &pos) const;
+   StatisticsTypesVec &getStatisticsTypes() { return this->statsTypes; }
+   bool                hasDataForTypeID(int typeID) { return this->frameCache.count(typeID) > 0; }
+   void                eraseDataForTypeID(int typeID) { this->frameCache.erase(typeID); }
+ 
++  /* Which statistic type carries the coding block geometry, and which the transform block.
++   * Set by the decoder in fillStatisticList(). Do not guess this from geometry: for libde265
++   * type 0 is the slice index on the CTB rect, which is larger than the CU.
++   */
++  void setBlockRectTypeIDs(std::optional<int> codingBlockTypeID,
++                           std::optional<int> transformBlockTypeID);
++
++  /* Statistics are only collected for types the user switched on for rendering
++   * (see needsLoading/getTypesThatNeedLoading). Set this to have them collected anyway, which is
++   * what the block info pane needs - it must show data without forcing an overlay onto the video.
++   */
++  void setBlockInfoRequested(bool requested) { this->blockInfoRequested = requested; }
++  bool isBlockInfoRequested() const { return this->blockInfoRequested; }
++
+   void clear();
+   void setFrameSize(Size size) { this->frameSize = size; }
+   void setFrameIndex(int frameIndex);
+@@ -80,6 +101,10 @@ private:
+   Size frameSize;
+ 
+   StatisticsTypesVec statsTypes;
++
++  std::optional<int> codingBlockTypeID;
++  std::optional<int> transformBlockTypeID;
++  bool               blockInfoRequested{};
+ };
+ 
+ } // namespace stats
+diff --git a/YUViewLib/src/statistics/StatisticsData.cpp b/YUViewLib/src/statistics/StatisticsData.cpp
+index aa93a2bd..1324aa23 100644
+--- a/YUViewLib/src/statistics/StatisticsData.cpp
++++ b/YUViewLib/src/statistics/StatisticsData.cpp
+@@ -32,6 +32,8 @@
+ 
+ #include "StatisticsData.h"
+ 
++#include <algorithm>
++
+ #include <common/Functions.h>
+ 
+ // Activate this if you want to know when what is loaded.
+@@ -148,7 +150,7 @@ ItemLoadingState StatisticsData::needsLoading(int frameIndex) const
+   {
+     // New frame, but do we even render any statistics?
+     for (auto &t : this->statsTypes)
+-      if (t.render)
++      if (t.render || this->blockInfoRequested)
+       {
+         // At least one statistic type is drawn. We need to load it.
+         DEBUG_STATDATA("StatisticsData::needsLoading new frameIndex " << frameIdx
+@@ -171,6 +173,17 @@ ItemLoadingState StatisticsData::needsLoading(int frameIndex) const
+     }
+   }
+ 
++  /* For the block info request we must not ask for every declared type to be present: plenty of
++   * them are conditional (palette, CfL, compound modes ...) and simply have no entry in a given
++   * frame. Requiring all of them would report "loading needed" forever and re-decode the frame on
++   * every update. A single collected type means cacheStatistics() has run for this frame.
++   */
++  if (this->blockInfoRequested && this->frameCache.empty())
++  {
++    DEBUG_STATDATA("StatisticsData::needsLoading block info requested LoadingNeeded");
++    return ItemLoadingState::LoadingNeeded;
++  }
++
+   // Everything needed for drawing is loaded
+   DEBUG_STATDATA("StatisticsData::needsLoading " << frameIdx << " LoadingNotNeeded");
+   return ItemLoadingState::LoadingNotNeeded;
+@@ -309,12 +322,181 @@ QStringPairList StatisticsData::getValuesAt(const QPoint &pos) const
+   return valueList;
+ }
+ 
++BlockInfo StatisticsData::getBlockInfoAt(const QPoint &pos) const
++{
++  BlockInfo info;
++
++  std::unique_lock<std::mutex> lock(this->accessMutex);
++
++  info.frameIndex = this->frameIdx;
++
++  // The dav1d analyzer fork emits every block two to four times (its recursion always starts at
++  // BL_128X128 while the outer loop already steps per sub block), so the same (type, rect, value)
++  // triple shows up repeatedly. Deduplicate on exactly that triple; measured on real output the
++  // duplicates never disagree, so nothing is lost.
++  const auto alreadyHaveValue = [&info](int typeID, const QRect &rect, int value) {
++    for (const auto &e : info.entries)
++      if (e.typeID == typeID && e.rect == rect && e.hasRawValue && e.rawValue == value)
++        return true;
++    return false;
++  };
++  // Vectors are keyed on the vector itself, and must not collide with a scalar entry of the same
++  // type and rect - some decoders emit both for one type.
++  const auto alreadyHaveVector =
++      [&info](int typeID, const QRect &rect, const QString &valueText) {
++        for (const auto &e : info.entries)
++          if (e.typeID == typeID && e.rect == rect && !e.hasRawValue && e.valueText == valueText)
++            return true;
++        return false;
++      };
++
++  for (const auto &statType : this->statsTypes)
++  {
++    if (statType.typeID == INT_INVALID || this->frameCache.count(statType.typeID) == 0)
++      continue;
++
++    // Deliberately no renderGrid/render test here: the pane must show what the block is, not what
++    // the user happens to be drawing on top of the video.
++    const auto &frameData = this->frameCache.at(statType.typeID);
++
++    for (const auto &valueItem : frameData.valueData)
++    {
++      const auto rect =
++          QRect(valueItem.pos[0], valueItem.pos[1], valueItem.size[0], valueItem.size[1]);
++      if (!rect.contains(pos))
++        continue;
++      if (alreadyHaveValue(statType.typeID, rect, valueItem.value))
++        continue;
++
++      BlockInfoEntry entry;
++      entry.typeID      = statType.typeID;
++      entry.typeName    = statType.typeName;
++      entry.description = statType.description;
++      entry.rawValue    = valueItem.value;
++      entry.hasRawValue = true;
++      entry.rect        = rect;
++      entry.valueText   = statType.getValueTxt(valueItem.value);
++      if (entry.valueText.isEmpty() && statType.scaleValueToBlockSize)
++        entry.valueText =
++            QString("%1").arg(float(valueItem.value) / (valueItem.size[0] * valueItem.size[1]));
++      if (entry.valueText.isEmpty())
++        entry.valueText = QString("%1").arg(valueItem.value);
++      info.entries.push_back(entry);
++    }
++
++    for (const auto &vectorItem : frameData.vectorData)
++    {
++      const auto rect =
++          QRect(vectorItem.pos[0], vectorItem.pos[1], vectorItem.size[0], vectorItem.size[1]);
++      if (!rect.contains(pos))
++        continue;
++      double x{};
++      double y{};
++      if (vectorItem.isLine)
++      {
++        x = double(vectorItem.point[1].x - vectorItem.point[0].x) / statType.vectorScale;
++        y = double(vectorItem.point[1].y - vectorItem.point[0].y) / statType.vectorScale;
++      }
++      else
++      {
++        x = double(vectorItem.point[0].x) / statType.vectorScale;
++        y = double(vectorItem.point[0].y) / statType.vectorScale;
++      }
++
++      const auto valueText = QString("(%1,%2)").arg(x).arg(y);
++      if (alreadyHaveVector(statType.typeID, rect, valueText))
++        continue;
++
++      BlockInfoEntry entry;
++      entry.typeID      = statType.typeID;
++      entry.typeName    = statType.typeName;
++      entry.description = statType.description;
++      entry.hasRawValue = false;
++      entry.rect        = rect;
++      entry.valueText   = valueText;
++      info.entries.push_back(entry);
++    }
++  }
++
++  if (info.entries.empty())
++    return info;
++
++  // Pick the block to highlight. Prefer the type the decoder designated; where a designated type
++  // covers the position more than once (the fork does produce overlapping blocks) take the
++  // smallest, which is the more specific one.
++  const auto smallestRectOfType = [&info](int typeID) -> std::optional<QRect> {
++    std::optional<QRect> best;
++    for (const auto &e : info.entries)
++    {
++      if (e.typeID != typeID)
++        continue;
++      const auto area = e.rect.width() * e.rect.height();
++      if (!best || area < best->width() * best->height())
++        best = e.rect;
++    }
++    return best;
++  };
++
++  std::optional<QRect> coding;
++  if (this->codingBlockTypeID)
++    coding = smallestRectOfType(*this->codingBlockTypeID);
++  if (!coding)
++  {
++    /* No designated type, or it has no data here. Fall back to the smallest rect covering the
++     * position. Deliberately not the largest: decoders that have not designated their types can
++     * emit a superblock/CTB sized type (libde265 puts the slice index on the CTB rect), and
++     * outlining a whole CTB as "the block" would be plainly wrong. The smallest rect is at worst
++     * too specific. Decoders should call setBlockRectTypeIDs() to get this right.
++     */
++    for (const auto &e : info.entries)
++      if (!coding || e.rect.width() * e.rect.height() < coding->width() * coding->height())
++        coding = e.rect;
++  }
++  info.codingBlockRect = *coding;
++
++  if (this->transformBlockTypeID)
++  {
++    if (const auto tx = smallestRectOfType(*this->transformBlockTypeID))
++      if (*tx != info.codingBlockRect)
++        info.transformBlockRect = tx;
++  }
++
++  for (auto &e : info.entries)
++    e.isPrimaryRect = (e.rect == info.codingBlockRect);
++
++  for (const auto &e : info.entries)
++    if (std::find(info.allRects.begin(), info.allRects.end(), e.rect) == info.allRects.end())
++      info.allRects.push_back(e.rect);
++  std::sort(info.allRects.begin(), info.allRects.end(), [](const QRect &a, const QRect &b) {
++    return a.width() * a.height() > b.width() * b.height();
++  });
++
++  std::stable_sort(info.entries.begin(),
++                   info.entries.end(),
++                   [](const BlockInfoEntry &a, const BlockInfoEntry &b) {
++                     return a.typeID < b.typeID;
++                   });
++
++  info.isValid = true;
++  return info;
++}
++
++void StatisticsData::setBlockRectTypeIDs(std::optional<int> codingBlockTypeID,
++                                        std::optional<int> transformBlockTypeID)
++{
++  this->codingBlockTypeID    = codingBlockTypeID;
++  this->transformBlockTypeID = transformBlockTypeID;
++}
++
+ void StatisticsData::clear()
+ {
+   this->frameCache.clear();
+   this->frameIdx  = -1;
+   this->frameSize = {};
+   this->statsTypes.clear();
++  // The type IDs are meaningless for the next decoder; it will designate them again.
++  this->codingBlockTypeID.reset();
++  this->transformBlockTypeID.reset();
+ }
+ 
+ void StatisticsData::setFrameIndex(int frameIndex)
+diff --git a/YUViewLib/src/ui/Mainwindow.cpp b/YUViewLib/src/ui/Mainwindow.cpp
+index e0c6852b..028eca1f 100644
+--- a/YUViewLib/src/ui/Mainwindow.cpp
++++ b/YUViewLib/src/ui/Mainwindow.cpp
+@@ -68,7 +68,7 @@ MainWindow::MainWindow(bool useAlternativeSources, QWidget *parent) : QMainWindo
+   statusBar()->hide();
+ 
+   saveWindowsStateOnExit = true;
+-  for (int i = 0; i < 5; i++)
++  for (int i = 0; i < 6; i++)
+     panelsVisible[i] = false;
+ 
+   // Initialize the separate window
+@@ -130,6 +130,25 @@ MainWindow::MainWindow(bool useAlternativeSources, QWidget *parent) : QMainWindo
+           &PlaylistTreeWidget::selectionRangeChanged,
+           this,
+           &MainWindow::currentSelectedItemsChanged);
++  connect(ui.playlistTreeWidget,
++          &PlaylistTreeWidget::selectionRangeChanged,
++          ui.blockInfoWidget,
++          &BlockInfoWidget::currentSelectedItemsChanged);
++  // Both views can be clicked; the pane shows whichever was clicked last.
++  connect(ui.displaySplitView,
++          &splitViewWidget::blockSelected,
++          ui.blockInfoWidget,
++          &BlockInfoWidget::setSelectedBlock);
++  connect(&separateViewWindow.splitView,
++          &splitViewWidget::blockSelected,
++          ui.blockInfoWidget,
++          &BlockInfoWidget::setSelectedBlock);
++  // Statistics for a newly selected frame arrive asynchronously, and switching the decoder rebuilds
++  // the type list. Both end up here, so just re-read the values.
++  connect(ui.playlistTreeWidget,
++          &PlaylistTreeWidget::selectedItemChanged,
++          ui.blockInfoWidget,
++          &BlockInfoWidget::refresh);
+   connect(ui.playlistTreeWidget,
+           &PlaylistTreeWidget::selectedItemChanged,
+           ui.playbackController,
+@@ -374,6 +393,7 @@ void MainWindow::createMenusAndActions()
+   addDockViewAction(ui.propertiesDock, "Show &Properties", Qt::CTRL | Qt::Key_P);
+   addDockViewAction(ui.fileInfoDock, "Show &Info", Qt::CTRL | Qt::Key_I);
+   addDockViewAction(ui.cachingInfoDock, "Show Caching Info");
++  addDockViewAction(ui.blockInfoDock, "Show &Block Info", Qt::CTRL | Qt::Key_B);
+   viewMenu->addSeparator();
+   addDockViewAction(ui.playbackControllerDock, "Show Playback &Controls", Qt::CTRL | Qt::Key_D);
+ 
+@@ -700,6 +720,8 @@ void MainWindow::toggleFullscreen()
+       ui.fileInfoDock->show();
+     if (panelsVisible[4])
+       ui.cachingInfoDock->show();
++    if (panelsVisible[5])
++      ui.blockInfoDock->show();
+ 
+     if (!is_Q_OS_MAC)
+       ui.menuBar->show();
+@@ -720,6 +742,7 @@ void MainWindow::toggleFullscreen()
+     panelsVisible[2] = ui.playbackControllerDock->isVisible();
+     panelsVisible[3] = ui.fileInfoDock->isVisible();
+     panelsVisible[4] = ui.cachingInfoDock->isVisible();
++    panelsVisible[5] = ui.blockInfoDock->isVisible();
+ 
+     // Hide panels
+     ui.propertiesDock->hide();
+@@ -729,6 +752,7 @@ void MainWindow::toggleFullscreen()
+       ui.playbackControllerDock->hide();
+     ui.fileInfoDock->hide();
+     ui.cachingInfoDock->hide();
++    ui.blockInfoDock->hide();
+ 
+     if (!is_Q_OS_MAC)
+       ui.menuBar->hide();
+diff --git a/YUViewLib/src/ui/Mainwindow.h b/YUViewLib/src/ui/Mainwindow.h
+index cf26eb2a..82722c79 100644
+--- a/YUViewLib/src/ui/Mainwindow.h
++++ b/YUViewLib/src/ui/Mainwindow.h
+@@ -164,5 +164,5 @@ private:
+   ViewStateHandler                   stateHandler;
+   SeparateWindow                     separateViewWindow;
+   bool showNormalMaximized;     // When going to full screen: Was this windows maximized?
+-  bool panelsVisible[5]{false}; // Which panels are visible when going to full-screen mode?
++  bool panelsVisible[6]{false}; // Which panels are visible when going to full-screen mode?
+ };
+diff --git a/YUViewLib/src/ui/views/MoveAndZoomableView.h b/YUViewLib/src/ui/views/MoveAndZoomableView.h
+index 1cf2d94f..0a598468 100644
+--- a/YUViewLib/src/ui/views/MoveAndZoomableView.h
++++ b/YUViewLib/src/ui/views/MoveAndZoomableView.h
+@@ -127,6 +127,8 @@ protected:
+   QPointF moveOffset; //!< The offset that the view was moved
+   QPointF viewZoomingMousePosStart;
+   QPointF viewZoomingMousePos;
++  //!< Where the left button went down. Subclasses need this to tell a click from a drag.
++  QPointF viewDraggingMousePosStart;
+ 
+   ViewAction viewAction{ViewAction::NONE};
+ 
+@@ -160,7 +162,6 @@ protected:
+   bool paletteNeedsUpdate;
+ 
+ private:
+-  QPointF viewDraggingMousePosStart;
+   QPointF viewDraggingStartOffset;
+ 
+   double  pinchStartZoomFactor{1.0};
+diff --git a/YUViewLib/src/ui/views/SplitViewWidget.cpp b/YUViewLib/src/ui/views/SplitViewWidget.cpp
+index 1e71e5ac..7b8e6833 100644
+--- a/YUViewLib/src/ui/views/SplitViewWidget.cpp
++++ b/YUViewLib/src/ui/views/SplitViewWidget.cpp
+@@ -61,6 +61,10 @@ const int SPLITVIEWWIDGET_SPLITTER_MARGIN_DPI_DIV = 24;
+ // The splitter cannot be moved closer to the border of the widget than SPLITTER_CLIPX pixels
+ // If the splitter is moved closer it cannot be moved back into view and is "lost"
+ constexpr auto SPLITVIEWWIDGET_SPLITTER_CLIPX = 10.0;
++// The colour of the outline around the selected block. Deep pink, matching what VQAnalyzer uses,
++// and outside the range of the Jet colour map that the block statistics overlays use (blue - cyan -
++// yellow - red), so it stays distinguishable on top of them.
++const QColor BLOCK_SELECTION_COLOR = QColor(255, 20, 147);
+ // The font and size of the text that will be drawn in the top left corner indicating the zoom
+ // factor
+ const QString SPLITVIEWWIDGET_ZOOMFACTOR_FONT     = "helvetica";
+@@ -304,6 +308,8 @@ void splitViewWidget::paintEvent(QPaintEvent *)
+         }
+       }
+ 
++      this->paintBlockSelection(painter, item[0], 0, zoomFactor);
++
+       // Do the inverse translation of the painter
+       painter.resetTransform();
+ 
+@@ -360,6 +366,8 @@ void splitViewWidget::paintEvent(QPaintEvent *)
+         }
+       }
+ 
++      this->paintBlockSelection(painter, item[1], 1, zoomFactor);
++
+       // Do the inverse translation of the painter
+       painter.resetTransform();
+ 
+@@ -425,6 +433,8 @@ void splitViewWidget::paintEvent(QPaintEvent *)
+         }
+       }
+ 
++      this->paintBlockSelection(painter, item[0], 0, zoomFactor);
++
+       // Do the inverse translation of the painter
+       painter.resetTransform();
+ 
+@@ -601,6 +611,196 @@ void splitViewWidget::updatePixelPositions()
+   }
+ }
+ 
++/* Everything below implements click-to-select-a-block.
++ *
++ * The arithmetic duplicates the tail of updatePixelPositions() on purpose rather than sharing it:
++ * that function computes one diffInItem from the view under the mouse and then applies it to both
++ * items, which is what the zoom box wants but is wrong for a selection - we need only the item that
++ * was actually clicked, relative to its own center.
++ */
++bool splitViewWidget::widgetPosToItemPixel(const QPoint &widgetPos,
++                                           int          &view,
++                                           QPoint       &pixelPos,
++                                           bool         &insideItem)
++{
++  const auto item = playlist->getSelectedItems();
++
++  const auto drawAreaBotR = this->rect().bottomRight();
++  const int  xSplit       = int(drawAreaBotR.x() * splittingPoint);
++
++  QPoint centerPoints[2];
++  if (viewSplitMode == COMPARISON || !isSplitting())
++  {
++    centerPoints[0] = drawAreaBotR / 2;
++    centerPoints[1] = centerPoints[0];
++  }
++  else
++  {
++    const auto y    = drawAreaBotR.y() / 2;
++    centerPoints[0] = QPoint(xSplit / 2, y);
++    centerPoints[1] = QPoint(xSplit + (drawAreaBotR.x() - xSplit) / 2, y);
++  }
++
++  view = (isSplitting() && widgetPos.x() > xSplit) ? 1 : 0;
++  if (!item[view])
++    return false;
++
++  const auto itemCenter = centerPoints[view] + this->moveOffset;
++  const auto itemSize   = item[view]->getSize();
++
++  const double diffX = (double)(itemCenter.x() - widgetPos.x()) / this->zoomFactor + 0.5;
++  const double diffY = (double)(itemCenter.y() - widgetPos.y()) / this->zoomFactor + 0.5;
++
++  double px = -diffX + (double(itemSize.width()) / 2) + 0.5;
++  double py = -diffY + (double(itemSize.height()) / 2) + 0.5;
++  // Same quantization as updatePixelPositions(): 0...-1 must become -1, not 0.
++  if (px < 0)
++    px -= 1;
++  if (py < 0)
++    py -= 1;
++
++  pixelPos   = QPoint(px, py);
++  insideItem = pixelPos.x() >= 0 && pixelPos.x() < itemSize.width() && pixelPos.y() >= 0 &&
++               pixelPos.y() < itemSize.height();
++  return true;
++}
++
++void splitViewWidget::selectBlockAt(const QPoint &widgetPos)
++{
++  int    view{};
++  QPoint pixelPos;
++  bool   insideItem{};
++
++  if (!this->widgetPosToItemPixel(widgetPos, view, pixelPos, insideItem) || !insideItem)
++  {
++    if (this->blockSelection.valid)
++    {
++      // Stop paying for statistics collection once nothing is selected any more.
++      if (this->blockSelection.item)
++        this->blockSelection.item->setBlockInfoRequested(false);
++      this->blockSelection = {};
++      emit blockSelected(nullptr, QPoint(), -1);
++      this->update();
++    }
++    return;
++  }
++
++  const auto item = playlist->getSelectedItems();
++
++  // Only one block is selected at a time across the primary and the separate view, otherwise a
++  // stale highlight would sit in the other one while the info pane shows this block.
++  if (auto other = this->getOtherWidget(); other && other->blockSelection.valid)
++  {
++    other->blockSelection = {};
++    other->update();
++  }
++
++  this->blockSelection          = {};
++  this->blockSelection.item     = item[view];
++  this->blockSelection.view     = view;
++  this->blockSelection.pixelPos = pixelPos;
++  this->blockSelection.valid    = true;
++
++  // Block statistics are only collected when something asks for them. Ask here rather than leaving
++  // it to the info pane, so that the highlight also works with the pane closed. The data arrives
++  // asynchronously; refreshBlockSelection() below will come up empty on the very first click and is
++  // retried from update() once the frame has been re-decoded.
++  if (item[view])
++    item[view]->setBlockInfoRequested(true);
++
++  this->refreshBlockSelection();
++
++  emit blockSelected(item[view], pixelPos, this->blockSelection.frameIdx);
++  this->update();
++}
++
++void splitViewWidget::refreshBlockSelection()
++{
++  if (!this->blockSelection.valid || !this->blockSelection.item)
++    return;
++
++  const auto frameIdx = playback->getCurrentFrame();
++
++  // The query walks every statistics entry of the frame - about a millisecond at 1080p and several
++  // at 4K. That is fine per click or per frame change, but it must never run per repaint, so the
++  // resolved rects are cached here and paintBlockSelection() only draws them.
++  const auto info = this->blockSelection.item->getBlockInfoAt(this->blockSelection.pixelPos,
++                                                              frameIdx);
++
++  this->blockSelection.frameIdx = frameIdx;
++  if (info.isValid)
++  {
++    this->blockSelection.codingBlockRect = info.codingBlockRect;
++    this->blockSelection.transformBlockRect =
++        info.transformBlockRect ? *info.transformBlockRect : QRect();
++  }
++  else
++  {
++    // Keep the selected position, but draw nothing: statistics may not be collected yet, or the
++    // partitioning genuinely has no block at this pixel.
++    this->blockSelection.codingBlockRect    = QRect();
++    this->blockSelection.transformBlockRect = QRect();
++  }
++}
++
++void splitViewWidget::paintBlockSelection(QPainter     &painter,
++                                          playlistItem *item,
++                                          int           view,
++                                          double        zoom)
++{
++  if (!this->blockSelection.valid || this->blockSelection.view != view ||
++      this->blockSelection.item != item || this->blockSelection.codingBlockRect.isEmpty())
++    return;
++
++  // Match how the video and the statistics overlay place the item, so the outline lands exactly on
++  // the block edges the user sees (videoHandler::drawFrame / stats::paintStatisticsData both use
++  // moveCenter, which is not the same as the zoom box's rect math).
++  QRect itemRect;
++  itemRect.setSize(QSize(item->getSize().width() * zoom, item->getSize().height() * zoom));
++  itemRect.moveCenter(QPoint(0, 0));
++
++  const auto toDisplay = [&](const QRect &b) {
++    return QRect(b.x() * zoom, b.y() * zoom, b.width() * zoom, b.height() * zoom)
++        .translated(itemRect.topLeft());
++  };
++
++  painter.save();
++  // paintStatisticsData leaves antialiasing on, which would blur a 1px outline.
++  painter.setRenderHint(QPainter::Antialiasing, false);
++  painter.setBrush(Qt::NoBrush);
++  painter.setClipRect(itemRect, Qt::IntersectClip);
++
++  const auto codingRect = toDisplay(this->blockSelection.codingBlockRect);
++  const bool small      = codingRect.width() < 6 || codingRect.height() < 6;
++
++  if (!this->blockSelection.transformBlockRect.isEmpty())
++  {
++    QPen pen(BLOCK_SELECTION_COLOR);
++    pen.setWidthF(1.0);
++    pen.setCosmetic(true); // Without this the pen width would be scaled by the zoom.
++    pen.setStyle(Qt::DashLine);
++    painter.setPen(pen);
++    painter.drawRect(toDisplay(this->blockSelection.transformBlockRect));
++  }
++
++  if (!small)
++  {
++    // A dark halo so the outline reads on bright content too.
++    QPen halo(QColor(0, 0, 0, 160));
++    halo.setWidthF(3.0);
++    halo.setCosmetic(true);
++    painter.setPen(halo);
++    painter.drawRect(codingRect);
++  }
++  QPen pen(BLOCK_SELECTION_COLOR);
++  pen.setWidthF(small ? 1.0 : 1.5);
++  pen.setCosmetic(true);
++  painter.setPen(pen);
++  painter.drawRect(codingRect);
++
++  painter.restore();
++}
++
+ void splitViewWidget::setZoomBoxPixelUnderCursor(QPoint posA,
+                                                  QPoint posB,
+                                                  bool   setOtherViewIfLinked,
+@@ -1040,7 +1240,31 @@ void splitViewWidget::mouseReleaseEvent(QMouseEvent *mouse_event)
+     update();
+   }
+   else
++  {
++    /* Decide whether this was a click (select a block) or a drag (pan/zoom) *before* the base
++     * handler runs, because it applies the pan and can change the zoom, which would invalidate the
++     * transform we need. Upstream already distinguishes the two: DRAGGING (as opposed to
++     * DRAGGING_MOUSE_MOVED) means the mouse moved no more than 3 px, and the zoom-rect path has its
++     * own "smaller than 2 px" test. Which button pans is a user setting, so handle both modes.
++     */
++    std::optional<QPoint> clickPos;
++    if (mouse_event->button() == Qt::LeftButton)
++    {
++      if (this->mouseMode == MOUSE_LEFT_MOVE && this->viewAction == ViewAction::DRAGGING)
++        clickPos = this->viewDraggingMousePosStart.toPoint();
++      else if (this->mouseMode == MOUSE_RIGHT_MOVE && this->viewAction == ViewAction::ZOOM_RECT)
++      {
++        const auto zoomRect = QRectF(this->viewZoomingMousePosStart, QPointF(mouse_event->pos()));
++        if (std::abs(zoomRect.width()) < 2.0 && std::abs(zoomRect.height()) < 2.0)
++          clickPos = this->viewZoomingMousePosStart.toPoint();
++      }
++    }
++
+     MoveAndZoomableView::mouseReleaseEvent(mouse_event);
++
++    if (clickPos)
++      this->selectBlockAt(*clickPos);
++  }
+ }
+ 
+ void splitViewWidget::wheelEvent(QWheelEvent *event)
+@@ -1514,6 +1738,22 @@ void splitViewWidget::update(bool newFrame, bool itemRedraw)
+ 
+   if (newFrame || itemRedraw)
+   {
++    /* Re-resolve the selected block here rather than on every repaint - the query walks all
++     * statistics of the frame, which costs milliseconds at high resolutions.
++     * Two reasons to redo it: the frame changed (the partitioning differs per frame), or we have a
++     * selection but no rectangle yet, which is the normal state right after the first click because
++     * the statistics still had to be collected.
++     */
++    if (this->blockSelection.valid &&
++        (itemRedraw || this->blockSelection.frameIdx != playback->getCurrentFrame() ||
++         this->blockSelection.codingBlockRect.isEmpty()))
++    {
++      this->refreshBlockSelection();
++      emit blockSelected(this->blockSelection.item,
++                         this->blockSelection.pixelPos,
++                         this->blockSelection.frameIdx);
++    }
++
+     // A new frame was selected (by the user directly or by playback).
+     // That does not necessarily mean a paint event. First check if one of the items needs to load
+     // first.
+diff --git a/YUViewLib/src/ui/views/SplitViewWidget.h b/YUViewLib/src/ui/views/SplitViewWidget.h
+index c130194f..54387535 100644
+--- a/YUViewLib/src/ui/views/SplitViewWidget.h
++++ b/YUViewLib/src/ui/views/SplitViewWidget.h
+@@ -47,6 +47,7 @@
+ #include <QTimer>
+ 
+ #include <memory>
++#include <optional>
+ 
+ class QDockWidget;
+ class PlaybackController;
+@@ -126,6 +127,12 @@ signals:
+ 
+   void signalToggleFullScreen();
+ 
++  /* The user selected a block by clicking in the view, or the selection was re-resolved after a
++   * frame change. pixelPos is in item pixel coordinates (unzoomed, origin top left) of item.
++   * Emitted with item == nullptr and frameIdx == -1 to clear the selection.
++   */
++  void blockSelected(playlistItem *item, QPoint pixelPos, int frameIdx);
++
+ public slots:
+ 
+   // Accept the signal from the playlisttreewidget that signals if a new (or two) item was selected.
+@@ -262,6 +269,32 @@ protected:
+   QPoint zoomBoxPixelUnderCursor[2]; //!< The above function will update this. (The position of the
+                                      //!< pixel under the cursor (per item))
+ 
++  // ---- Block selection (click to highlight a block and report it to the block info pane) ----
++  struct BlockSelection
++  {
++    QPointer<playlistItem> item;    //!< Which item the selection belongs to
++    int                    view{0}; //!< 0 = left/single, 1 = right
++    QPoint                 pixelPos;
++    int                    frameIdx{-1}; //!< The frame the rects below were resolved for
++    QRect                  codingBlockRect;
++    QRect                  transformBlockRect; //!< Empty when it equals the coding block
++    bool                   valid{false};
++  };
++  BlockSelection blockSelection;
++
++  //!< Convert a position in widget coordinates to a pixel position in the item under it.
++  //!< Returns false when there is no item there.
++  bool widgetPosToItemPixel(const QPoint &widgetPos,
++                            int          &view,
++                            QPoint       &pixelPos,
++                            bool         &insideItem);
++  //!< Resolve and store the block at the given widget position, then emit blockSelected().
++  void selectBlockAt(const QPoint &widgetPos);
++  //!< Re-resolve the stored selection against the current frame. Cheap no-op when nothing is
++  //!< selected. Called when the frame changes, never per paint - the query is O(all statistics).
++  void refreshBlockSelection();
++  void paintBlockSelection(QPainter &painter, playlistItem *item, int view, double zoom);
++
+   // Regular grid
+   int  regularGridSize{0}; //!< The size of each block in the regular grid in pixels
+   void setRegularGridSize(const int  size,
+diff --git a/YUViewLib/ui/mainwindow.ui b/YUViewLib/ui/mainwindow.ui
+index 3c5b8b40..074a7ea6 100644
+--- a/YUViewLib/ui/mainwindow.ui
++++ b/YUViewLib/ui/mainwindow.ui
+@@ -262,6 +262,24 @@
+    </attribute>
+    <widget class="VideoCacheInfoWidget" name="cachingInfoWidget"/>
+   </widget>
++  <widget class="QDockWidget" name="blockInfoDock">
++   <property name="visible">
++    <bool>false</bool>
++   </property>
++   <property name="minimumSize">
++    <size>
++     <width>150</width>
++     <height>100</height>
++    </size>
++   </property>
++   <property name="windowTitle">
++    <string>Block Info</string>
++   </property>
++   <attribute name="dockWidgetArea">
++    <number>1</number>
++   </attribute>
++   <widget class="BlockInfoWidget" name="blockInfoWidget"/>
++  </widget>
+   <action name="actionOpen">
+    <property name="text">
+     <string>Open...</string>
+@@ -270,6 +288,12 @@
+  </widget>
+  <layoutdefault spacing="6" margin="11"/>
+  <customwidgets>
++  <customwidget>
++   <class>BlockInfoWidget</class>
++   <extends>QWidget</extends>
++   <header>ui/widgets/BlockInfoWidget.h</header>
++   <container>1</container>
++  </customwidget>
+   <customwidget>
+    <class>PlaylistTreeWidget</class>
+    <extends>QTreeWidget</extends>
+diff --git a/YUViewLib/src/decoder/decoderDav1d.cpp b/YUViewLib/src/decoder/decoderDav1d.cpp
+index 7792a962..8aa11982 100644
+--- a/YUViewLib/src/decoder/decoderDav1d.cpp
++++ b/YUViewLib/src/decoder/decoderDav1d.cpp
+@@ -37,6 +37,7 @@
+ #include <QSettings>
+ #include <cassert>
+ #include <cstring>
++#include <mutex>
+ 
+ #include <common/Functions.h>
+ #include <common/Typedef.h>
+@@ -776,10 +777,23 @@ void decoderDav1d::fillStatisticList(stats::StatisticsData &statisticsData) cons
+                                    "RTX_16X64",
+                                    "RTX_64X16"});
+   statisticsData.addStatType(transformDepth);
++
++  // Tell the block info query which types carry the block geometry. Every type above except the
++  // transform size is emitted on the coding block rect (see parseBlockPartition), so "Pred Mode"
++  // stands in for the coding block. This must be explicit: deriving it from geometry would pick the
++  // wrong rect for other decoders (libde265 emits its type 0 on the CTB rect).
++  statisticsData.setBlockRectTypeIDs(0 /* Pred Mode */, 26 /* Transform Size */);
+ }
+ 
+ void decoderDav1d::cacheStatistics(const Dav1dPictureWrapper &img)
+ {
++  /* This runs on a loading/caching thread and fills statisticsData through the unlocked at()
++   * accessor, while the GUI thread reads it (statistics painting, the zoom box, and the block info
++   * query). Hold the data's mutex for the whole frame: whole-frame granularity means it is taken
++   * once per decoded frame rather than per block, so it cannot ping-pong with the readers.
++   */
++  std::unique_lock<std::mutex> statisticsLock(this->statisticsData->accessMutex);
++
+   if (!internalsSupported || !this->statisticsEnabled())
+     return;
+ 
+diff --git a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+index 30dd3dfc..0dd84f77 100644
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+@@ -1137,12 +1218,44 @@ ValuePairListSets playlistItemCompressedVideo::getPixelValues(const QPoint &pixe
+   ValuePairListSets newSet;
+ 
+   newSet.append("YUV", this->video->getPixelValues(pixelPos, frameIdx));
+-  if (this->loadingDecoder->statisticsSupported() && this->loadingDecoder->statisticsEnabled())
++  // The decoder can be absent when allocateDecoder() failed; this is called from painting.
++  if (this->loadingDecoder && this->loadingDecoder->statisticsSupported() &&
++      this->loadingDecoder->statisticsEnabled())
+     newSet.append("Stats", this->statisticsData.getValuesAt(pixelPos));
+ 
+   return newSet;
+ }
+ 
++stats::BlockInfo playlistItemCompressedVideo::getBlockInfoAt(const QPoint &pixelPos, int frameIdx)
++{
++  if (!this->loadingDecoder || !this->loadingDecoder->statisticsSupported() ||
++      !this->loadingDecoder->statisticsEnabled())
++    return {};
++
++  auto info = this->statisticsData.getBlockInfoAt(pixelPos);
++
++  // The statistics can lag the displayed frame. One real case: when a frame cannot be decoded
++  // loadRawData() advances currentFrameIdx without decoding, so the cache still holds the previous
++  // frame. Reporting that as if it belonged to frameIdx would show the wrong block.
++  if (info.frameIndex != frameIdx)
++    return {};
++
++  return info;
++}
++
++void playlistItemCompressedVideo::setBlockInfoRequested(bool requested)
++{
++  if (this->statisticsData.isBlockInfoRequested() == requested)
++    return;
++
++  this->statisticsData.setBlockInfoRequested(requested);
++  if (requested)
++    // Statistics are only collected when something asks for them. This makes the existing
++    // needsLoading -> loadFrame -> loadStatistics path run, which enables retrieval in the decoder
++    // and re-decodes the current frame. It happens on a loading thread.
++    emit SignalItemChanged(true, RECACHE_NONE);
++}
++
+ void playlistItemCompressedVideo::getSupportedFileExtensions(QStringList &allExtensions,
+                                                              QStringList &filters)
+ {
+diff --git a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
+index e6c74aa9..cb513574 100644
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
+@@ -81,6 +83,9 @@ public:
+   // Return the source (YUV and statistics) values under the given pixel position.
+   virtual ValuePairListSets getPixelValues(const QPoint &pixelPos, int frameIdx) override;
+ 
++  stats::BlockInfo getBlockInfoAt(const QPoint &pixelPos, int frameIdx) override;
++  void             setBlockInfoRequested(bool requested) override;
++
+   virtual bool canBeUsedInProcessing() const override { return true; }
+ 
+   // Add the file type filters and the extensions of files that we can load.
+diff --git a/YUViewLib/src/statistics/BlockInfo.h b/YUViewLib/src/statistics/BlockInfo.h
+new file mode 100644
+index 00000000..dc772309
+--- /dev/null
++++ b/YUViewLib/src/statistics/BlockInfo.h
+@@ -0,0 +1,82 @@
++/*  This file is part of YUView - The YUV player with advanced analytics toolset
++ *   <https://github.com/IENT/YUView>
++ *   Copyright (C) 2015  Institut für Nachrichtentechnik, RWTH Aachen University, GERMANY
++ *
++ *   This program is free software; you can redistribute it and/or modify
++ *   it under the terms of the GNU General Public License as published by
++ *   the Free Software Foundation; either version 3 of the License, or
++ *   (at your option) any later version.
++ *
++ *   In addition, as a special exception, the copyright holders give
++ *   permission to link the code of portions of this program with the
++ *   OpenSSL library under certain conditions as described in each
++ *   individual source file, and distribute linked combinations including
++ *   the two.
++ *
++ *   You must obey the GNU General Public License in all respects for all
++ *   of the code used other than OpenSSL. If you modify file(s) with this
++ *   exception, you may extend this exception to your version of the
++ *   file(s), but you are not obligated to do so. If you do not wish to do
++ *   so, delete this exception statement from your version. If you delete
++ *   this exception statement from all source files in the program, then
++ *   also delete it here.
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ *   GNU General Public License for more details.
++ *
++ *   You should have received a copy of the GNU General Public License
++ *   along with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#pragma once
++
++#include <QRect>
++#include <QString>
++
++#include <optional>
++#include <vector>
++
++#include <common/Typedef.h>
++
++namespace stats
++{
++
++// One statistic type's data for a clicked position, with the block it belongs to.
++struct BlockInfoEntry
++{
++  int     typeID{INT_INVALID};
++  QString typeName;
++  QString description; // May be empty; several decoder types do not set one.
++  QString valueText;   // Already formatted: "INTER (1)", "TX_8X8 (1)", "(-1.25,0.5)" ...
++  int     rawValue{INT_INVALID};
++  bool    hasRawValue{}; // false for vector/affine entries
++
++  QRect rect;            // Frame pixel coordinates, as stored in StatsItem*::pos/size
++  bool  isPrimaryRect{}; // rect == BlockInfo::codingBlockRect
++};
++
++/* The result of a single "what is at this pixel" query.
++ *
++ * Note that isValid == false is a perfectly normal outcome: statistics may not be collected yet,
++ * the position may be outside the picture, or - measured on real dav1d output - the block
++ * partitioning can leave small holes where no block covers a pixel at all.
++ */
++struct BlockInfo
++{
++  bool isValid{};
++  int  frameIndex{-1}; // The frame the data actually came from. Compare against the frame you asked
++                       // for: statistics can lag the displayed frame.
++
++  // The block that should be highlighted. For AV1 this is the coding block.
++  QRect                codingBlockRect;
++  // Only set when a transform block was found and it differs from the coding block.
++  std::optional<QRect> transformBlockRect;
++  // Every distinct rect that covers the position, largest first.
++  std::vector<QRect>   allRects;
++
++  std::vector<BlockInfoEntry> entries; // Deduplicated, ascending typeID.
++};
++
++} // namespace stats
+diff --git a/YUViewLib/src/ui/widgets/BlockInfoWidget.cpp b/YUViewLib/src/ui/widgets/BlockInfoWidget.cpp
+new file mode 100644
+index 00000000..d3d86e96
+--- /dev/null
++++ b/YUViewLib/src/ui/widgets/BlockInfoWidget.cpp
+@@ -0,0 +1,160 @@
++/*  This file is part of YUView - The YUV player with advanced analytics toolset
++ *   <https://github.com/IENT/YUView>
++ *   Copyright (C) 2015  Institut für Nachrichtentechnik, RWTH Aachen University, GERMANY
++ *
++ *   This program is free software; you can redistribute it and/or modify
++ *   it under the terms of the GNU General Public License as published by
++ *   the Free Software Foundation; either version 3 of the License, or
++ *   (at your option) any later version.
++ *
++ *   In addition, as a special exception, the copyright holders give
++ *   permission to link the code of portions of this program with the
++ *   OpenSSL library under certain conditions as described in each
++ *   individual source file, and distribute linked combinations including
++ *   the two.
++ *
++ *   You must obey the GNU General Public License in all respects for all
++ *   of the code used other than OpenSSL. If you modify file(s) with this
++ *   exception, you may extend this exception to your version of the
++ *   file(s), but you are not obligated to do so. If you do not wish to do
++ *   so, delete this exception statement from your version. If you delete
++ *   this exception statement from all source files in the program, then
++ *   also delete it here.
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ *   GNU General Public License for more details.
++ *
++ *   You should have received a copy of the GNU General Public License
++ *   along with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "BlockInfoWidget.h"
++
++#include <playlistitem/playlistItem.h>
++
++#include <QHeaderView>
++
++BlockInfoWidget::BlockInfoWidget(QWidget *parent) : QWidget(parent), layout(this)
++{
++  this->statusLabel.setWordWrap(true);
++  this->statusLabel.setTextInteractionFlags(Qt::TextSelectableByMouse);
++
++  this->tree.setColumnCount(2);
++  this->tree.setHeaderLabels({"Syntax Element", "Value"});
++  this->tree.setRootIsDecorated(true);
++  this->tree.setUniformRowHeights(true);
++  this->tree.setSelectionMode(QAbstractItemView::SingleSelection);
++  this->tree.header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
++  this->tree.header()->setStretchLastSection(true);
++
++  this->layout.setContentsMargins(4, 4, 4, 4);
++  this->layout.addWidget(&this->statusLabel);
++  this->layout.addWidget(&this->tree);
++
++  this->showMessage("Click a block in the video view to show its mode information.");
++}
++
++void BlockInfoWidget::setSelectedBlock(playlistItem *item, QPoint pixelPos, int frameIdx)
++{
++  this->selectedItem     = item;
++  this->selectedPos      = pixelPos;
++  this->selectedFrameIdx = frameIdx;
++
++  if (!item)
++  {
++    this->showMessage("Click a block in the video view to show its mode information.");
++    return;
++  }
++
++  // Note: requesting statistics collection is the view's job (splitViewWidget::selectBlockAt), so
++  // that the highlight also works with this pane closed. Do not request it here as well, or the two
++  // would fight over switching it off again.
++  this->refresh();
++}
++
++void BlockInfoWidget::refresh()
++{
++  if (!this->selectedItem)
++    return;
++
++  const auto info = this->selectedItem->getBlockInfoAt(this->selectedPos, this->selectedFrameIdx);
++  if (!info.isValid)
++  {
++    // Either the statistics for this frame have not been collected yet (they are on their way), or
++    // this position genuinely has no block - real dav1d output does contain small gaps.
++    this->showMessage(QString("No block information at (%1, %2) in frame %3 yet.")
++                          .arg(this->selectedPos.x())
++                          .arg(this->selectedPos.y())
++                          .arg(this->selectedFrameIdx));
++    return;
++  }
++
++  this->populate(info);
++}
++
++void BlockInfoWidget::currentSelectedItemsChanged(playlistItem *item1, playlistItem *item2)
++{
++  if (this->selectedItem && this->selectedItem != item1 && this->selectedItem != item2)
++    this->setSelectedBlock(nullptr, QPoint(), -1);
++}
++
++void BlockInfoWidget::showMessage(const QString &text)
++{
++  this->tree.clear();
++  this->statusLabel.setText(text);
++}
++
++void BlockInfoWidget::populate(const stats::BlockInfo &info)
++{
++  this->statusLabel.setText(QString("Frame %1 · pixel (%2, %3)")
++                                .arg(info.frameIndex)
++                                .arg(this->selectedPos.x())
++                                .arg(this->selectedPos.y()));
++
++  this->tree.clear();
++
++  // One group per distinct rectangle, largest first (allRects is already sorted that way), so for
++  // AV1 the coding block comes before the transform block. Deriving the grouping from the data keeps
++  // this codec neutral: HEVC CTB/CU/TU fall out the same way.
++  for (const auto &rect : info.allRects)
++  {
++    auto *group = new QTreeWidgetItem(&this->tree);
++    auto  label = QString("Block %1×%2 @ (%3, %4)")
++                     .arg(rect.width())
++                     .arg(rect.height())
++                     .arg(rect.x())
++                     .arg(rect.y());
++    if (rect == info.codingBlockRect)
++      label += "  — coding block";
++    else if (info.transformBlockRect && rect == *info.transformBlockRect)
++      label += "  — transform block";
++    group->setText(0, label);
++    group->setFirstColumnSpanned(true);
++    group->setExpanded(true);
++
++    for (const auto &entry : info.entries)
++    {
++      if (entry.rect != rect)
++        continue;
++      auto *row = new QTreeWidgetItem(group);
++      row->setText(0, entry.typeName);
++      row->setText(1, entry.valueText);
++
++      // VQAnalyzer puts the explanation of an abbreviated name in a tooltip; several statistic
++      // types have no description, so always append the type id and the raw value.
++      auto tip = entry.description;
++      if (!tip.isEmpty())
++        tip += "\n";
++      tip += QString("Type ID: %1").arg(entry.typeID);
++      if (entry.hasRawValue)
++        tip += QString(", raw value: %1").arg(entry.rawValue);
++      row->setToolTip(0, tip);
++      row->setToolTip(1, tip);
++    }
++
++    if (group->childCount() == 0)
++      delete group;
++  }
++}
+diff --git a/YUViewLib/src/ui/widgets/BlockInfoWidget.h b/YUViewLib/src/ui/widgets/BlockInfoWidget.h
+new file mode 100644
+index 00000000..18726321
+--- /dev/null
++++ b/YUViewLib/src/ui/widgets/BlockInfoWidget.h
+@@ -0,0 +1,82 @@
++/*  This file is part of YUView - The YUV player with advanced analytics toolset
++ *   <https://github.com/IENT/YUView>
++ *   Copyright (C) 2015  Institut für Nachrichtentechnik, RWTH Aachen University, GERMANY
++ *
++ *   This program is free software; you can redistribute it and/or modify
++ *   it under the terms of the GNU General Public License as published by
++ *   the Free Software Foundation; either version 3 of the License, or
++ *   (at your option) any later version.
++ *
++ *   In addition, as a special exception, the copyright holders give
++ *   permission to link the code of portions of this program with the
++ *   OpenSSL library under certain conditions as described in each
++ *   individual source file, and distribute linked combinations including
++ *   the two.
++ *
++ *   You must obey the GNU General Public License in all respects for all
++ *   of the code used other than OpenSSL. If you modify file(s) with this
++ *   exception, you may extend this exception to your version of the
++ *   file(s), but you are not obligated to do so. If you do not wish to do
++ *   so, delete this exception statement from your version. If you delete
++ *   this exception statement from all source files in the program, then
++ *   also delete it here.
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ *   GNU General Public License for more details.
++ *
++ *   You should have received a copy of the GNU General Public License
++ *   along with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#pragma once
++
++#include <QLabel>
++#include <QPoint>
++#include <QPointer>
++#include <QTreeWidget>
++#include <QVBoxLayout>
++#include <QWidget>
++
++#include <statistics/BlockInfo.h>
++
++class playlistItem;
++
++/* Shows the mode information of the block the user clicked in the view.
++ *
++ * This is the equivalent of VQAnalyzer's "Block" tab: one group per distinct block rectangle (for
++ * AV1 the coding block, and the transform block when it differs), with the statistic types of that
++ * block underneath.
++ *
++ * The widget asks the item for the data itself rather than receiving it, so that a frame change only
++ * has to tell it "re-read", and the highlight in the view and the values here can never disagree.
++ */
++class BlockInfoWidget : public QWidget
++{
++  Q_OBJECT
++
++public:
++  explicit BlockInfoWidget(QWidget *parent = nullptr);
++
++public slots:
++  //!< From splitViewWidget::blockSelected. item == nullptr clears the pane.
++  void setSelectedBlock(playlistItem *item, QPoint pixelPos, int frameIdx);
++  //!< Something about the current item changed (frame loaded, decoder switched, statistics
++  //!< toggled). Re-read the values for the stored selection.
++  void refresh();
++  //!< The playlist selection changed. Clears when our item is no longer selected.
++  void currentSelectedItemsChanged(playlistItem *item1, playlistItem *item2);
++
++private:
++  void showMessage(const QString &text);
++  void populate(const stats::BlockInfo &info);
++
++  QVBoxLayout layout;
++  QLabel      statusLabel;
++  QTreeWidget tree;
++
++  QPointer<playlistItem> selectedItem;
++  QPoint                 selectedPos;
++  int                    selectedFrameIdx{-1};
++};

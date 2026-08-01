@@ -112,6 +112,7 @@ echo "== 디코더 선택 / 라이브러리 수명 =="
 if [[ -e "$APPDIR/decoder/libdav1d-internals.so" ]]; then
     run_test "$ROOT/tests/regression/05-decoder-default-and-fallback.cpp" "$STREAM" Dav1d
     run_test "$ROOT/tests/regression/03-dav1d-block-statistics.cpp"       "$STREAM"
+    run_test "$ROOT/tests/regression/09-block-info-query.cpp"             "$STREAM"
 else
     echo "  SKIP  03-dav1d-block-statistics (libdav1d-internals.so 없음)"
     ((skip_count++))
