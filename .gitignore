@@ -21,3 +21,6 @@ appdir/
 .idea/
 *.user
 aqtinstall.log
+
+# generated test streams
+tests/data/*.ivf
