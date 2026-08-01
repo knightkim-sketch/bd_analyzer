@@ -16,8 +16,12 @@ GUI 상호작용이 필요하므로 사람이 X 세션에서 수행해야 한다
 ## 전제
 
 ```bash
-sudo dnf install -y ffmpeg-libs      # AV1 분석에 필수. 미설치 시 아래 A-3 은 반드시 실패한다
+./scripts/setup-ffmpeg.sh    # AV1 분석에 필수. 미설치 시 아래 A-3 은 반드시 실패한다
 ```
+
+> 이전 판에는 `sudo dnf install -y ffmpeg-libs` 로 적혀 있었으나 **틀렸다.**
+> 이 머신에는 sudo 가 없고, rpmfusion 판(4.4.8)은 의존 패키지를 48개 끌어온다.
+> → [TASK-0003](TASK-0003-av1-parsing-dav1d.md), [ffmpeg-integration.md](../10-research/ffmpeg-integration.md)
 
 ## 테스트 스트림
 

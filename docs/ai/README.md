@@ -58,6 +58,8 @@ verified: yes | partial | no      # 도구 출력으로 교차검증했는가
 - [yuview-architecture.md](10-research/yuview-architecture.md) — 라이브러리 재사용성 / 확장점 분석
 - [yuview-build-license.md](10-research/yuview-build-license.md) — 빌드 시스템 / GPLv3 / 배포 아티팩트
 - [yuview-feature-gap.md](10-research/yuview-feature-gap.md) — 기능 A~D 대비 있는 것 / 없는 것
+- [ffmpeg-integration.md](10-research/ffmpeg-integration.md) — AV1 분석 요건 / 버전 상한 7.1 / static 링크 불가 근거
+- [dav1d-block-statistics.md](10-research/dav1d-block-statistics.md) — dav1d 0.2.2 fork 소스 포함 검토 / AV1 블록 통계 실측 (기능 A')
 
 ### 20-decisions
 - [ADR-0001-fork-vs-library.md](20-decisions/ADR-0001-fork-vs-library.md) — YUView를 라이브러리로 쓸 것인가 fork 할 것인가
@@ -68,3 +70,5 @@ verified: yes | partial | no      # 도구 출력으로 교차검증했는가
 ### 40-tasks
 - [TASK-0001](40-tasks/TASK-0001-bootstrap-build.md) — 빌드 부트스트랩 (**완료** — 빌드 성공, 이식성 실증)
 - [TASK-0002](40-tasks/TASK-0002-feature-verification.md) — A~D 기능 실동작 검증 (GUI 세션 필요)
+- [TASK-0003](40-tasks/TASK-0003-av1-parsing-dav1d.md) — AV1 분석 + dav1d 블록 통계 + 크래시 수정 7건 (**진행중** — 상설화 남음)
+- [TASK-0004](40-tasks/TASK-0004-decoded-yuv-cache.md) — 디코딩 YUV + 블록통계를 `.YUViewBD` 에 저장 / playlist 아이템 / 종료 시 삭제 (검토 완료, 미착수)
