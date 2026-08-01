@@ -1,0 +1,23 @@
+diff --git a/YUViewLib/src/decoder/decoderDav1d.cpp b/YUViewLib/src/decoder/decoderDav1d.cpp
+index 7792a962..17184d69 100644
+--- a/YUViewLib/src/decoder/decoderDav1d.cpp
++++ b/YUViewLib/src/decoder/decoderDav1d.cpp
+@@ -1054,10 +1054,15 @@ IntPair decoderDav1d::calculateIntraPredDirection(IntraPredMode predMode, int an
+     return {};
+ 
+   // angleDelta should be between -4 and 3
+-  const int modeIndex = predMode - VERT_PRED;
+-  assert(modeIndex >= 0 && modeIndex < 8);
++  const int modeIndex  = predMode - VERT_PRED;
+   const int deltaIndex = angleDelta + 4;
+-  assert(deltaIndex >= 0 && deltaIndex < 8);
++  // Both indices address the fixed 8x8 vectorTable below. Real streams do reach this with an
++  // out-of-range angleDelta (observed: the assert that used to be here aborted YUView from
++  // cacheStatistics), so bail out instead. Asserting is not enough: they compile away under
++  // NDEBUG and the table would then be read out of bounds. Drawing no direction vector is the
++  // same thing this function already does for DC_PRED and for out-of-range prediction modes.
++  if (modeIndex < 0 || modeIndex >= 8 || deltaIndex < 0 || deltaIndex >= 8)
++    return {};
+ 
+   /* The python code which was used to create the vectorTable
+   import math

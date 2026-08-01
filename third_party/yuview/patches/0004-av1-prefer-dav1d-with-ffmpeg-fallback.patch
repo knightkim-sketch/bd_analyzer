@@ -1,0 +1,56 @@
+diff --git a/YUViewLib/src/decoder/decoderBase.h b/YUViewLib/src/decoder/decoderBase.h
+index e0507f3e..50d05bfe 100644
+--- a/YUViewLib/src/decoder/decoderBase.h
++++ b/YUViewLib/src/decoder/decoderBase.h
+@@ -76,7 +76,11 @@ constexpr EnumMapper<DecoderEngine, 7> DecoderEngineMapper = {
+ const auto DecodersHEVC =
+     std::vector<DecoderEngine>({DecoderEngine::Libde265, DecoderEngine::HM, DecoderEngine::FFMpeg});
+ const auto DecodersVVC = std::vector<DecoderEngine>({DecoderEngine::VVDec, DecoderEngine::VTM});
+-const auto DecodersAV1 = std::vector<DecoderEngine>({DecoderEngine::FFMpeg, DecoderEngine::Dav1d});
++// dav1d first: it is the only AV1 decoder that provides block statistics, and whether the ffmpeg
++// libraries can decode AV1 at all depends on how they were built (the native "av1" decoder is
++// hwaccel-only, so ffmpeg needs libdav1d/libaom compiled in). The order also decides what the
++// settings dialog offers as index 0, which is what it saves as the default.
++const auto DecodersAV1 = std::vector<DecoderEngine>({DecoderEngine::Dav1d, DecoderEngine::FFMpeg});
+ 
+ /* This class is the abstract base class for all decoders. All decoders work like this:
+  * 1. Create an instance and configure it (if required)
+diff --git a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+index 30dd3dfc..5eba3b6c 100644
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+@@ -334,6 +345,11 @@ playlistItemCompressedVideo::playlistItemCompressedVideo(const QString &compress
+         // Prefer libde265 over FFmpeg over others
+         if (vectorContains(possibleDecoders, DecoderEngine::Libde265))
+           this->decoderEngine = DecoderEngine::Libde265;
++        else if (codec == Codec::AV1 && vectorContains(possibleDecoders, DecoderEngine::Dav1d))
++          // For AV1 prefer dav1d: only it provides the block statistics, and ffmpeg can only
++          // decode AV1 if it was built with libdav1d/libaom. Falls back to FFmpeg below if the
++          // dav1d library can not be loaded.
++          this->decoderEngine = DecoderEngine::Dav1d;
+         else if (vectorContains(possibleDecoders, DecoderEngine::FFMpeg))
+           this->decoderEngine = DecoderEngine::FFMpeg;
+         else
+@@ -350,7 +366,21 @@ playlistItemCompressedVideo::playlistItemCompressedVideo(const QString &compress
+     << QString::fromStdString(std::string(DecoderEngineMapper.getName(this->decoderEngine)))
+     << " decoder");
+   if (!this->allocateDecoder(displayComponent))
+-    return;
++  {
++    // libdav1d is an optional runtime dependency. If it could not be loaded, fall back to FFmpeg
++    // once. This has to happen here rather than later: returning leaves the item permanently
++    // unusable, because the signalRequestRawData connection at the end of this constructor is
++    // never made, so no reallocation from the decoder combo box can revive it.
++    if (codec == Codec::AV1 && this->decoderEngine == DecoderEngine::Dav1d &&
++        vectorContains(this->possibleDecoders, DecoderEngine::FFMpeg))
++    {
++      this->decoderEngine = DecoderEngine::FFMpeg;
++      if (!this->allocateDecoder(displayComponent))
++        return;
++    }
++    else
++      return;
++  }
+ 
+   if (this->rawFormat == video::RawFormat::YUV)
+   {

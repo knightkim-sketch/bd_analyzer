@@ -1,0 +1,15 @@
+diff --git a/YUViewLib/src/filesource/FileSourceFFmpegFile.cpp b/YUViewLib/src/filesource/FileSourceFFmpegFile.cpp
+index 41afa62e..9583cb48 100644
+--- a/YUViewLib/src/filesource/FileSourceFFmpegFile.cpp
++++ b/YUViewLib/src/filesource/FileSourceFFmpegFile.cpp
+@@ -530,7 +530,9 @@ bool FileSourceFFmpegFile::scanBitstream(QWidget *mainWindow)
+   DEBUG_FFMPEG("FileSourceFFmpegFile::scanBitstream: Scan done. Found %d frames and %d keyframes.",
+                this->nrFrames,
+                this->keyFrameList.length());
+-  return !progress->wasCanceled();
++  // progress is only created when a parent window was given; every other use above guards for
++  // that, this one did not. Without a window there is no dialog and thus no cancellation.
++  return !(progress && progress->wasCanceled());
+ }
+ 
+ void FileSourceFFmpegFile::openFileAndFindVideoStream(QString fileName)

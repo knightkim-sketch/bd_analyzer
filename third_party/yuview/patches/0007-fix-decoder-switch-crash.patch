@@ -1,0 +1,249 @@
+diff --git a/YUViewLib/src/ffmpeg/FFmpegLibraryFunctions.cpp b/YUViewLib/src/ffmpeg/FFmpegLibraryFunctions.cpp
+index d4ffa014..9e7e38a0 100644
+--- a/YUViewLib/src/ffmpeg/FFmpegLibraryFunctions.cpp
++++ b/YUViewLib/src/ffmpeg/FFmpegLibraryFunctions.cpp
+@@ -227,6 +227,8 @@ bool FFmpegLibraryFunctions::loadFFmpegLibraryInPath(QString path, LibraryVersio
+         [this, &constructLibName, &path](QLibrary &lib, QString libName, unsigned version) {
+           auto filename = constructLibName.arg(libName).arg(version);
+           lib.setFileName(path + filename);
++          // See loadFFMpegLibrarySpecific for why unloading must be prevented.
++          lib.setLoadHints(QLibrary::PreventUnloadHint);
+           auto success = lib.load();
+           this->log("Loading library " + filename + (success ? " succeded" : " failed"));
+           return success;
+@@ -269,6 +271,14 @@ bool FFmpegLibraryFunctions::loadFFMpegLibrarySpecific(QString avFormatLib,
+ 
+   auto loadLibrary = [this](QLibrary &lib, QString libPath) {
+     lib.setFileName(libPath);
++    // Never dlclose the ffmpeg libraries. Several objects own an FFmpegVersionHandler at the same
++    // time (every FileSourceFFmpegFile and every decoderFFmpeg), each with its own QLibrary for the
++    // same file. QLibrary reference counting does not survive that here: unloadAllLibraries() is
++    // called repeatedly while probing version combinations, so destroying one owner drops the
++    // shared mapping and leaves the other owners with dangling resolved function pointers.
++    // Measured: libavcodec mappings 4 -> 0 after deleting a single decoderFFmpeg, then any call
++    // through a still-open FileSourceFFmpegFile segfaults.
++    lib.setLoadHints(QLibrary::PreventUnloadHint);
+     auto success = lib.load();
+     this->log("Loading library " + libPath + (success ? " succeded" : " failed"));
+     return success;
+diff --git a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
+index e6c74aa9..0256b9d2 100644
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
+@@ -32,6 +32,8 @@
+ 
+ #pragma once
+ 
++#include <QMutex>
++
+ #include <common/Typedef.h>
+ #include <decoder/decoderBase.h>
+ #include <filesource/FileSourceFFmpegFile.h>
+@@ -162,6 +164,12 @@ protected:
+   // TODO: Could we somehow make shure that caching is always performed in display order?
+   QMutex cachingMutex;
+ 
++  // Guards the lifetime of loadingDecoder/cachingDecoder against their use. allocateDecoder()
++  // destroys and recreates both from the GUI thread (decoder combo box), while the loading and
++  // caching threads dereference them in loadRawData()/loadStatistics(). Without this the switch
++  // is a use-after-free.
++  QRecursiveMutex decoderAccessMutex;
++
+   stats::StatisticUIHandler statisticsUIHandler;
+   stats::StatisticsData     statisticsData;
+ 
+diff --git a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+index 30dd3dfc..5eba3b6c 100644
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+@@ -600,8 +630,15 @@ void playlistItemCompressedVideo::drawItem(QPainter *painter,
+ 
+ void playlistItemCompressedVideo::loadRawData(int frameIdx, bool caching)
+ {
++  // Runs on a loading/caching thread. Keep the decoders alive for the whole call; allocateDecoder()
++  // may be swapping them out from the GUI thread.
++  QMutexLocker<QRecursiveMutex> decoderLock(&this->decoderAccessMutex);
++
+   if (caching && !this->cachingEnabled)
+     return;
++  // The decoders can be absent: allocateDecoder() may have failed (missing decoder library).
++  if (!(caching ? this->cachingDecoder : this->loadingDecoder))
++    return;
+   if (!caching && this->loadingDecoder->state() == decoder::DecoderState::Error)
+   {
+     if (frameIdx < this->currentFrameIdx[0])
+@@ -677,7 +714,10 @@ void playlistItemCompressedVideo::loadRawData(int frameIdx, bool caching)
+   // Decode until we get the right frame from the decoder
+   bool rightFrame =
+     caching ? this->currentFrameIdx[1] == frameIdx : this->currentFrameIdx[0] == frameIdx;
+-  while (!rightFrame)
++  // Set when the input is exhausted and the decoder still can not deliver the frame. Breaking out
++  // of the inner loop alone is not enough: this outer loop would immediately re-enter it.
++  bool outOfData = false;
++  while (!rightFrame && !outOfData)
+   {
+     while (dec->state() == decoder::DecoderState::NeedsMoreData)
+     {
+@@ -698,6 +738,10 @@ void playlistItemCompressedVideo::loadRawData(int frameIdx, bool caching)
+         auto ffmpegDec =
+           (caching ? dynamic_cast<decoder::decoderFFmpeg *>(this->cachingDecoder.get())
+                    : dynamic_cast<decoder::decoderFFmpeg *>(this->loadingDecoder.get()));
++        if (!ffmpegDec)
++          // decoderEngine says FFmpeg but the allocated decoder is of a different type. Nothing
++          // sensible to push into.
++          return;
+         if (!ffmpegDec->pushAVPacket(pkt))
+         {
+           if (ffmpegDec->state() != decoder::DecoderState::RetrieveFrames)
+@@ -762,6 +806,20 @@ void playlistItemCompressedVideo::loadRawData(int frameIdx, bool caching)
+           "playlistItemCompressedVideo::loadRawData retrieved nal unit from file - size "
+           << data.size());
+         this->repushData = !dec->pushData(data);
++        if (data.isEmpty() && !this->repushData &&
++            dec->state() == decoder::DecoderState::NeedsMoreData)
++        {
++          // Same EOF trap as in the libavformat branch below: getNextNALUnit() keeps returning an
++          // empty array once the file is exhausted, so a decoder that cannot deliver the frame
++          // would spin here forever while holding decoderAccessMutex. Reachable with truncated or
++          // malformed annex B streams.
++          DEBUG_COMPRESSED("playlistItemCompressedVideo::loadRawData out of NAL units and the "
++                           "decoder still needs more. Giving up on frame "
++                           << frameIdx);
++          this->decodingNotPossibleAfter = frameIdx;
++          outOfData                      = true;
++          break;
++        }
+       }
+       else if (isInputFormatTypeFFmpeg(this->inputFormat) &&
+                this->decoderEngine != DecoderEngine::FFMpeg)
+@@ -773,6 +831,20 @@ void playlistItemCompressedVideo::loadRawData(int frameIdx, bool caching)
+           "playlistItemCompressedVideo::loadRawData retrieved nal unit from file - size "
+           << data.size());
+         this->repushData = !dec->pushData(data);
++        if (data.isEmpty() && !this->repushData &&
++            dec->state() == decoder::DecoderState::NeedsMoreData)
++        {
++          // The file has no more units and the decoder accepted the empty (EOF) push but still
++          // asks for data, so it can not produce this frame. Without bailing out here we would
++          // call getNextUnit() on an exhausted source forever, holding decoderAccessMutex and
++          // hanging every other thread (seen when switching the decoder engine).
++          DEBUG_COMPRESSED("playlistItemCompressedVideo::loadRawData out of data and the decoder "
++                           "still needs more. Giving up on frame "
++                           << frameIdx);
++          this->decodingNotPossibleAfter = frameIdx;
++          outOfData                      = true;
++          break;
++        }
+       }
+       else
+         assert(false);
+@@ -823,7 +895,7 @@ void playlistItemCompressedVideo::loadRawData(int frameIdx, bool caching)
+     // reload when the frame number changes.
+     this->video->rawData_frameIndex = frameIdx;
+   }
+-  else if (this->loadingDecoder->state() == decoder::DecoderState::Error)
++  else if (this->loadingDecoder && this->loadingDecoder->state() == decoder::DecoderState::Error)
+   {
+     this->infoText = "There was an error in the decoder: \n";
+     this->infoText += this->loadingDecoder->decoderErrorString();
+@@ -965,6 +1037,10 @@ void playlistItemCompressedVideo::createPropertiesWidget()
+ 
+ bool playlistItemCompressedVideo::allocateDecoder(int displayComponent)
+ {
++  // Hold this for the whole function: between the reset below and the construction further down
++  // the decoder pointers are null, and the loading/caching threads must not observe that.
++  QMutexLocker<QRecursiveMutex> decoderLock(&this->decoderAccessMutex);
++
+   // Reset (existing) decoders
+   this->loadingDecoder.reset();
+   this->cachingDecoder.reset();
+@@ -1103,6 +1179,11 @@ void playlistItemCompressedVideo::loadStatistics(int frameIdx)
+   DEBUG_COMPRESSED("playlistItemCompressedVideo::loadStatisticToCache Request statistics for frame "
+                    << frameIdx);
+ 
++  // Same as loadRawData: called from a loading thread while the GUI thread may reallocate.
++  QMutexLocker<QRecursiveMutex> decoderLock(&this->decoderAccessMutex);
++
++  if (!this->loadingDecoder)
++    return;
+   if (!this->loadingDecoder->statisticsSupported())
+     return;
+   if (!this->loadingDecoder->statisticsEnabled())
+@@ -1137,7 +1218,9 @@ ValuePairListSets playlistItemCompressedVideo::getPixelValues(const QPoint &pixe
+   ValuePairListSets newSet;
+ 
+   newSet.append("YUV", this->video->getPixelValues(pixelPos, frameIdx));
+-  if (this->loadingDecoder->statisticsSupported() && this->loadingDecoder->statisticsEnabled())
++  // The decoder can be absent when allocateDecoder() failed; this is called from painting.
++  if (this->loadingDecoder && this->loadingDecoder->statisticsSupported() &&
++      this->loadingDecoder->statisticsEnabled())
+     newSet.append("Stats", this->statisticsData.getValuesAt(pixelPos));
+ 
+   return newSet;
+@@ -1288,16 +1371,23 @@ void playlistItemCompressedVideo::loadFrame(int  frameIdx,
+ 
+ void playlistItemCompressedVideo::displaySignalComboBoxChanged(int idx)
+ {
++  // Same reasoning as in decoderComboxBoxChanged: this runs on the GUI thread and changes decoder
++  // state plus currentFrameIdx, which the loading/caching threads read. cachingDecoder is null
++  // whenever caching is disabled, so it must not be dereferenced unconditionally.
++  QMutexLocker<QRecursiveMutex> decoderLock(&this->decoderAccessMutex);
++
+   if (this->loadingDecoder && idx != this->loadingDecoder->getDecodeSignal())
+   {
+     bool resetDecoder = false;
+     this->loadingDecoder->setDecodeSignal(idx, resetDecoder);
+-    this->cachingDecoder->setDecodeSignal(idx, resetDecoder);
++    if (this->cachingDecoder)
++      this->cachingDecoder->setDecodeSignal(idx, resetDecoder);
+ 
+     if (resetDecoder)
+     {
+       this->loadingDecoder->resetDecoder();
+-      this->cachingDecoder->resetDecoder();
++      if (this->cachingDecoder)
++        this->cachingDecoder->resetDecoder();
+ 
+       // Reset the decoded frame indices so that decoding of the current frame is triggered
+       this->currentFrameIdx[0] = -1;
+@@ -1319,9 +1409,24 @@ void playlistItemCompressedVideo::decoderComboxBoxChanged(int idx)
+   auto e = this->possibleDecoders.at(idx);
+   if (e != this->decoderEngine)
+   {
+-    // Allocate a new decoder of the new type
+-    this->decoderEngine = e;
+-    this->allocateDecoder();
++    {
++      // Switch the engine, the decoders and the decode position as one step. loadRawData()
++      // branches on decoderEngine, casts the decoder to the matching type and decides whether to
++      // seek from currentFrameIdx. A loading/caching thread must never observe a mix of old and
++      // new: the new engine with the old decoder crashes on the cast, and a fresh decoder with a
++      // stale currentFrameIdx makes it skip the seek and loop forever chasing a frame it already
++      // passed.
++      QMutexLocker<QRecursiveMutex> decoderLock(&this->decoderAccessMutex);
++      // Allocate a new decoder of the new type
++      this->decoderEngine = e;
++      this->allocateDecoder();
++
++      // Reset the decoded frame indices so that decoding of the current frame is triggered
++      this->currentFrameIdx[0] = -1;
++      this->currentFrameIdx[1] = -1;
++
++      this->decodingNotPossibleAfter = -1;
++    }
+ 
+     // A different display signal was chosen. Invalidate the cache and signal that we will need a
+     // redraw.
+@@ -1330,12 +1435,6 @@ void playlistItemCompressedVideo::decoderComboxBoxChanged(int idx)
+       yuvVideo->showPixelValuesAsDiff = this->loadingDecoder->isSignalDifference(idx);
+     yuvVideo->invalidateAllBuffers();
+ 
+-    // Reset the decoded frame indices so that decoding of the current frame is triggered
+-    this->currentFrameIdx[0] = -1;
+-    this->currentFrameIdx[1] = -1;
+-
+-    this->decodingNotPossibleAfter = -1;
+-
+     // Update the list of display signals
+     if (this->loadingDecoder)
+     {

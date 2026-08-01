@@ -1,0 +1,24 @@
+diff --git a/YUViewLib/src/filesource/FileSourceFFmpegFile.cpp b/YUViewLib/src/filesource/FileSourceFFmpegFile.cpp
+index 41afa62e..9583cb48 100644
+--- a/YUViewLib/src/filesource/FileSourceFFmpegFile.cpp
++++ b/YUViewLib/src/filesource/FileSourceFFmpegFile.cpp
+@@ -652,10 +654,18 @@ bool FileSourceFFmpegFile::goToNextPacket(bool videoPacketsOnly)
+ 
+   if (this->currentPacket.getPacketType() == PacketType::VIDEO &&
+       this->packetDataFormat == PacketDataFormat::Unknown)
++  {
+     // This is the first video package that we find and we don't know what the format of the packet
+     // data is. Guess the format from the data in the first package This format should not change
+     // from packet to packet
+-    this->packetDataFormat = this->currentPacket.guessDataFormatFromData();
++    // For AV1 the packet data is always raw OBUs, so take that from the codec instead of
++    // guessing: guessDataFormatFromData() returns Unknown for valid OBU data, and getNextUnit()
++    // has no branch for Unknown, so it would keep returning an empty array forever.
++    if (this->getVideoStreamCodecID().isAV1())
++      this->packetDataFormat = PacketDataFormat::OBU;
++    else
++      this->packetDataFormat = this->currentPacket.guessDataFormatFromData();
++  }
+ 
+   return true;
+ }

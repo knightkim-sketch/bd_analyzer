@@ -1,0 +1,35 @@
+diff --git a/YUViewLib/src/common/Typedef.h b/YUViewLib/src/common/Typedef.h
+index 155e6f11..18857ffc 100644
+--- a/YUViewLib/src/common/Typedef.h
++++ b/YUViewLib/src/common/Typedef.h
+@@ -85,7 +85,7 @@ constexpr bool is_Q_OS_LINUX = false;
+ #define WIN_LINUX_SINGLE_INSTANCE 0
+ 
+ // The default frame rate that will be used when we could not guess it.
+-#define DEFAULT_FRAMERATE 24.0
++#define DEFAULT_FRAMERATE 30.0
+ 
+ // The default duration in seconds of static items (like text, images ...)
+ #define PLAYLISTITEMTEXT_DEFAULT_DURATION 5.0
+diff --git a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+index 30dd3dfc..5eba3b6c 100644
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+@@ -258,6 +258,17 @@ playlistItemCompressedVideo::playlistItemCompressedVideo(const QString &compress
+     }
+   }
+ 
++  // Not every container/bitstream carries a usable frame rate. IVF for example leaves
++  // avg_frame_rate at 0/0, and the annex B parsers return -1 when the VUI has no timing info.
++  // Without a value here playback runs at PlaybackController's 0.01 fps floor, which looks frozen.
++  if (!(this->prop.frameRate > 0.0))
++  {
++    DEBUG_COMPRESSED("playlistItemCompressedVideo::playlistItemCompressedVideo no frame rate in "
++                     "the stream. Falling back to "
++                     << DEFAULT_FRAMERATE);
++    this->prop.frameRate = DEFAULT_FRAMERATE;
++  }
++
+   // Check/set properties
+   if (!frameSize.isValid())
+   {

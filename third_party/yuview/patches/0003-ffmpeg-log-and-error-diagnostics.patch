@@ -1,0 +1,30 @@
+diff --git a/YUViewLib/src/ffmpeg/FFmpegVersionHandler.cpp b/YUViewLib/src/ffmpeg/FFmpegVersionHandler.cpp
+index 714cf8bf..b4fafa63 100644
+--- a/YUViewLib/src/ffmpeg/FFmpegVersionHandler.cpp
++++ b/YUViewLib/src/ffmpeg/FFmpegVersionHandler.cpp
+@@ -321,8 +321,9 @@ FFmpegVersionHandler::~FFmpegVersionHandler()
+ 
+ void FFmpegVersionHandler::avLogCallback(void *, int level, const char *fmt, va_list vargs)
+ {
+-  QString msg;
+-  msg.vasprintf(fmt, vargs);
++  // QString::vasprintf is a static function returning the formatted string. Calling it as if it
++  // were a member (msg.vasprintf(...)) discards the result, so every logged line was empty.
++  auto msg = QString::vasprintf(fmt, vargs);
+   auto now = QDateTime::currentDateTime();
+   FFmpegVersionHandler::logListFFmpeg.append(now.toString("hh:mm:ss.zzz") +
+                                              QString(" - L%1 - ").arg(level) + msg);
+diff --git a/YUViewLib/src/decoder/decoderFFmpeg.cpp b/YUViewLib/src/decoder/decoderFFmpeg.cpp
+index 622e56ac..e04802fe 100644
+--- a/YUViewLib/src/decoder/decoderFFmpeg.cpp
++++ b/YUViewLib/src/decoder/decoderFFmpeg.cpp
+@@ -367,7 +367,8 @@ bool decoderFFmpeg::pushAVPacket(FFmpeg::AVPacketWrapper &pkt)
+       qDebug() << meaning;
+     }
+ #endif
+-    this->setError(QStringLiteral("Error sending packet (avcodec_send_packet)"));
++    this->setError(
++        QString("Error sending packet (avcodec_send_packet). Return code %1.").arg(retPush));
+     return false;
+   }
+   else
