@@ -189,6 +189,33 @@ CU 보다 크다 → 기하학으로는 CTB 를 고른다. 그래서 명시 지�
 프레임이 바뀌면 같은 좌표라도 블록 분할이 달라진다. 무효화/재조회 트리거:
 프레임 변경, 아이템 변경, **디코더 전환**(타입 목록이 바뀐다), 통계 on/off, 파일 재로드.
 
+## 추가 기능 — 줌 박스 info panel 을 syntax 표시로 전환 (2026-08-01)
+
+요구: "YUV view click 시 선택된 block 에 대해 details view 에 syntax 정보를 display 가능하도록
+check box 를 추가하고, 선택하면 YUV pixel 정보 대신 해당 block 의 position 및 모든 syntax 를 표시".
+
+**"details view" = 줌 박스 옆 info panel** 이다 (`splitViewWidget::paintZoomBox` 의
+`drawInfoPanel` 분기). 지금까지 `Coordinates` + `YUV` 픽셀값 + `Stats` 를 그려 왔고, 이게
+"YUV pixel 정보" 에 해당한다.
+
+- 체크박스는 **split view 메뉴의 체크 항목** `Show Block Syntax` 로 넣었다 (`Zoom Box` 바로 아래).
+  이 패널을 켜고 끄는 `Zoom Box` 가 이미 같은 자리에 있고, 뷰 설정은 이 코드베이스에서
+  전부 checkable QAction 으로 다뤄진다 (`actionZoomBox` 패턴). 분리 창에도 링크 전파된다.
+- 켜면 `getPixelValues()` 를 아예 호출하지 않고 **클릭으로 선택된 블록**의
+  `Frame / Position / Size (+ Transform)` 과 **모든 syntax 항목**을 그린다.
+  hover 위치가 아니라 클릭한 블록을 쓴다 — 마우스를 움직여도 읽고 있던 값이 흔들리지 않아야 한다.
+- 이를 위해 `BlockSelection` 이 rect 두 개만 캐시하던 것을 **`stats::BlockInfo` 전체 캐시**로 바꿨다
+  (entries 가 필요하다). 조회 비용 때문에 per-repaint 조회는 여전히 하지 않는다.
+
+실측 (GUI):
+```
+Zoom Box 만 켠 상태      : Coordinates / YUV (Y,U,V) / Stats     <- 기존 동작
++ Show Block Syntax      : Block  Frame 0, Position 64,96, Size 32x32
+                           Syntax Pred Mode INTRA(0), intra pred mode (Y) CFL_PRED(13),
+                                  intra pred mode (UV) VERT_PRED(1), intra angle delta (Y) 1,
+                                  Intra direction chroma (0,16), ...
+```
+
 ## codex 리뷰 (2026-08-01) — `VERDICT: FIX`, 8건 중 7건 반영
 
 | 심각도 | 지적 | 처리 |

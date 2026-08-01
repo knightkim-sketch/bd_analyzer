@@ -29,65 +29,6 @@ index c5f74636..a5217ae3 100644
    // If you want your item to be droppable onto a difference/resample object, return true here and
    // return a valid video handler.
    virtual bool                 canBeUsedInProcessing() const { return false; }
-diff --git a/YUViewLib/src/statistics/StatisticsData.h b/YUViewLib/src/statistics/StatisticsData.h
-index 4f171b3d..ac17f54d 100644
---- a/YUViewLib/src/statistics/StatisticsData.h
-+++ b/YUViewLib/src/statistics/StatisticsData.h
-@@ -32,11 +32,13 @@
- 
- #pragma once
- 
-+#include "BlockInfo.h"
- #include "FrameTypeData.h"
- #include "StatisticsType.h"
- 
- #include <map>
- #include <mutex>
-+#include <optional>
- #include <vector>
- 
- namespace stats
-@@ -55,10 +57,29 @@ public:
-   ItemLoadingState    needsLoading(int frameIndex) const;
-   std::vector<int>    getTypesThatNeedLoading(int frameIndex) const;
-   QStringPairList     getValuesAt(const QPoint &pos) const;
-+  /* Like getValuesAt() but also reports the block geometry, and does not care whether a type is
-+   * currently being rendered. Used by the block info pane and the block highlight.
-+   * getValuesAt() is deliberately left untouched so the zoom box cannot regress.
-+   */
-+  BlockInfo getBlockInfoAt(const QPoint &pos) const;
-   StatisticsTypesVec &getStatisticsTypes() { return this->statsTypes; }
-   bool                hasDataForTypeID(int typeID) { return this->frameCache.count(typeID) > 0; }
-   void                eraseDataForTypeID(int typeID) { this->frameCache.erase(typeID); }
- 
-+  /* Which statistic type carries the coding block geometry, and which the transform block.
-+   * Set by the decoder in fillStatisticList(). Do not guess this from geometry: for libde265
-+   * type 0 is the slice index on the CTB rect, which is larger than the CU.
-+   */
-+  void setBlockRectTypeIDs(std::optional<int> codingBlockTypeID,
-+                           std::optional<int> transformBlockTypeID);
-+
-+  /* Statistics are only collected for types the user switched on for rendering
-+   * (see needsLoading/getTypesThatNeedLoading). Set this to have them collected anyway, which is
-+   * what the block info pane needs - it must show data without forcing an overlay onto the video.
-+   */
-+  void setBlockInfoRequested(bool requested) { this->blockInfoRequested = requested; }
-+  bool isBlockInfoRequested() const { return this->blockInfoRequested; }
-+
-   void clear();
-   void setFrameSize(Size size) { this->frameSize = size; }
-   void setFrameIndex(int frameIndex);
-@@ -80,6 +101,10 @@ private:
-   Size frameSize;
- 
-   StatisticsTypesVec statsTypes;
-+
-+  std::optional<int> codingBlockTypeID;
-+  std::optional<int> transformBlockTypeID;
-+  bool               blockInfoRequested{};
- };
- 
- } // namespace stats
 diff --git a/YUViewLib/src/statistics/StatisticsData.cpp b/YUViewLib/src/statistics/StatisticsData.cpp
 index aa93a2bd..1324aa23 100644
 --- a/YUViewLib/src/statistics/StatisticsData.cpp
@@ -310,6 +251,65 @@ index aa93a2bd..1324aa23 100644
  }
  
  void StatisticsData::setFrameIndex(int frameIndex)
+diff --git a/YUViewLib/src/statistics/StatisticsData.h b/YUViewLib/src/statistics/StatisticsData.h
+index 4f171b3d..ac17f54d 100644
+--- a/YUViewLib/src/statistics/StatisticsData.h
++++ b/YUViewLib/src/statistics/StatisticsData.h
+@@ -32,11 +32,13 @@
+ 
+ #pragma once
+ 
++#include "BlockInfo.h"
+ #include "FrameTypeData.h"
+ #include "StatisticsType.h"
+ 
+ #include <map>
+ #include <mutex>
++#include <optional>
+ #include <vector>
+ 
+ namespace stats
+@@ -55,10 +57,29 @@ public:
+   ItemLoadingState    needsLoading(int frameIndex) const;
+   std::vector<int>    getTypesThatNeedLoading(int frameIndex) const;
+   QStringPairList     getValuesAt(const QPoint &pos) const;
++  /* Like getValuesAt() but also reports the block geometry, and does not care whether a type is
++   * currently being rendered. Used by the block info pane and the block highlight.
++   * getValuesAt() is deliberately left untouched so the zoom box cannot regress.
++   */
++  BlockInfo getBlockInfoAt(const QPoint &pos) const;
+   StatisticsTypesVec &getStatisticsTypes() { return this->statsTypes; }
+   bool                hasDataForTypeID(int typeID) { return this->frameCache.count(typeID) > 0; }
+   void                eraseDataForTypeID(int typeID) { this->frameCache.erase(typeID); }
+ 
++  /* Which statistic type carries the coding block geometry, and which the transform block.
++   * Set by the decoder in fillStatisticList(). Do not guess this from geometry: for libde265
++   * type 0 is the slice index on the CTB rect, which is larger than the CU.
++   */
++  void setBlockRectTypeIDs(std::optional<int> codingBlockTypeID,
++                           std::optional<int> transformBlockTypeID);
++
++  /* Statistics are only collected for types the user switched on for rendering
++   * (see needsLoading/getTypesThatNeedLoading). Set this to have them collected anyway, which is
++   * what the block info pane needs - it must show data without forcing an overlay onto the video.
++   */
++  void setBlockInfoRequested(bool requested) { this->blockInfoRequested = requested; }
++  bool isBlockInfoRequested() const { return this->blockInfoRequested; }
++
+   void clear();
+   void setFrameSize(Size size) { this->frameSize = size; }
+   void setFrameIndex(int frameIndex);
+@@ -80,6 +101,10 @@ private:
+   Size frameSize;
+ 
+   StatisticsTypesVec statsTypes;
++
++  std::optional<int> codingBlockTypeID;
++  std::optional<int> transformBlockTypeID;
++  bool               blockInfoRequested{};
+ };
+ 
+ } // namespace stats
 diff --git a/YUViewLib/src/ui/Mainwindow.cpp b/YUViewLib/src/ui/Mainwindow.cpp
 index e0c6852b..028eca1f 100644
 --- a/YUViewLib/src/ui/Mainwindow.cpp
@@ -415,7 +415,7 @@ index 1cf2d94f..0a598468 100644
  
    double  pinchStartZoomFactor{1.0};
 diff --git a/YUViewLib/src/ui/views/SplitViewWidget.cpp b/YUViewLib/src/ui/views/SplitViewWidget.cpp
-index 1e71e5ac..7b8e6833 100644
+index 1e71e5ac..8ddd9986 100644
 --- a/YUViewLib/src/ui/views/SplitViewWidget.cpp
 +++ b/YUViewLib/src/ui/views/SplitViewWidget.cpp
 @@ -61,6 +61,10 @@ const int SPLITVIEWWIDGET_SPLITTER_MARGIN_DPI_DIV = 24;
@@ -456,7 +456,7 @@ index 1e71e5ac..7b8e6833 100644
        // Do the inverse translation of the painter
        painter.resetTransform();
  
-@@ -601,6 +611,196 @@ void splitViewWidget::updatePixelPositions()
+@@ -601,6 +611,246 @@ void splitViewWidget::updatePixelPositions()
    }
  }
  
@@ -573,23 +573,11 @@ index 1e71e5ac..7b8e6833 100644
 +  // The query walks every statistics entry of the frame - about a millisecond at 1080p and several
 +  // at 4K. That is fine per click or per frame change, but it must never run per repaint, so the
 +  // resolved rects are cached here and paintBlockSelection() only draws them.
-+  const auto info = this->blockSelection.item->getBlockInfoAt(this->blockSelection.pixelPos,
-+                                                              frameIdx);
-+
++  // An invalid result is kept as-is: statistics may not be collected yet, or the partitioning
++  // genuinely has no block at this pixel. Either way nothing is drawn and nothing is listed.
++  this->blockSelection.info     = this->blockSelection.item->getBlockInfoAt(
++      this->blockSelection.pixelPos, frameIdx);
 +  this->blockSelection.frameIdx = frameIdx;
-+  if (info.isValid)
-+  {
-+    this->blockSelection.codingBlockRect = info.codingBlockRect;
-+    this->blockSelection.transformBlockRect =
-+        info.transformBlockRect ? *info.transformBlockRect : QRect();
-+  }
-+  else
-+  {
-+    // Keep the selected position, but draw nothing: statistics may not be collected yet, or the
-+    // partitioning genuinely has no block at this pixel.
-+    this->blockSelection.codingBlockRect    = QRect();
-+    this->blockSelection.transformBlockRect = QRect();
-+  }
 +}
 +
 +void splitViewWidget::paintBlockSelection(QPainter     &painter,
@@ -598,7 +586,8 @@ index 1e71e5ac..7b8e6833 100644
 +                                          double        zoom)
 +{
 +  if (!this->blockSelection.valid || this->blockSelection.view != view ||
-+      this->blockSelection.item != item || this->blockSelection.codingBlockRect.isEmpty())
++      this->blockSelection.item != item || !this->blockSelection.info.isValid ||
++      this->blockSelection.info.codingBlockRect.isEmpty())
 +    return;
 +
 +  // Match how the video and the statistics overlay place the item, so the outline lands exactly on
@@ -619,17 +608,17 @@ index 1e71e5ac..7b8e6833 100644
 +  painter.setBrush(Qt::NoBrush);
 +  painter.setClipRect(itemRect, Qt::IntersectClip);
 +
-+  const auto codingRect = toDisplay(this->blockSelection.codingBlockRect);
++  const auto codingRect = toDisplay(this->blockSelection.info.codingBlockRect);
 +  const bool small      = codingRect.width() < 6 || codingRect.height() < 6;
 +
-+  if (!this->blockSelection.transformBlockRect.isEmpty())
++  if (this->blockSelection.info.transformBlockRect)
 +  {
 +    QPen pen(BLOCK_SELECTION_COLOR);
 +    pen.setWidthF(1.0);
 +    pen.setCosmetic(true); // Without this the pen width would be scaled by the zoom.
 +    pen.setStyle(Qt::DashLine);
 +    painter.setPen(pen);
-+    painter.drawRect(toDisplay(this->blockSelection.transformBlockRect));
++    painter.drawRect(toDisplay(*this->blockSelection.info.transformBlockRect));
 +  }
 +
 +  if (!small)
@@ -650,10 +639,86 @@ index 1e71e5ac..7b8e6833 100644
 +  painter.restore();
 +}
 +
++/* The block's position and every syntax element of it, for the zoom box info panel.
++ * Replaces the pixel values there when "Show Block Syntax" is on - the panel has room for one or
++ * the other, and when analysing modes the pixel values are not what you are reading.
++ */
++QString splitViewWidget::blockSyntaxInfoHtml(int view) const
++{
++  if (!this->blockSelection.valid || this->blockSelection.view != view)
++    return "<h4>Block Syntax</h4>No block selected.<br/>Click a block in the view.";
++
++  const auto &info = this->blockSelection.info;
++  if (!info.isValid)
++    return QString("<h4>Block Syntax</h4>No syntax at (%1, %2)<br/>in frame %3 (yet).")
++        .arg(this->blockSelection.pixelPos.x())
++        .arg(this->blockSelection.pixelPos.y())
++        .arg(this->blockSelection.frameIdx);
++
++  const auto &cb  = info.codingBlockRect;
++  auto        html = QString("<h4>Block</h4>"
++                            "<table width=\"100%\">"
++                            "<tr><td>Frame:</td><td align=\"right\">%1</td></tr>"
++                            "<tr><td>Position:</td><td align=\"right\">%2, %3</td></tr>"
++                            "<tr><td>Size:</td><td align=\"right\">%4x%5</td></tr>")
++                     .arg(info.frameIndex)
++                     .arg(cb.x())
++                     .arg(cb.y())
++                     .arg(cb.width())
++                     .arg(cb.height());
++  if (info.transformBlockRect)
++    html.append(QString("<tr><td>Transform:</td><td align=\"right\">%1, %2 %3x%4</td></tr>")
++                    .arg(info.transformBlockRect->x())
++                    .arg(info.transformBlockRect->y())
++                    .arg(info.transformBlockRect->width())
++                    .arg(info.transformBlockRect->height()));
++  html.append("</table><h4>Syntax</h4><table width=\"100%\">");
++  for (const auto &entry : info.entries)
++    html.append(QString("<tr><td><nobr>%1:</nobr></td>"
++                        "<td align=\"right\"><nobr>%2</nobr></td></tr>")
++                    .arg(entry.typeName)
++                    .arg(entry.valueText));
++  html.append("</table>");
++  return html;
++}
++
++void splitViewWidget::setShowBlockSyntaxInfo(bool show, bool setOtherViewIfLinked, bool callUpdate)
++{
++  if (setOtherViewIfLinked && this->enableLink)
++    this->getOtherWidget()->setShowBlockSyntaxInfo(show, false, callUpdate);
++
++  this->showBlockSyntaxInfo = show;
++  QSignalBlocker actionBlocker(this->actionBlockSyntaxInfo);
++  this->actionBlockSyntaxInfo.setChecked(show);
++
++  if (callUpdate)
++    update();
++}
++
++void splitViewWidget::toggleBlockSyntaxInfo(bool)
++{
++  this->setShowBlockSyntaxInfo(!this->showBlockSyntaxInfo, true, true);
++}
++
  void splitViewWidget::setZoomBoxPixelUnderCursor(QPoint posA,
                                                   QPoint posB,
                                                   bool   setOtherViewIfLinked,
-@@ -1040,7 +1240,31 @@ void splitViewWidget::mouseReleaseEvent(QMouseEvent *mouse_event)
+@@ -710,8 +960,13 @@ void splitViewWidget::paintZoomBox(int           view,
+                                 .arg(pixelPos.x())
+                                 .arg(pixelPos.y());
+ 
++    if (this->showBlockSyntaxInfo)
++      // Show the selected block instead of the pixel values. Note this deliberately reports the
++      // block that was *clicked*, not the pixel under the cursor, so the reading stays stable while
++      // the mouse moves.
++      pixelInfoString = this->blockSyntaxInfoHtml(view);
+     // If the pixel position is within the item, append information on the pixel vale
+-    if (pixelPosInItem)
++    else if (pixelPosInItem)
+     {
+       ValuePairListSets pixelListSets = item->getPixelValues(pixelPos, frame);
+       // if we have some values, show them
+@@ -1040,7 +1295,31 @@ void splitViewWidget::mouseReleaseEvent(QMouseEvent *mouse_event)
      update();
    }
    else
@@ -685,7 +750,7 @@ index 1e71e5ac..7b8e6833 100644
  }
  
  void splitViewWidget::wheelEvent(QWheelEvent *event)
-@@ -1514,6 +1738,22 @@ void splitViewWidget::update(bool newFrame, bool itemRedraw)
+@@ -1514,6 +1793,22 @@ void splitViewWidget::update(bool newFrame, bool itemRedraw)
  
    if (newFrame || itemRedraw)
    {
@@ -697,7 +762,7 @@ index 1e71e5ac..7b8e6833 100644
 +     */
 +    if (this->blockSelection.valid &&
 +        (itemRedraw || this->blockSelection.frameIdx != playback->getCurrentFrame() ||
-+         this->blockSelection.codingBlockRect.isEmpty()))
++         !this->blockSelection.info.isValid))
 +    {
 +      this->refreshBlockSelection();
 +      emit blockSelected(this->blockSelection.item,
@@ -708,19 +773,46 @@ index 1e71e5ac..7b8e6833 100644
      // A new frame was selected (by the user directly or by playback).
      // That does not necessarily mean a paint event. First check if one of the items needs to load
      // first.
+@@ -1761,6 +2056,16 @@ void splitViewWidget::createMenuActions()
+   actionZoomBox.setToolTip("Activate the Zoom Box which renders a zoomed portion of the screen and "
+                            "shows pixel information.");
+ 
++  configureAction(this->actionBlockSyntaxInfo,
++                  nullptr,
++                  "Show Block Syntax",
++                  Checkable(true),
++                  Checked(this->showBlockSyntaxInfo),
++                  &splitViewWidget::toggleBlockSyntaxInfo);
++  actionBlockSyntaxInfo.setToolTip(
++      "In the Zoom Box info panel, show the position and all syntax elements of the block you "
++      "clicked instead of the pixel values.");
++
+   if (this->isMasterView)
+   {
+     configureAction(this->actionSeparateView,
+@@ -1989,6 +2294,7 @@ void splitViewWidget::addMenuActions(QMenu *menu)
+     drawGridMenu->addAction(&action);
+ 
+   menu->addAction(&actionZoomBox);
++  menu->addAction(&actionBlockSyntaxInfo);
+ 
+   auto separateViewMenu = menu->addMenu("Separate View");
+   separateViewMenu->addAction(!isMasterView ? &this->getOtherWidget()->actionSeparateView
 diff --git a/YUViewLib/src/ui/views/SplitViewWidget.h b/YUViewLib/src/ui/views/SplitViewWidget.h
-index c130194f..54387535 100644
+index c130194f..f636c97b 100644
 --- a/YUViewLib/src/ui/views/SplitViewWidget.h
 +++ b/YUViewLib/src/ui/views/SplitViewWidget.h
-@@ -47,6 +47,7 @@
+@@ -47,6 +47,9 @@
  #include <QTimer>
  
  #include <memory>
 +#include <optional>
++
++#include <statistics/BlockInfo.h>
  
  class QDockWidget;
  class PlaybackController;
-@@ -126,6 +127,12 @@ signals:
+@@ -126,6 +129,12 @@ signals:
  
    void signalToggleFullScreen();
  
@@ -733,7 +825,23 @@ index c130194f..54387535 100644
  public slots:
  
    // Accept the signal from the playlisttreewidget that signals if a new (or two) item was selected.
-@@ -262,6 +269,32 @@ protected:
+@@ -150,6 +159,7 @@ private slots:
+   void gridSetColor(bool checked);
+ 
+   void toggleZoomBox(bool checked);
++  void toggleBlockSyntaxInfo(bool checked);
+   void toggleSeparateWindow(bool checked);
+   void toggleSeparateWindowPlaybackBoth(bool){};
+   void toggleFullScreen(bool checked);
+@@ -195,6 +205,7 @@ protected:
+   QAction                       actionSeparateViewLink;
+   QAction                       actionSeparateViewPlaybackBoth;
+   QAction                       actionZoomBox;
++  QAction                       actionBlockSyntaxInfo;
+   QAction                       actionFullScreen;
+ 
+   void         updateMouseTracking();
+@@ -262,6 +273,41 @@ protected:
    QPoint zoomBoxPixelUnderCursor[2]; //!< The above function will update this. (The position of the
                                       //!< pixel under the cursor (per item))
  
@@ -743,9 +851,10 @@ index c130194f..54387535 100644
 +    QPointer<playlistItem> item;    //!< Which item the selection belongs to
 +    int                    view{0}; //!< 0 = left/single, 1 = right
 +    QPoint                 pixelPos;
-+    int                    frameIdx{-1}; //!< The frame the rects below were resolved for
-+    QRect                  codingBlockRect;
-+    QRect                  transformBlockRect; //!< Empty when it equals the coding block
++    int                    frameIdx{-1}; //!< The frame info below was resolved for
++    //!< The resolved block. Cached because the query walks every statistics entry of the frame,
++    //!< which is milliseconds at high resolutions - far too slow to redo per repaint.
++    stats::BlockInfo       info;
 +    bool                   valid{false};
 +  };
 +  BlockSelection blockSelection;
@@ -762,6 +871,14 @@ index c130194f..54387535 100644
 +  //!< selected. Called when the frame changes, never per paint - the query is O(all statistics).
 +  void refreshBlockSelection();
 +  void paintBlockSelection(QPainter &painter, playlistItem *item, int view, double zoom);
++  //!< The block syntax text for the zoom box info panel, empty when there is nothing to show.
++  QString blockSyntaxInfoHtml(int view) const;
++
++  //!< Show the selected block's position and syntax in the info panel instead of the pixel values.
++  bool showBlockSyntaxInfo{false};
++  void setShowBlockSyntaxInfo(bool show,
++                              bool setOtherViewIfLinked = true,
++                              bool callUpdate           = false);
 +
    // Regular grid
    int  regularGridSize{0}; //!< The size of each block in the regular grid in pixels
@@ -808,106 +925,6 @@ index 3c5b8b40..074a7ea6 100644
    <customwidget>
     <class>PlaylistTreeWidget</class>
     <extends>QTreeWidget</extends>
-diff --git a/YUViewLib/src/decoder/decoderDav1d.cpp b/YUViewLib/src/decoder/decoderDav1d.cpp
-index 7792a962..8aa11982 100644
---- a/YUViewLib/src/decoder/decoderDav1d.cpp
-+++ b/YUViewLib/src/decoder/decoderDav1d.cpp
-@@ -37,6 +37,7 @@
- #include <QSettings>
- #include <cassert>
- #include <cstring>
-+#include <mutex>
- 
- #include <common/Functions.h>
- #include <common/Typedef.h>
-@@ -776,10 +777,23 @@ void decoderDav1d::fillStatisticList(stats::StatisticsData &statisticsData) cons
-                                    "RTX_16X64",
-                                    "RTX_64X16"});
-   statisticsData.addStatType(transformDepth);
-+
-+  // Tell the block info query which types carry the block geometry. Every type above except the
-+  // transform size is emitted on the coding block rect (see parseBlockPartition), so "Pred Mode"
-+  // stands in for the coding block. This must be explicit: deriving it from geometry would pick the
-+  // wrong rect for other decoders (libde265 emits its type 0 on the CTB rect).
-+  statisticsData.setBlockRectTypeIDs(0 /* Pred Mode */, 26 /* Transform Size */);
- }
- 
- void decoderDav1d::cacheStatistics(const Dav1dPictureWrapper &img)
- {
-+  /* This runs on a loading/caching thread and fills statisticsData through the unlocked at()
-+   * accessor, while the GUI thread reads it (statistics painting, the zoom box, and the block info
-+   * query). Hold the data's mutex for the whole frame: whole-frame granularity means it is taken
-+   * once per decoded frame rather than per block, so it cannot ping-pong with the readers.
-+   */
-+  std::unique_lock<std::mutex> statisticsLock(this->statisticsData->accessMutex);
-+
-   if (!internalsSupported || !this->statisticsEnabled())
-     return;
- 
-diff --git a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
-index 30dd3dfc..0dd84f77 100644
---- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
-+++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
-@@ -1137,12 +1218,44 @@ ValuePairListSets playlistItemCompressedVideo::getPixelValues(const QPoint &pixe
-   ValuePairListSets newSet;
- 
-   newSet.append("YUV", this->video->getPixelValues(pixelPos, frameIdx));
--  if (this->loadingDecoder->statisticsSupported() && this->loadingDecoder->statisticsEnabled())
-+  // The decoder can be absent when allocateDecoder() failed; this is called from painting.
-+  if (this->loadingDecoder && this->loadingDecoder->statisticsSupported() &&
-+      this->loadingDecoder->statisticsEnabled())
-     newSet.append("Stats", this->statisticsData.getValuesAt(pixelPos));
- 
-   return newSet;
- }
- 
-+stats::BlockInfo playlistItemCompressedVideo::getBlockInfoAt(const QPoint &pixelPos, int frameIdx)
-+{
-+  if (!this->loadingDecoder || !this->loadingDecoder->statisticsSupported() ||
-+      !this->loadingDecoder->statisticsEnabled())
-+    return {};
-+
-+  auto info = this->statisticsData.getBlockInfoAt(pixelPos);
-+
-+  // The statistics can lag the displayed frame. One real case: when a frame cannot be decoded
-+  // loadRawData() advances currentFrameIdx without decoding, so the cache still holds the previous
-+  // frame. Reporting that as if it belonged to frameIdx would show the wrong block.
-+  if (info.frameIndex != frameIdx)
-+    return {};
-+
-+  return info;
-+}
-+
-+void playlistItemCompressedVideo::setBlockInfoRequested(bool requested)
-+{
-+  if (this->statisticsData.isBlockInfoRequested() == requested)
-+    return;
-+
-+  this->statisticsData.setBlockInfoRequested(requested);
-+  if (requested)
-+    // Statistics are only collected when something asks for them. This makes the existing
-+    // needsLoading -> loadFrame -> loadStatistics path run, which enables retrieval in the decoder
-+    // and re-decodes the current frame. It happens on a loading thread.
-+    emit SignalItemChanged(true, RECACHE_NONE);
-+}
-+
- void playlistItemCompressedVideo::getSupportedFileExtensions(QStringList &allExtensions,
-                                                              QStringList &filters)
- {
-diff --git a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
-index e6c74aa9..cb513574 100644
---- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
-+++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
-@@ -81,6 +83,9 @@ public:
-   // Return the source (YUV and statistics) values under the given pixel position.
-   virtual ValuePairListSets getPixelValues(const QPoint &pixelPos, int frameIdx) override;
- 
-+  stats::BlockInfo getBlockInfoAt(const QPoint &pixelPos, int frameIdx) override;
-+  void             setBlockInfoRequested(bool requested) override;
-+
-   virtual bool canBeUsedInProcessing() const override { return true; }
- 
-   // Add the file type filters and the extensions of files that we can load.
 diff --git a/YUViewLib/src/statistics/BlockInfo.h b/YUViewLib/src/statistics/BlockInfo.h
 new file mode 100644
 index 00000000..dc772309
@@ -1250,3 +1267,103 @@ index 00000000..18726321
 +  QPoint                 selectedPos;
 +  int                    selectedFrameIdx{-1};
 +};
+diff --git a/YUViewLib/src/decoder/decoderDav1d.cpp b/YUViewLib/src/decoder/decoderDav1d.cpp
+index 7792a962..8aa11982 100644
+--- a/YUViewLib/src/decoder/decoderDav1d.cpp
++++ b/YUViewLib/src/decoder/decoderDav1d.cpp
+@@ -37,6 +37,7 @@
+ #include <QSettings>
+ #include <cassert>
+ #include <cstring>
++#include <mutex>
+ 
+ #include <common/Functions.h>
+ #include <common/Typedef.h>
+@@ -776,10 +777,23 @@ void decoderDav1d::fillStatisticList(stats::StatisticsData &statisticsData) cons
+                                    "RTX_16X64",
+                                    "RTX_64X16"});
+   statisticsData.addStatType(transformDepth);
++
++  // Tell the block info query which types carry the block geometry. Every type above except the
++  // transform size is emitted on the coding block rect (see parseBlockPartition), so "Pred Mode"
++  // stands in for the coding block. This must be explicit: deriving it from geometry would pick the
++  // wrong rect for other decoders (libde265 emits its type 0 on the CTB rect).
++  statisticsData.setBlockRectTypeIDs(0 /* Pred Mode */, 26 /* Transform Size */);
+ }
+ 
+ void decoderDav1d::cacheStatistics(const Dav1dPictureWrapper &img)
+ {
++  /* This runs on a loading/caching thread and fills statisticsData through the unlocked at()
++   * accessor, while the GUI thread reads it (statistics painting, the zoom box, and the block info
++   * query). Hold the data's mutex for the whole frame: whole-frame granularity means it is taken
++   * once per decoded frame rather than per block, so it cannot ping-pong with the readers.
++   */
++  std::unique_lock<std::mutex> statisticsLock(this->statisticsData->accessMutex);
++
+   if (!internalsSupported || !this->statisticsEnabled())
+     return;
+ 
+diff --git a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+index 30dd3dfc..0dd84f77 100644
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+@@ -1137,12 +1218,44 @@ ValuePairListSets playlistItemCompressedVideo::getPixelValues(const QPoint &pixe
+   ValuePairListSets newSet;
+ 
+   newSet.append("YUV", this->video->getPixelValues(pixelPos, frameIdx));
+-  if (this->loadingDecoder->statisticsSupported() && this->loadingDecoder->statisticsEnabled())
++  // The decoder can be absent when allocateDecoder() failed; this is called from painting.
++  if (this->loadingDecoder && this->loadingDecoder->statisticsSupported() &&
++      this->loadingDecoder->statisticsEnabled())
+     newSet.append("Stats", this->statisticsData.getValuesAt(pixelPos));
+ 
+   return newSet;
+ }
+ 
++stats::BlockInfo playlistItemCompressedVideo::getBlockInfoAt(const QPoint &pixelPos, int frameIdx)
++{
++  if (!this->loadingDecoder || !this->loadingDecoder->statisticsSupported() ||
++      !this->loadingDecoder->statisticsEnabled())
++    return {};
++
++  auto info = this->statisticsData.getBlockInfoAt(pixelPos);
++
++  // The statistics can lag the displayed frame. One real case: when a frame cannot be decoded
++  // loadRawData() advances currentFrameIdx without decoding, so the cache still holds the previous
++  // frame. Reporting that as if it belonged to frameIdx would show the wrong block.
++  if (info.frameIndex != frameIdx)
++    return {};
++
++  return info;
++}
++
++void playlistItemCompressedVideo::setBlockInfoRequested(bool requested)
++{
++  if (this->statisticsData.isBlockInfoRequested() == requested)
++    return;
++
++  this->statisticsData.setBlockInfoRequested(requested);
++  if (requested)
++    // Statistics are only collected when something asks for them. This makes the existing
++    // needsLoading -> loadFrame -> loadStatistics path run, which enables retrieval in the decoder
++    // and re-decodes the current frame. It happens on a loading thread.
++    emit SignalItemChanged(true, RECACHE_NONE);
++}
++
+ void playlistItemCompressedVideo::getSupportedFileExtensions(QStringList &allExtensions,
+                                                              QStringList &filters)
+ {
+diff --git a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
+index e6c74aa9..cb513574 100644
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
+@@ -81,6 +83,9 @@ public:
+   // Return the source (YUV and statistics) values under the given pixel position.
+   virtual ValuePairListSets getPixelValues(const QPoint &pixelPos, int frameIdx) override;
+ 
++  stats::BlockInfo getBlockInfoAt(const QPoint &pixelPos, int frameIdx) override;
++  void             setBlockInfoRequested(bool requested) override;
++
+   virtual bool canBeUsedInProcessing() const override { return true; }
+ 
+   // Add the file type filters and the extensions of files that we can load.
