@@ -15,6 +15,7 @@ QT_VERSION="${QT_VERSION:-6.5.3}"
 QT_DIR="${QT_DIR:-$HOME/Qt}"
 TOOLSET="${TOOLSET:-gcc-toolset-13}"
 VENV="${VENV:-$HOME/.venv-aqt}"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 need_sudo=0
 
@@ -66,12 +67,15 @@ echo "== 3b. FFmpeg 공유 라이브러리 (런타임 dlopen; 빌드 의존 아�
 # YUView 는 avutil/swresample/avcodec/avformat 를 런타임에 dlopen 한다.
 # 없으면: 컨테이너 demux 불가, H.264 MV 통계 불가,
 #         그리고 AV1 분석이 전면 불가 (ParserAV1OBU 는 ParserAVFormat 경유로만 도달).
-# 지원 조합 (FFmpegVersionHandler.cpp:103-110) 중 FFmpeg 4.x = (56,58,58,3).
-if grep -qF "libavformat.so." <<<"$LDCACHE"; then
-    echo "   OK: $(grep -oE 'libavformat\.so\.[0-9]+' <<<"$LDCACHE" | sort -u | tr '\n' ' ')"
+# 별도 스크립트로 분리: 소스 빌드라 수 분 걸리고, 툴체인 설치와 수명이 다르다.
+# 상세 근거 -> docs/ai/10-research/ffmpeg-integration.md
+if [[ -e "$ROOT_DIR/build/YUViewApp/ffmpeg/libavformat.so.61" ]]; then
+    echo "   OK: build/YUViewApp/ffmpeg/ 에 배포됨"
+elif [[ -e "$HOME/opt/ffmpeg-7.1/lib/libavformat.so" ]]; then
+    echo "   설치됨 ($HOME/opt/ffmpeg-7.1) 이나 배포 안 됨 -> ./scripts/setup-ffmpeg.sh"
 else
     echo "   MISSING: libavformat / libavcodec / libavutil / libswresample"
-    echo "   -> sudo dnf install -y ffmpeg-libs        # rpmfusion-free, 4.4.8 = 지원 조합 (56,58,58,3)"
+    echo "   -> ./scripts/setup-ffmpeg.sh        # FFmpeg 7.1.2 shared 소스 빌드 (sudo 불필요)"
     echo "      (없어도 빌드/실행/raw YUV/H.264·HEVC AnnexB 분석은 가능. AV1 분석은 불가)"
 fi
 
