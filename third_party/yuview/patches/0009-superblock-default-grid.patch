@@ -1,0 +1,350 @@
+diff --git a/YUViewLib/src/decoder/decoderBase.h b/YUViewLib/src/decoder/decoderBase.h
+index 50d05bfe..9279d2c0 100644
+--- a/YUViewLib/src/decoder/decoderBase.h
++++ b/YUViewLib/src/decoder/decoderBase.h
+@@ -120,6 +120,10 @@ public:
+   video::yuv::PixelFormatYUV getPixelFormatYUV() const { return this->formatYUV; }
+   video::rgb::PixelFormatRGB getRGBPixelFormat() const { return this->formatRGB; }
+   Size                       getFrameSize() const { return this->frameSize; }
++  // The largest coding block the bitstream may use (AV1 superblock: 64 or 128), as signalled in the
++  // sequence header. 0 means the decoder does not report it or it is not known yet. Used by the view
++  // to pick a default grid size that lines up with the block partitioning.
++  unsigned                   getMaxBlockSize() const { return this->maxBlockSize; }
+   // Push data to the decoder (until no more data is needed)
+   // In order to make the interface generic, the pushData function accepts data only without start
+   // codes
+@@ -157,6 +161,9 @@ protected:
+   bool internalsSupported{false}; ///< Enable in the constructor if you support statistics
+   Size frameSize{};
+ 
++  unsigned maxBlockSize{0}; ///< Set by decoders that can read it from the sequence header. See
++                            ///< getMaxBlockSize().
++
+   // Some decoders are able to handel both YUV and RGB output
+   video::RawFormat           rawFormat{};
+   video::yuv::PixelFormatYUV formatYUV{};
+diff --git a/YUViewLib/src/decoder/decoderDav1d.cpp b/YUViewLib/src/decoder/decoderDav1d.cpp
+index 8aa11982..e5e61ea6 100644
+--- a/YUViewLib/src/decoder/decoderDav1d.cpp
++++ b/YUViewLib/src/decoder/decoderDav1d.cpp
+@@ -427,6 +427,8 @@ bool decoderDav1d::pushData(QByteArray &data)
+       if (bitDepth < 8 || bitDepth > 16)
+         DEBUG_DAV1D("decoderDav1d::pushData got invalid bit depth");
+       subBlockSize = (seq.sb128 >= 1) ? 128 : 64;
++      // Report the superblock size so the view can align its default grid with the partitioning.
++      this->maxBlockSize = subBlockSize;
+ 
+       this->frameSize = s;
+       this->formatYUV = video::yuv::PixelFormatYUV(subsampling, bitDepth);
+diff --git a/YUViewLib/src/playlistitem/playlistItem.h b/YUViewLib/src/playlistitem/playlistItem.h
+index a5217ae3..e6ac39ee 100644
+--- a/YUViewLib/src/playlistitem/playlistItem.h
++++ b/YUViewLib/src/playlistitem/playlistItem.h
+@@ -195,6 +195,12 @@ public:
+    */
+   virtual void setBlockInfoRequested(bool) {}
+ 
++  /* The largest coding block size the bitstream may use (AV1 superblock: 64 or 128), read from the
++   * sequence header. 0 means unknown / not applicable, which is the case for everything but a
++   * compressed video item decoded by a decoder that reports it.
++   */
++  virtual unsigned getMaxBlockSize() const { return 0; }
++
+   // If you want your item to be droppable onto a difference/resample object, return true here and
+   // return a valid video handler.
+   virtual bool                 canBeUsedInProcessing() const { return false; }
+diff --git a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+index 0dd84f77..544d0757 100644
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+@@ -1256,6 +1256,16 @@ void playlistItemCompressedVideo::setBlockInfoRequested(bool requested)
+     emit SignalItemChanged(true, RECACHE_NONE);
+ }
+ 
++unsigned playlistItemCompressedVideo::getMaxBlockSize() const
++{
++  // The decoder only knows this once the sequence header was pushed, so this returns 0 until the
++  // first frame was decoded. Callers must be able to deal with that and ask again later.
++  QMutexLocker<QRecursiveMutex> locker(&this->decoderAccessMutex);
++  if (!this->loadingDecoder)
++    return 0;
++  return this->loadingDecoder->getMaxBlockSize();
++}
++
+ void playlistItemCompressedVideo::getSupportedFileExtensions(QStringList &allExtensions,
+                                                              QStringList &filters)
+ {
+diff --git a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
+index cb513574..d1c48de0 100644
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
+@@ -85,6 +85,7 @@ public:
+ 
+   stats::BlockInfo getBlockInfoAt(const QPoint &pixelPos, int frameIdx) override;
+   void             setBlockInfoRequested(bool requested) override;
++  unsigned         getMaxBlockSize() const override;
+ 
+   virtual bool canBeUsedInProcessing() const override { return true; }
+ 
+@@ -171,7 +172,8 @@ protected:
+   // destroys and recreates both from the GUI thread (decoder combo box), while the loading and
+   // caching threads dereference them in loadRawData()/loadStatistics(). Without this the switch
+   // is a use-after-free.
+-  QRecursiveMutex decoderAccessMutex;
++  // mutable so that const accessors (getMaxBlockSize) can lock it too.
++  mutable QRecursiveMutex decoderAccessMutex;
+ 
+   stats::StatisticUIHandler statisticsUIHandler;
+   stats::StatisticsData     statisticsData;
+diff --git a/YUViewLib/src/ui/views/SplitViewWidget.cpp b/YUViewLib/src/ui/views/SplitViewWidget.cpp
+index 8ddd9986..b4eec89d 100644
+--- a/YUViewLib/src/ui/views/SplitViewWidget.cpp
++++ b/YUViewLib/src/ui/views/SplitViewWidget.cpp
+@@ -65,6 +65,10 @@ constexpr auto SPLITVIEWWIDGET_SPLITTER_CLIPX = 10.0;
+ // and outside the range of the Jet colour map that the block statistics overlays use (blue - cyan -
+ // yellow - red), so it stays distinguishable on top of them.
+ const QColor BLOCK_SELECTION_COLOR = QColor(255, 20, 147);
++// The colour of the grid when its size was derived from the bitstream (the AV1 superblock size),
++// matching VQAnalyzer's superblock grid. A grid size the user picked from the menu keeps using the
++// configurable View/GridColor instead.
++const QColor SUPERBLOCK_GRID_COLOR = QColor(0, 112, 255);
+ // The font and size of the text that will be drawn in the top left corner indicating the zoom
+ // factor
+ const QString SPLITVIEWWIDGET_ZOOMFACTOR_FONT     = "helvetica";
+@@ -1029,31 +1033,144 @@ void splitViewWidget::setDrawZoomBox(bool drawZoomBox, bool setOtherViewIfLinked
+     update();
+ }
+ 
++QColor splitViewWidget::gridColor() const
++{
++  return this->regularGridSizeUserSet ? this->regularGridColor : SUPERBLOCK_GRID_COLOR;
++}
++
++void splitViewWidget::applyDefaultGridSizeFromItem(playlistItem *item)
++{
++  if (this->regularGridSizeUserSet || !item)
++    return;
++
++  const auto maxBlockSize = item->getMaxBlockSize();
++  if (maxBlockSize == 0)
++    // Not an item with a known block size, or the sequence header was not parsed yet. Keep whatever
++    // we have; update() calls us again on the next frame/redraw.
++    return;
++
++  if (this->regularGridSize == static_cast<int>(maxBlockSize))
++    return;
++
++  this->setRegularGridSize(static_cast<int>(maxBlockSize), true, false, false);
++}
++
+ void splitViewWidget::paintRegularGrid(QPainter *painter, playlistItem *item)
+ {
+   if (this->regularGridSize == 0)
+     return;
+ 
+   auto itemSize = item->getSize() * this->zoomFactor;
+-  painter->setPen(regularGridColor);
++  painter->setPen(this->gridColor());
+ 
+-  // Draw horizontal lines
+-  const auto xMin     = -itemSize.width() / 2;
+-  const auto xMax     = itemSize.width() / 2;
+   const auto gridZoom = this->regularGridSize * this->zoomFactor;
+-  for (int y = 1; y <= (itemSize.height() - 1) / gridZoom; y++)
++
++  if (this->fullCellGrid())
+   {
+-    int yPos = (-itemSize.height() / 2) + y * gridZoom;
+-    painter->drawLine(xMin, yPos, xMax, yPos);
+-  }
++    /* The superblock grid: the picture size is not a multiple of the superblock size in general, so
++     * the last row/column of superblocks sticks out of the picture. Draw those cells at their real
++     * size (and close the grid on all four sides), which is what VQAnalyzer shows.
++     */
++    const auto extent = this->gridExtent(item);
++    const auto xMin   = -itemSize.width() / 2;
++    const auto yMin   = -itemSize.height() / 2;
+ 
+-  // Draw vertical lines
+-  const auto yMin = -itemSize.height() / 2;
+-  const auto yMax = itemSize.height() / 2;
+-  for (int x = 1; x <= (itemSize.width() - 1) / gridZoom; x++)
++    for (int y = 0; y <= extent.height(); y++)
++    {
++      const int yPos = yMin + static_cast<int>(y * gridZoom);
++      painter->drawLine(xMin, yPos, xMin + static_cast<int>(extent.width() * gridZoom), yPos);
++    }
++    for (int x = 0; x <= extent.width(); x++)
++    {
++      const int xPos = xMin + static_cast<int>(x * gridZoom);
++      painter->drawLine(xPos, yMin, xPos, yMin + static_cast<int>(extent.height() * gridZoom));
++    }
++  }
++  else
+   {
+-    int xPos = (-itemSize.width() / 2) + x * gridZoom;
+-    painter->drawLine(xPos, yMin, xPos, yMax);
++    // Draw horizontal lines
++    const auto xMin = -itemSize.width() / 2;
++    const auto xMax = itemSize.width() / 2;
++    for (int y = 1; y <= (itemSize.height() - 1) / gridZoom; y++)
++    {
++      int yPos = (-itemSize.height() / 2) + y * gridZoom;
++      painter->drawLine(xMin, yPos, xMax, yPos);
++    }
++
++    // Draw vertical lines
++    const auto yMin = -itemSize.height() / 2;
++    const auto yMax = itemSize.height() / 2;
++    for (int x = 1; x <= (itemSize.width() - 1) / gridZoom; x++)
++    {
++      int xPos = (-itemSize.width() / 2) + x * gridZoom;
++      painter->drawLine(xPos, yMin, xPos, yMax);
++    }
++  }
++
++  this->paintRegularGridIndices(painter, item);
++}
++
++bool splitViewWidget::fullCellGrid() const
++{
++  // Only the bitstream-derived grid describes real blocks, so only it may draw cells that reach
++  // outside the picture. A grid size the user picked is just a ruler and stays inside.
++  return !this->regularGridSizeUserSet;
++}
++
++QSize splitViewWidget::gridExtent(playlistItem *item) const
++{
++  const auto frameSize = item->getSize();
++  const auto cells     = [this](int length) {
++    return (length + this->regularGridSize - 1) / this->regularGridSize;
++  };
++  return QSize(cells(frameSize.width()), cells(frameSize.height()));
++}
++
++void splitViewWidget::paintRegularGridIndices(QPainter *painter, playlistItem *item)
++{
++  const auto frameSize = item->getSize();
++  const auto gridZoom  = this->regularGridSize * this->zoomFactor;
++  // Below this the labels of neighboring cells would touch and only add noise.
++  if (gridZoom < 16)
++    return;
++
++  const auto itemSize = frameSize * this->zoomFactor;
++  const auto xMin     = -itemSize.width() / 2;
++  const auto yMin     = -itemSize.height() / 2;
++
++  // The last row/column may be a partial cell; it still gets an index. When the cells are drawn at
++  // full size the label is centered in the full cell, otherwise only in the part inside the picture.
++  const auto extent  = this->gridExtent(item);
++  const bool fullCell = this->fullCellGrid();
++
++  const QFont indexFont = QFont(SPLITVIEWWIDGET_ZOOMFACTOR_FONT, 9);
++  painter->setFont(indexFont);
++  painter->setPen(this->gridColor());
++  const QFontMetrics metrics(indexFont);
++  const int          labelHeight = metrics.height();
++
++  // Column indices above the picture
++  for (int x = 0; x < extent.width(); x++)
++  {
++    const int cellStart = static_cast<int>(x * gridZoom);
++    int       cellEnd   = static_cast<int>((x + 1) * gridZoom);
++    if (!fullCell && cellEnd > itemSize.width())
++      cellEnd = itemSize.width();
++    const QRect textRect(
++        xMin + cellStart, yMin - labelHeight - 2, cellEnd - cellStart, labelHeight);
++    painter->drawText(textRect, Qt::AlignCenter, QString::number(x));
++  }
++
++  // Row indices left of the picture
++  const int labelWidth = metrics.horizontalAdvance(QString::number(extent.height() - 1)) + 4;
++  for (int y = 0; y < extent.height(); y++)
++  {
++    const int cellStart = static_cast<int>(y * gridZoom);
++    int       cellEnd   = static_cast<int>((y + 1) * gridZoom);
++    if (!fullCell && cellEnd > itemSize.height())
++      cellEnd = itemSize.height();
++    const QRect textRect(xMin - labelWidth - 2, yMin + cellStart, labelWidth, cellEnd - cellStart);
++    painter->drawText(textRect, Qt::AlignCenter, QString::number(y));
+   }
+ }
+ 
+@@ -1648,10 +1765,14 @@ void splitViewWidget::setViewSplitMode(ViewSplitMode mode,
+ 
+ void splitViewWidget::setRegularGridSize(const int  size,
+                                          const bool setOtherViewIfLinked,
+-                                         const bool callUpdate)
++                                         const bool callUpdate,
++                                         const bool userChoice)
+ {
+   if (this->enableLink && setOtherViewIfLinked)
+-    this->getOtherWidget()->setRegularGridSize(size, false, callUpdate);
++    this->getOtherWidget()->setRegularGridSize(size, false, callUpdate, userChoice);
++
++  if (userChoice)
++    this->regularGridSizeUserSet = true;
+ 
+   if (this->regularGridSize == size)
+     return;
+@@ -1813,6 +1934,11 @@ void splitViewWidget::update(bool newFrame, bool itemRedraw)
+     // That does not necessarily mean a paint event. First check if one of the items needs to load
+     // first.
+     auto item           = playlist->getSelectedItems();
++
++    // The superblock size is only known after the sequence header was parsed, so this has to be
++    // retried until it succeeds rather than done once when the item is selected.
++    this->applyDefaultGridSizeFromItem(item[0]);
++
+     int  frameIdx       = playback->getCurrentFrame();
+     bool loadRawData    = showRawData() && !playing;
+     bool itemLoading[2] = {false, false};
+@@ -2373,7 +2499,10 @@ void splitViewWidget::getStateFromMaster()
+   const auto mainView = this->getOtherWidget();
+   this->setViewSplitMode(mainView->viewSplitMode, false);
+   this->setSplittingPoint(mainView->splittingPoint, false);
+-  this->setRegularGridSize(mainView->regularGridSize, false);
++  // Take over whether the master's size is a user choice or a bitstream default, so that the
++  // separate view keeps following the bitstream if the master does.
++  this->setRegularGridSize(
++      mainView->regularGridSize, false, false, mainView->regularGridSizeUserSet);
+   this->setDrawZoomBox(mainView->drawZoomBox, false);
+ 
+   this->updateMouseTracking();
+diff --git a/YUViewLib/src/ui/views/SplitViewWidget.h b/YUViewLib/src/ui/views/SplitViewWidget.h
+index f636c97b..3f823a56 100644
+--- a/YUViewLib/src/ui/views/SplitViewWidget.h
++++ b/YUViewLib/src/ui/views/SplitViewWidget.h
+@@ -310,12 +310,31 @@ protected:
+ 
+   // Regular grid
+   int  regularGridSize{0}; //!< The size of each block in the regular grid in pixels
++  /* userChoice == false marks the size as a default that may be replaced again when another item is
++   * selected. Everything that originates from the user (the grid menu) must leave it at true.
++   */
+   void setRegularGridSize(const int  size,
+                           const bool setOtherViewIfLinked = true,
+-                          const bool callUpdate           = false);
++                          const bool callUpdate           = false,
++                          const bool userChoice           = true);
++
++  //!< The user picked a grid size from the menu, so stop deriving one from the bitstream.
++  bool regularGridSizeUserSet{false};
++  /* Use the item's max coding block size (the AV1 superblock size from the sequence header) as the
++   * grid size. Does nothing once the user has chosen a size, or while the item does not know it yet.
++   */
++  void applyDefaultGridSizeFromItem(playlistItem *item);
+ 
+   QColor regularGridColor;
++  //!< The configured colour, or the superblock colour while the size comes from the bitstream.
++  QColor gridColor() const;
+   void   paintRegularGrid(QPainter *painter, playlistItem *item); //!< paint the grid
++  //!< Row/column indices along the top/left border of the grid, like VQAnalyzer's superblock view.
++  void   paintRegularGridIndices(QPainter *painter, playlistItem *item);
++  //!< May the grid draw cells that reach outside the picture? Only the bitstream-derived one may.
++  bool   fullCellGrid() const;
++  //!< The grid size in cells (columns, rows), rounding the partial last cell up.
++  QSize  gridExtent(playlistItem *item) const;
+ 
+   // Pointers to the playlist tree widget, the playback controller and the VideoCache
+   QPointer<PlaylistTreeWidget> playlist;
