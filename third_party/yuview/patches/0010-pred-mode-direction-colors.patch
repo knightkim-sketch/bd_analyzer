@@ -1,0 +1,49 @@
+diff --git a/YUViewLib/src/decoder/decoderDav1d.cpp b/YUViewLib/src/decoder/decoderDav1d.cpp
+index e5e61ea6..04d9ed19 100644
+--- a/YUViewLib/src/decoder/decoderDav1d.cpp
++++ b/YUViewLib/src/decoder/decoderDav1d.cpp
+@@ -590,9 +590,19 @@ void decoderDav1d::fillStatisticList(stats::StatisticsData &statisticsData) cons
+ {
+   using namespace stats::color;
+ 
+-  stats::StatisticsType predMode(0, "Pred Mode", ColorMapper({0, 1}, PredefinedType::Jet));
+-  predMode.description = "The prediction mode (intra/inter) per block";
+-  predMode.setMappingValues({"INTRA", "INTER"});
++  /* One fixed colour per prediction class instead of a gradient, so the overlay can be read without
++   * consulting a legend: intra green, single reference red when it points into the past and blue
++   * when it points into the future, compound (two references) purple.
++   */
++  const ColorMap predModeColors = {{0, Color(0, 200, 0)},     // INTRA
++                                   {1, Color(255, 0, 0)},     // SINGLE_REF_FWD
++                                   {2, Color(0, 0, 255)},     // SINGLE_REF_BWD
++                                   {3, Color(160, 0, 200)}};  // COMPOUND
++  stats::StatisticsType predMode(
++      0, "Pred Mode", ColorMapper(predModeColors, Color(128, 128, 128)));
++  predMode.description = "The prediction mode per block: intra, single reference (forward or "
++                         "backward) or compound";
++  predMode.setMappingValues({"INTRA", "SINGLE_REF_FWD", "SINGLE_REF_BWD", "COMPOUND"});
+   statisticsData.addStatType(predMode);
+ 
+   // LastActiveSegId indicates the real maximum. But that can also vary per frame.
+@@ -934,8 +944,19 @@ void decoderDav1d::parseBlockPartition(Av1Block       *blockData,
+   const auto cbHeight = blockHeight4 * 4;
+ 
+   // Set prediction mode (ID 0)
+-  const bool isIntra  = (b.intra != 0);
+-  const int  predMode = isIntra ? 0 : 1;
++  const bool isIntra = (b.intra != 0);
++  int        predMode;
++  if (isIntra)
++    predMode = 0; // INTRA
++  else if ((CompInterType)b.comp_type != COMP_INTER_NONE)
++    predMode = 3; // COMPOUND - two references, so it has no single direction
++  else
++    /* Single reference. dav1d numbers the references 0-based (0 LAST, 1 LAST2, 2 LAST3, 3 GOLDEN,
++     * 4 BWDREF, 5 ALTREF2, 6 ALTREF), so 0-3 point into the past and 4-6 into the future. Verified
++     * against decoded streams: ref[0] of an inter block takes the value 0, which under the spec's
++     * numbering would be INTRA_FRAME and therefore impossible.
++     */
++    predMode = (b.ref[0] >= 4) ? 2 /* SINGLE_REF_BWD */ : 1 /* SINGLE_REF_FWD */;
+   this->statisticsData->at(0).addBlockValue(cbPosX, cbPosY, cbWidth, cbHeight, predMode);
+ 
+   bool FrameIsIntra = (frameInfo.frameType == DAV1D_FRAME_TYPE_KEY ||
