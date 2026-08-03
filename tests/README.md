@@ -31,6 +31,7 @@ GUI 없이(`QT_QPA_PLATFORM=offscreen`) upstream YUView 의 **프로덕션 클�
 | `08-decoder-switch-stress` | 위를 40회 반복 + 워커 동시 디코딩 |
 | `09-block-info-query` | 클릭 지점의 블록 조회. 렌더링이 꺼진 기본 상태에서도 통계가 수집되어야 함 |
 | `10-superblock-grid-size` | sequence header 의 superblock 크기를 읽어 기본 격자로 쓰는 경로. 사용자 선택이 우선 |
+| `11-block-partition-tiling` | coding block 이 화면을 정확히 1번씩 덮어야 함 (VERT_B 좌표 오류 / 중복 emit) |
 
 ## 테스트 데이터
 

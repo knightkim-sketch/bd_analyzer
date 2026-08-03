@@ -1,0 +1,64 @@
+diff --git a/YUViewLib/src/decoder/decoderDav1d.cpp b/YUViewLib/src/decoder/decoderDav1d.cpp
+index 04d9ed19..245ab832 100644
+--- a/YUViewLib/src/decoder/decoderDav1d.cpp
++++ b/YUViewLib/src/decoder/decoderDav1d.cpp
+@@ -821,9 +821,23 @@ void decoderDav1d::cacheStatistics(const Dav1dPictureWrapper &img)
+ 
+   const int sb_step = subBlockSize >> 2;
+ 
+-  for (unsigned y = 0; y < frameInfo.frameSizeAligned.height; y += sb_step)
+-    for (unsigned x = 0; x < frameInfo.frameSizeAligned.width; x += sb_step)
+-      parseBlockRecursive(blockData, x, y, BL_128X128, frameInfo);
++  /* The recursion has to start at the level that matches the actual superblock size. Starting at
++   * BL_128X128 makes each call cover a 128x128 area, so for a 64x64-superblock stream - where the
++   * loop advances by one 64x64 superblock - the four quadrants of one call are the neighboring
++   * superblocks, and every block ends up emitted once per call that reaches it: 1, 2 or 4 times
++   * depending on how far it is from the picture border.
++   */
++  const BlockLevel sbLevel = (subBlockSize == 128) ? BL_128X128 : BL_64X64;
++
++  /* sizeInBlocks is in 4x4 units, which is what sb_step and the x/y below are. frameSizeAligned is
++   * in pixels, so iterating to it ran 16x16 instead of 3x3 starting calls for a 176x144 picture and
++   * read block data past the end of each row (b4_stride is far smaller than the aligned pixel
++   * width). Those extra calls emitted nothing only because parseBlockPartition drops out-of-picture
++   * positions.
++   */
++  for (unsigned y = 0; y < frameInfo.sizeInBlocks.height; y += sb_step)
++    for (unsigned x = 0; x < frameInfo.sizeInBlocks.width; x += sb_step)
++      parseBlockRecursive(blockData, x, y, sbLevel, frameInfo);
+ }
+ 
+ void decoderDav1d::parseBlockRecursive(
+@@ -888,8 +902,13 @@ void decoderDav1d::parseBlockRecursive(
+       parseBlockPartition(blockData, x + o, y, bs / 2, bs, frameInfo);
+       break;
+     case PARTITION_T_RIGHT_SPLIT: // PARTITION_VERT_B
++      /* Left half is one full height block, right half is split into two. The second call used to
++       * pass (x, y + o), which is inside the left block: that reported an overlapping block on the
++       * left and never reported the right-top one. Compare PARTITION_T_LEFT_SPLIT above, which is
++       * the mirrored case and was already correct.
++       */
+       parseBlockPartition(blockData, x, y, bs / 2, bs, frameInfo);
+-      parseBlockPartition(blockData, x, y + o, bs / 2, bs / 2, frameInfo);
++      parseBlockPartition(blockData, x + o, y, bs / 2, bs / 2, frameInfo);
+       parseBlockPartition(blockData, x + o, y + o, bs / 2, bs / 2, frameInfo);
+       break;
+     case PARTITION_H4: // PARTITION_HORZ_4
+diff --git a/YUViewLib/src/statistics/StatisticsData.cpp b/YUViewLib/src/statistics/StatisticsData.cpp
+index 1324aa23..fa2b369a 100644
+--- a/YUViewLib/src/statistics/StatisticsData.cpp
++++ b/YUViewLib/src/statistics/StatisticsData.cpp
+@@ -330,10 +330,9 @@ BlockInfo StatisticsData::getBlockInfoAt(const QPoint &pos) const
+ 
+   info.frameIndex = this->frameIdx;
+ 
+-  // The dav1d analyzer fork emits every block two to four times (its recursion always starts at
+-  // BL_128X128 while the outer loop already steps per sub block), so the same (type, rect, value)
+-  // triple shows up repeatedly. Deduplicate on exactly that triple; measured on real output the
+-  // duplicates never disagree, so nothing is lost.
++  // Deduplicate on the (type, rect, value) triple. The dav1d traversal used to emit every block two
++  // to four times, which this absorbed; that is fixed at the source now, but decoders are still free
++  // to report a block more than once and repeating it in the pane would only be noise.
+   const auto alreadyHaveValue = [&info](int typeID, const QRect &rect, int value) {
+     for (const auto &e : info.entries)
+       if (e.typeID == typeID && e.rect == rect && e.hasRawValue && e.rawValue == value)

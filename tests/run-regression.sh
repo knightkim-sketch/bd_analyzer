@@ -114,10 +114,13 @@ if [[ -e "$APPDIR/decoder/libdav1d-internals.so" ]]; then
     run_test "$ROOT/tests/regression/03-dav1d-block-statistics.cpp"       "$STREAM"
     run_test "$ROOT/tests/regression/09-block-info-query.cpp"             "$STREAM"
     run_test "$ROOT/tests/regression/10-superblock-grid-size.cpp"          "$STREAM"
+    run_test "$ROOT/tests/regression/11-block-partition-tiling.cpp"        "$STREAM"
 else
     echo "  SKIP  03-dav1d-block-statistics (libdav1d-internals.so 없음)"
     ((skip_count++))
     echo "  SKIP  10-superblock-grid-size (libdav1d-internals.so 없음)"
+    ((skip_count++))
+    echo "  SKIP  11-block-partition-tiling (libdav1d-internals.so 없음)"
     ((skip_count++))
     run_test "$ROOT/tests/regression/05-decoder-default-and-fallback.cpp" "$STREAM" FFMpeg
 fi
