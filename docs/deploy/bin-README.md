@@ -26,8 +26,18 @@ Qt 경로(`/home/knight2/Qt/6.5.3/gcc_64/lib`)를 가리키고 있어서, 그 �
 | `plugins/platforms/` | `libqxcb.so` | **필수.** 없으면 "could not load the Qt platform plugin xcb" 로 죽는다 |
 | `plugins/imageformats/`, `iconengines/`, `tls/` | 이미지/아이콘/TLS | 아이콘 렌더링, 업데이트 확인 |
 | `plugins/platforminputcontexts/`, `platformthemes/` | 입력기/테마 | 선택. 대상에 ibus/GTK3 이 없으면 Qt 가 조용히 건너뛴다 |
+| `syslib/` | X11 / xcb / xkb 헬퍼 20개 | xcb 플랫폼 플러그인이 요구. `xcb-util-*` 는 GUI 없는 설치에 대개 없어서 번들에 넣었다 |
 | `ffmpeg/` | libavcodec/avformat/avutil/swresample | YUView 가 `applicationDirPath()/ffmpeg/` 에서 dlopen. **libdav1d 가 avcodec 안에 static 내장** |
 | `decoder/libdav1d-internals.so` | dav1d analyzer fork | 블록 통계(Pred Mode 등). 없으면 FFmpeg 디코더로 폴백되고 통계가 안 나온다 |
+| `check-deps.sh` | 진단 | 대상 머신에서 부족한 라이브러리를 한 번에 보고 |
+
+## 새 머신에서 먼저 할 것
+
+```bash
+./check-deps.sh
+```
+
+부족한 라이브러리가 있으면 이름과 함께 보고한다. 아무것도 없으면 바로 `./YUView.sh`.
 
 ## static 이 아닌 이유 — 확인된 사실
 
@@ -55,28 +65,60 @@ Qt 경로(`/home/knight2/Qt/6.5.3/gcc_64/lib`)를 가리키고 있어서, 그 �
 `libidn2`, `krb5-libs`, `libcom_err`, `keyutils-libs`, `libgcrypt`, `libgpg-error`,
 `libtirpc`, `libnsl2`, `nss_nis`, `freetype`, `fontconfig`, `libpng`
 
-**최소 설치에서 빠질 수 있는 것 — 이것들이 실제 위험 지점이다:**
+X11/xcb 계열 20개는 **번들의 `syslib/` 에 들어 있으므로 설치하지 않아도 된다.**
+실제로 bm32 에서 났던 오류가 이것이었다:
 
-```bash
-sudo dnf install -y \
-    libglvnd-glx libglvnd-egl libX11 libX11-xcb libXau libXext libxcb \
-    libxkbcommon libxkbcommon-x11 \
-    xcb-util xcb-util-image xcb-util-keysyms xcb-util-renderutil \
-    xcb-util-wm xcb-util-cursor \
-    fontconfig freetype
+```
+qt.qpa.plugin: From 6.5.0, xcb-cursor0 or libxcb-cursor0 is needed to load the Qt xcb platform plugin.
+qt.qpa.plugin: Could not load the Qt platform plugin "xcb" in "" even though it was found.
+Aborted (core dumped)
 ```
 
-`xcb-util-*` 와 `libxkbcommon-x11` 은 Qt 의 xcb 플랫폼 플러그인이 요구하는데
-GUI 를 쓰지 않는 서버 설치에는 없는 경우가 많다. 하나라도 없으면 Qt 가
-플랫폼 플러그인을 로드하지 못해 즉시 종료된다.
+`libxcb-cursor.so.0` (`xcb-util-cursor` 패키지) 가 없어서 실패한 것이다. Qt 6.5 부터
+xcb 플러그인의 필수 의존성인데 GUI 를 쓰지 않는 Rocky 설치에는 대개 없다. 지금은
+`syslib/` 에 번들되어 있고, `LD_LIBRARY_PATH` 가 `/lib64` 보다 먼저 검색되므로
+대상 머신에 있든 없든 번들 쪽이 쓰인다.
 
-GUI 이므로 X11 디스플레이(또는 X 포워딩)가 필요하다. OpenGL 은 `libglvnd` 경유로
-소프트웨어 렌더링도 동작한다.
+**아직 대상 머신에 필요한 것 — 남은 위험 지점:**
+
+```bash
+sudo dnf install -y libglvnd-glx libglvnd-egl fontconfig freetype xkeyboard-config
+```
+
+* `libglvnd-*` (libGL/libEGL): 그래픽 드라이버와 결합되어 있어 번들에 넣지 않았다.
+  빌드 머신 것을 복사하면 대상의 드라이버와 어긋날 수 있다.
+* `fontconfig`, `freetype`: 번들해도 폰트 데이터가 없으면 의미가 없어 제외했다.
+* `xkeyboard-config`: 라이브러리가 아니라 `/usr/share/X11/xkb` 데이터다.
+  없으면 libxkbcommon 이 키보드를 초기화하지 못한다.
+
+GUI 이므로 X11 디스플레이(또는 X 포워딩)가 필요하다.
+
+세션 D-Bus 가 없으면 `qt.qpa.theme.dbus: Session DBus not running` 경고가 나오지만
+실행에는 영향이 없다. `qt.tlsbackend.ossl: Incompatible version of OpenSSL` 도
+업데이트 확인에만 쓰이므로 무해하다.
 
 ## 검증 방법
 
-번들이 자기충족적인지 확인하려면 프로젝트 밖으로 복사해 정리된 환경에서 실행하고,
-빌드 머신 경로에서 로드되는 것이 없는지 본다:
+### 라이브러리가 없는 머신 재현
+
+사용자 네임스페이스로 시스템 라이브러리를 가려서 대상 머신 상황을 그대로 만들 수 있다.
+`syslib/` 번들이 실제로 문제를 해결하는지 이 방법으로 확인했다:
+
+```bash
+: > /tmp/empty.so
+unshare -rm bash -c '
+  mount --bind /tmp/empty.so /lib64/libxcb-cursor.so.0
+  # A) syslib 없이 → bm32 와 동일한 오류로 abort
+  LD_LIBRARY_PATH=bin/lib:bin/ffmpeg QT_PLUGIN_PATH=bin/plugins ./bin/YUView test.ivf
+  # B) 런처로 → 정상 실행
+  ./bin/YUView.sh test.ivf
+'
+```
+
+### 번들 자기충족성
+
+프로젝트 밖으로 복사해 정리된 환경에서 실행하고, 빌드 머신 경로에서 로드되는 것이
+없는지 본다:
 
 ```bash
 cp -r bin /tmp/sim/yuview && cd /tmp/sim
