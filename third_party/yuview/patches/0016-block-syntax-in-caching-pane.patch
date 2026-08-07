@@ -1,0 +1,110 @@
+diff --git a/YUViewLib/src/ui/Mainwindow.cpp b/YUViewLib/src/ui/Mainwindow.cpp
+index 44a77655..cc2bd326 100644
+--- a/YUViewLib/src/ui/Mainwindow.cpp
++++ b/YUViewLib/src/ui/Mainwindow.cpp
+@@ -152,6 +152,29 @@ MainWindow::MainWindow(bool useAlternativeSources, QWidget *parent) : QMainWindo
+           ui.blockInfoWidget,
+           &BlockInfoWidget::refresh);
+ 
++  /* The caching info pane hosts a second copy of the block syntax table (the caching thread list it
++   * used to show was removed). Same signals as the dock above.
++   */
++  if (auto *cachingBlockInfo = ui.cachingInfoWidget->getBlockInfoWidget())
++  {
++    connect(ui.playlistTreeWidget,
++            &PlaylistTreeWidget::selectionRangeChanged,
++            cachingBlockInfo,
++            &BlockInfoWidget::currentSelectedItemsChanged);
++    connect(ui.playlistTreeWidget,
++            &PlaylistTreeWidget::selectedItemChanged,
++            cachingBlockInfo,
++            &BlockInfoWidget::refresh);
++    connect(ui.displaySplitView,
++            &splitViewWidget::blockSelected,
++            cachingBlockInfo,
++            &BlockInfoWidget::setSelectedBlock);
++    connect(&separateViewWindow.splitView,
++            &splitViewWidget::blockSelected,
++            cachingBlockInfo,
++            &BlockInfoWidget::setSelectedBlock);
++  }
++
+   /* Frame Info: the pixel side of the same click. The block statistics are computed in the background,
+    * so the widget both asks for them and is told when they arrive.
+    */
+diff --git a/YUViewLib/src/ui/widgets/VideoCacheInfoWidget.cpp b/YUViewLib/src/ui/widgets/VideoCacheInfoWidget.cpp
+index 7528aeda..6fe9621c 100644
+--- a/YUViewLib/src/ui/widgets/VideoCacheInfoWidget.cpp
++++ b/YUViewLib/src/ui/widgets/VideoCacheInfoWidget.cpp
+@@ -32,6 +32,8 @@
+ 
+ #include "VideoCacheInfoWidget.h"
+ 
++#include <ui/widgets/BlockInfoWidget.h>
++
+ #include <QGroupBox>
+ #include <QPainter>
+ #include <QSettings>
+@@ -141,13 +143,20 @@ VideoCacheInfoWidget::VideoCacheInfoWidget(QWidget *parent) : QWidget(parent)
+   statusWidget = new VideoCacheStatusWidget(this);
+   statusWidget->setMinimumHeight(20);
+ 
+-  // Create a QGroupBox with text label inside
+-  QGroupBox *groupBox = new QGroupBox("Details", this);
++  /* The group used to list the state of every caching thread (T0..T20). That is debug output nobody
++   * reads, and it took the most valuable spot in the left column, so it is not displayed any more:
++   * cachingInfoLabel is still filled by onUpdateCacheStatus() but is no longer in any layout. The
++   * space now holds the syntax of the clicked block, which is what one actually looks at while
++   * analyzing a stream. The progress bar above stays - that part is useful.
++   */
++  QGroupBox *groupBox = new QGroupBox("Block Syntax", this);
+   groupBox->setCheckable(true);
+   QVBoxLayout *vbox = new QVBoxLayout;
+   cachingInfoLabel  = new QLabel("", this);
+   cachingInfoLabel->setAlignment(Qt::AlignTop);
+-  vbox->addWidget(cachingInfoLabel);
++  cachingInfoLabel->hide();
++  blockInfoWidget = new BlockInfoWidget(this);
++  vbox->addWidget(blockInfoWidget);
+   groupBox->setLayout(vbox);
+ 
+   // Add everything to a vertical layout
+@@ -162,10 +171,10 @@ VideoCacheInfoWidget::VideoCacheInfoWidget(QWidget *parent) : QWidget(parent)
+ 
+ void VideoCacheInfoWidget::onGroupBoxToggled(bool on)
+ {
+-  if (cachingInfoLabel == nullptr)
++  if (blockInfoWidget == nullptr)
+     return;
+ 
+-  cachingInfoLabel->setVisible(on);
++  blockInfoWidget->setVisible(on);
+ }
+ 
+ void VideoCacheInfoWidget::onUpdateCacheStatus()
+diff --git a/YUViewLib/src/ui/widgets/VideoCacheInfoWidget.h b/YUViewLib/src/ui/widgets/VideoCacheInfoWidget.h
+index dab798f4..516f3b5f 100644
+--- a/YUViewLib/src/ui/widgets/VideoCacheInfoWidget.h
++++ b/YUViewLib/src/ui/widgets/VideoCacheInfoWidget.h
+@@ -74,6 +74,10 @@ public:
+     cache    = vCache;
+   };
+ 
++public:
++  //!< The block syntax table hosted in this pane. Never null after construction.
++  class BlockInfoWidget *getBlockInfoWidget() const { return this->blockInfoWidget; }
++
+ public slots:
+   void onUpdateCacheStatus();
+ 
+@@ -83,6 +87,10 @@ private slots:
+ private:
+   VideoCacheStatusWidgetNamespace::VideoCacheStatusWidget *statusWidget{nullptr};
+   QLabel *                                                 cachingInfoLabel{nullptr};
++  /* Shows the syntax of the clicked block in the space the caching thread list used to occupy. The
++   * main window wires it to the same signals as the Block Info dock.
++   */
++  class BlockInfoWidget *                                   blockInfoWidget{nullptr};
+ 
+   PlaylistTreeWidget *playlist{nullptr};
+   video::VideoCache * cache{nullptr};
