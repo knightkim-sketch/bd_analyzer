@@ -127,6 +127,23 @@ fi
 run_test "$ROOT/tests/regression/06-ffmpeg-library-unload.cpp"        "$STREAM"
 
 echo
+echo "== raw YUV 픽셀 분석 (블록 통계 / 캐시 / 히스토그램 / convolution) =="
+# 이 테스트는 raw YUV 파일을 쓴다. 없으면 ffmpeg 로 만든다.
+RAWYUV="$DATA/test_176x144_yuv420p.yuv"
+if [[ ! -s "$RAWYUV" ]]; then
+    ff="$(command -v ffmpeg || echo /usr/local/bin/ffmpeg)"
+    [[ -x "$ff" ]] && "$ff" -hide_banner -loglevel error -y \
+        -f lavfi -i "testsrc2=size=176x144:rate=25:duration=1" \
+        -pix_fmt yuv420p "$RAWYUV" >/dev/null 2>&1
+fi
+if [[ -s "$RAWYUV" ]]; then
+    run_test "$ROOT/tests/regression/12-raw-yuv-pixel-analysis.cpp"    "$RAWYUV"
+else
+    echo "  SKIP  12-raw-yuv-pixel-analysis (raw YUV 생성 실패)"
+    ((skip_count++))
+fi
+
+echo
 echo "== 디코더 전환 안정성 (크래시 + 행 회귀) =="
 run_test "$ROOT/tests/regression/07-decoder-switch-slot.cpp"          "$STREAM"
 run_test "$ROOT/tests/regression/08-decoder-switch-stress.cpp"        "$STREAM"

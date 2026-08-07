@@ -24,6 +24,7 @@ aqtinstall.log
 
 # generated test streams
 tests/data/*.ivf
+tests/data/*.yuv
 
 # 배포 번들 (scripts/make-bin-bundle.sh 로 생성, ~86MB의 Qt/FFmpeg 사본)
 bin/

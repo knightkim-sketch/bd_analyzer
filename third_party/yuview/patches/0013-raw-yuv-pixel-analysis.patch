@@ -1,0 +1,2357 @@
+diff --git a/YUViewLib/src/common/BDCachePaths.cpp b/YUViewLib/src/common/BDCachePaths.cpp
+new file mode 100644
+index 00000000..bca737d6
+--- /dev/null
++++ b/YUViewLib/src/common/BDCachePaths.cpp
+@@ -0,0 +1,141 @@
++/*  This file is part of YUView - The YUV player with advanced analytics toolset
++ *   <https://github.com/IENT/YUView>
++ *   Copyright (C) 2015  Institut für Nachrichtentechnik, RWTH Aachen University, GERMANY
++ *
++ *   This program is free software; you can redistribute it and/or modify
++ *   it under the terms of the GNU General Public License as published by
++ *   the Free Software Foundation; either version 3 of the License, or
++ *   (at your option) any later version.
++ *
++ *   In addition, as a special exception, the copyright holders give
++ *   permission to link the code of portions of this program with the
++ *   OpenSSL library under certain conditions as described in each
++ *   individual source file, and distribute linked combinations including
++ *   the two.
++ *
++ *   You must obey the GNU General Public License in all respects for all
++ *   of the code used other than OpenSSL. If you modify file(s) with this
++ *   exception, you may extend this exception to your version of the
++ *   file(s), but you are not obligated to do so. If you do not wish to do
++ *   so, delete this exception statement from your version. If you delete
++ *   this exception statement from all source files in the program, then
++ *   also delete it here.
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ *   GNU General Public License for more details.
++ *
++ *   You should have received a copy of the GNU General Public License
++ *   along with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "BDCachePaths.h"
++
++#include <QCoreApplication>
++#include <QCryptographicHash>
++#include <QDir>
++#include <QDirIterator>
++#include <QFileInfo>
++#include <QRegularExpression>
++#include <QSettings>
++#include <QStandardPaths>
++#include <QTemporaryFile>
++
++namespace BDCachePaths
++{
++namespace
++{
++
++const QString CACHE_DIR_NAME = QStringLiteral(".YUViewBD");
++
++bool isWritable(const QString &path)
++{
++  QDir dir;
++  if (!dir.mkpath(path))
++    return false;
++  // mkpath succeeding does not prove we may create files in it (read-only mount, restrictive ACL),
++  // so actually try. QTemporaryFile removes itself.
++  QTemporaryFile probe(path + QStringLiteral("/.writeprobeXXXXXX"));
++  return probe.open();
++}
++
++/* Resolved once per run: probing the file system on every call would be wasteful and the answer
++ * cannot change while we run. An empty result means caching is unavailable.
++ */
++QString resolveRoot()
++{
++  QSettings settings;
++  if (const auto configured = settings.value("BDCache/directory").toString(); !configured.isEmpty())
++    return isWritable(configured) ? configured : QString();
++
++  const auto preferred = QCoreApplication::applicationDirPath() + "/" + CACHE_DIR_NAME;
++  if (isWritable(preferred))
++    return preferred;
++
++  // Deployed read-only (AppImage, system prefix). Keep working, just somewhere else.
++  const auto fallbackBase = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
++  if (fallbackBase.isEmpty())
++    return {};
++  const auto fallback = fallbackBase + QStringLiteral("/YUViewBD");
++  return isWritable(fallback) ? fallback : QString();
++}
++
++} // namespace
++
++QString root()
++{
++  static const QString resolved = resolveRoot();
++  return resolved;
++}
++
++QString itemDirectory(const QString &sourceFilePath)
++{
++  const auto cacheRoot = root();
++  if (cacheRoot.isEmpty())
++    return {};
++
++  const auto absolute = QFileInfo(sourceFilePath).absoluteFilePath();
++  const auto hash     = QCryptographicHash::hash(absolute.toUtf8(), QCryptographicHash::Sha1)
++                        .toHex()
++                        .left(12);
++  // The file name is only there to make the directory recognizable; the hash is what identifies it.
++  auto name = QFileInfo(absolute).fileName();
++  name.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9._-]")), QStringLiteral("_"));
++  const auto dir = cacheRoot + "/" + name + "-" + QString::fromUtf8(hash);
++
++  QDir d;
++  if (!d.mkpath(dir))
++    return {};
++  return dir;
++}
++
++Usage usage()
++{
++  Usage result;
++  const auto cacheRoot = root();
++  if (cacheRoot.isEmpty())
++    return result;
++
++  QDirIterator it(cacheRoot, QDir::Files, QDirIterator::Subdirectories);
++  while (it.hasNext())
++  {
++    it.next();
++    ++result.fileCount;
++    result.totalBytes += it.fileInfo().size();
++  }
++  return result;
++}
++
++bool clear()
++{
++  const auto cacheRoot = root();
++  if (cacheRoot.isEmpty())
++    return true;
++  QDir dir(cacheRoot);
++  if (!dir.exists())
++    return true;
++  return dir.removeRecursively();
++}
++
++} // namespace BDCachePaths
+diff --git a/YUViewLib/src/common/BDCachePaths.h b/YUViewLib/src/common/BDCachePaths.h
+new file mode 100644
+index 00000000..5af0a31e
+--- /dev/null
++++ b/YUViewLib/src/common/BDCachePaths.h
+@@ -0,0 +1,72 @@
++/*  This file is part of YUView - The YUV player with advanced analytics toolset
++ *   <https://github.com/IENT/YUView>
++ *   Copyright (C) 2015  Institut für Nachrichtentechnik, RWTH Aachen University, GERMANY
++ *
++ *   This program is free software; you can redistribute it and/or modify
++ *   it under the terms of the GNU General Public License as published by
++ *   the Free Software Foundation; either version 3 of the License, or
++ *   (at your option) any later version.
++ *
++ *   In addition, as a special exception, the copyright holders give
++ *   permission to link the code of portions of this program with the
++ *   OpenSSL library under certain conditions as described in each
++ *   individual source file, and distribute linked combinations including
++ *   the two.
++ *
++ *   You must obey the GNU General Public License in all respects for all
++ *   of the code used other than OpenSSL. If you modify file(s) with this
++ *   exception, you may extend this exception to your version of the
++ *   file(s), but you are not obligated to do so. If you do not wish to do
++ *   so, delete this exception statement from your version. If you delete
++ *   this exception statement from all source files in the program, then
++ *   also delete it here.
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ *   GNU General Public License for more details.
++ *
++ *   You should have received a copy of the GNU General Public License
++ *   along with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#pragma once
++
++#include <QString>
++
++/* Where YUView puts the data it derives from a source file and can recreate at any time: decoded YUV
++ * and per-block analysis statistics.
++ *
++ * The requested location is ".YUViewBD" next to the executable, so a portable install keeps its
++ * cache with it. That directory is not writable in every deployment (an AppImage mount, a read-only
++ * install prefix), so the first call probes it once and falls back to the user cache directory. The
++ * fallback can be overridden with the setting "BDCache/directory".
++ *
++ * Everything under the root is disposable. The user is asked on exit whether to delete it.
++ */
++namespace BDCachePaths
++{
++
++/* The cache root, created if needed. Empty if neither the executable directory nor the fallback is
++ * usable - callers must treat that as "caching unavailable" and carry on without it.
++ */
++QString root();
++
++/* A per-item subdirectory of root(), created if needed. Keyed on the source file path so the same
++ * file reuses its cache across sessions, with the file name kept in the directory name to make the
++ * cache browsable by hand. Empty if the directory could not be created.
++ */
++QString itemDirectory(const QString &sourceFilePath);
++
++//!< Number of files and total bytes below root(). For the deletion prompt.
++struct Usage
++{
++  int     fileCount{};
++  int64_t totalBytes{};
++};
++Usage usage();
++
++//!< Delete the whole cache root. Returns false if anything could not be removed.
++bool clear();
++
++} // namespace BDCachePaths
+diff --git a/YUViewLib/src/playlistitem/playlistItem.h b/YUViewLib/src/playlistitem/playlistItem.h
+index e6ac39ee..4b9e3b78 100644
+--- a/YUViewLib/src/playlistitem/playlistItem.h
++++ b/YUViewLib/src/playlistitem/playlistItem.h
+@@ -37,6 +37,7 @@
+ #include <common/Typedef.h>
+ #include <common/YUViewDomElement.h>
+ #include <statistics/BlockInfo.h>
++#include <statistics/PixelStatistics.h>
+ #include <statistics/StatisticUIHandler.h>
+ 
+ #include <QDir>
+@@ -201,6 +202,36 @@ public:
+    */
+   virtual unsigned getMaxBlockSize() const { return 0; }
+ 
++  /* The grid size the view should use for this item unless the user picked one, in pixels. 0 means
++   * "no opinion". Deliberately separate from getMaxBlockSize(): for a compressed item this is the
++   * coding block size from the bitstream, but a raw file has no coding blocks and just wants a fixed
++   * analysis grid.
++   */
++  virtual unsigned getDefaultGridSize() const { return 0; }
++
++  // ----- Per block statistics of the pixels (not of the coding syntax; see getBlockInfoAt) -----
++  /* Whether this item can report luma statistics per block. False for everything that is not a raw
++   * YUV file, so the Frame Info pane knows to say so instead of showing empty numbers.
++   */
++  virtual bool supportsPixelStatistics() const { return false; }
++
++  //!< Edge length of the blocks getPixelBlockStats() reports on. 0 when unsupported.
++  virtual unsigned getPixelStatisticsBlockSize() const { return 0; }
++
++  /* Ask for the statistics of the whole frame to be computed in the background. Returns immediately;
++   * pixelStatisticsReady() is emitted when the values can be read. Calling it for a frame that is
++   * already cached, or while another frame is being computed, does nothing.
++   */
++  virtual void requestPixelStatistics(int) {}
++
++  /* The statistics of the block containing the given luma pixel position. Nothing when they have not
++   * been computed yet - call requestPixelStatistics() and wait for the signal.
++   */
++  virtual std::optional<stats::PixelBlockStats> getPixelBlockStats(const QPoint &, int) { return {}; }
++
++  //!< 256 bin luma histogram of the given frame. Empty when unavailable.
++  virtual std::vector<uint32_t> getLumaHistogram(int) { return {}; }
++
+   // If you want your item to be droppable onto a difference/resample object, return true here and
+   // return a valid video handler.
+   virtual bool                 canBeUsedInProcessing() const { return false; }
+@@ -287,6 +318,11 @@ signals:
+   // restart the timer.
+   void signalItemDoubleBufferLoaded();
+ 
++  /* The background computation of this frame's per block pixel statistics finished, so
++   * getPixelBlockStats() can now answer for it. Only items that support pixel statistics emit this.
++   */
++  void pixelStatisticsReady(int frameIdx);
++
+ protected:
+   // The widget which is put into the stack.
+   std::unique_ptr<QWidget> propertiesWidget;
+diff --git a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
+index d1c48de0..9f6b9080 100644
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
+@@ -86,6 +86,8 @@ public:
+   stats::BlockInfo getBlockInfoAt(const QPoint &pixelPos, int frameIdx) override;
+   void             setBlockInfoRequested(bool requested) override;
+   unsigned         getMaxBlockSize() const override;
++  //!< The coding block grid: for AV1 the superblock size from the sequence header.
++  unsigned         getDefaultGridSize() const override { return this->getMaxBlockSize(); }
+ 
+   virtual bool canBeUsedInProcessing() const override { return true; }
+ 
+diff --git a/YUViewLib/src/playlistitem/playlistItemRawFile.cpp b/YUViewLib/src/playlistitem/playlistItemRawFile.cpp
+index d3d2054f..756aa9f3 100644
+--- a/YUViewLib/src/playlistitem/playlistItemRawFile.cpp
++++ b/YUViewLib/src/playlistitem/playlistItemRawFile.cpp
+@@ -32,9 +32,11 @@
+ 
+ #include "playlistItemRawFile.h"
+ 
++#include <QCryptographicHash>
+ #include <QPainter>
+ #include <QUrl>
+ #include <QVBoxLayout>
++#include <QtConcurrent>
+ 
+ #include <common/Functions.h>
+ #include <common/FunctionsGui.h>
+@@ -168,6 +170,13 @@ playlistItemRawFile::playlistItemRawFile(const QString &rawFilePath,
+ 
+   this->pixelFormatAfterLoading = this->video->getFormatAsString();
+ 
++  // The block statistics are computed on a worker thread; the result is taken over here, on the GUI
++  // thread, which is the only thread that touches the cache.
++  connect(&this->pixelStatsWatcher,
++          &QFutureWatcherBase::finished,
++          this,
++          &playlistItemRawFile::pixelStatisticsComputed);
++
+   // A raw file can be cached.
+   this->cachingEnabled = true;
+ }
+@@ -605,3 +614,135 @@ void playlistItemRawFile::reloadItemSource()
+   // Emit that the item needs redrawing and the cache changed.
+   emit SignalItemChanged(true, RECACHE_NONE);
+ }
++
++video::yuv::videoHandlerYUV *playlistItemRawFile::yuvHandler() const
++{
++  // A raw file is either YUV or RGB (see the constructor). Only YUV has a luma plane to measure.
++  return dynamic_cast<video::yuv::videoHandlerYUV *>(this->video.get());
++}
++
++bool playlistItemRawFile::supportsPixelStatistics() const
++{
++  const auto handler = this->yuvHandler();
++  return handler != nullptr && handler->isFormatValid();
++}
++
++unsigned playlistItemRawFile::getDefaultGridSize() const
++{
++  // Only offer the grid where the statistics behind it exist, so the grid never implies numbers that
++  // cannot be shown.
++  return this->supportsPixelStatistics() ? PIXEL_STATS_BLOCK_SIZE : 0;
++}
++
++uint64_t playlistItemRawFile::pixelStatsParamHash() const
++{
++  const auto handler = this->yuvHandler();
++  if (!handler)
++    return 0;
++  /* Everything that changes the samples we measure. The pixel format decides how the plane is read;
++   * the convolution filter rewrites it. Luma scale/offset/invert are display-only (applied during the
++   * conversion to RGB) and deliberately not included.
++   */
++  QByteArray key;
++  key += QByteArray::fromStdString(handler->getPixelFormatYUV().getName());
++  key += handler->convolutionFilterKey();
++  const auto digest = QCryptographicHash::hash(key, QCryptographicHash::Sha1);
++  uint64_t   hash{};
++  std::memcpy(&hash, digest.constData(), sizeof(hash));
++  return hash;
++}
++
++void playlistItemRawFile::openPixelStatsCacheIfNeeded()
++{
++  const auto handler = this->yuvHandler();
++  if (!handler)
++    return;
++  // startEndRange is (0, nrFrames-1), or (-1, -1) while the format is not known yet.
++  if (this->properties().startEndRange.second < 0)
++    return;
++  const auto hash = this->pixelStatsParamHash();
++  if (this->pixelStatsCache.isOpen() && hash == this->pixelStatsCacheParamHash)
++    return;
++
++  // The format or the filter changed, so everything computed so far describes other samples.
++  this->pixelStatsCache.reset();
++  this->pixelStatsCacheParamHash = hash;
++  this->lumaHistogramFrameIdx    = -1;
++  this->pixelStatsCache.open(QString::fromStdString(this->dataSource.getAbsoluteFilePath()),
++                             handler->getFrameSize(),
++                             PIXEL_STATS_BLOCK_SIZE,
++                             this->properties().startEndRange.second + 1,
++                             hash);
++}
++
++void playlistItemRawFile::requestPixelStatistics(int frameIdx)
++{
++  const auto handler = this->yuvHandler();
++  if (!handler)
++    return;
++  this->openPixelStatsCacheIfNeeded();
++  if (this->pixelStatsCache.has(frameIdx))
++    return;
++  if (this->pixelStatsWatcher.isRunning())
++    // One frame at a time. The caller asks again when the running one reports back.
++    return;
++
++  /* Measure the frame that is actually in the buffer. Asking for a frame that is not loaded would
++   * mean reading the file a second time here; instead we simply wait to be asked again once the
++   * normal load path has it.
++   */
++  int  loadedFrame = -1;
++  auto rawData     = handler->getCurrentRawYUVData(loadedFrame);
++  if (loadedFrame != frameIdx || rawData.isEmpty())
++    return;
++
++  const auto format    = handler->getPixelFormatYUV();
++  const auto frameSize = handler->getFrameSize();
++
++  this->pixelStatsFrameInFlight = frameIdx;
++  this->pixelStatsWatcher.setFuture(QtConcurrent::run(
++      [rawData, format, frameSize]
++      { return stats::computeLumaBlockStats(rawData, format, frameSize, PIXEL_STATS_BLOCK_SIZE); }));
++}
++
++void playlistItemRawFile::pixelStatisticsComputed()
++{
++  const auto frameIdx = this->pixelStatsFrameInFlight;
++  this->pixelStatsFrameInFlight = -1;
++  if (frameIdx < 0)
++    return;
++  const auto blocks = this->pixelStatsWatcher.result();
++  if (blocks.empty())
++    // The pixel format cannot be read (packed, byte packed). Nothing to cache.
++    return;
++  this->pixelStatsCache.store(frameIdx, blocks);
++  emit pixelStatisticsReady(frameIdx);
++}
++
++std::optional<stats::PixelBlockStats> playlistItemRawFile::getPixelBlockStats(const QPoint &pixelPos,
++                                                                             int frameIdx)
++{
++  if (!this->pixelStatsCache.isOpen())
++    return {};
++  return this->pixelStatsCache.at(frameIdx, pixelPos);
++}
++
++std::vector<uint32_t> playlistItemRawFile::getLumaHistogram(int frameIdx)
++{
++  const auto handler = this->yuvHandler();
++  if (!handler)
++    return {};
++  if (frameIdx == this->lumaHistogramFrameIdx)
++    return this->lumaHistogram;
++
++  int  loadedFrame = -1;
++  auto rawData     = handler->getCurrentRawYUVData(loadedFrame);
++  if (loadedFrame != frameIdx || rawData.isEmpty())
++    return {};
++
++  this->lumaHistogram = stats::computeLumaHistogram(rawData,
++                                                    handler->getPixelFormatYUV(),
++                                                    handler->getFrameSize());
++  this->lumaHistogramFrameIdx = this->lumaHistogram.empty() ? -1 : frameIdx;
++  return this->lumaHistogram;
++}
+diff --git a/YUViewLib/src/playlistitem/playlistItemRawFile.h b/YUViewLib/src/playlistitem/playlistItemRawFile.h
+index c1c75751..80529e70 100644
+--- a/YUViewLib/src/playlistitem/playlistItemRawFile.h
++++ b/YUViewLib/src/playlistitem/playlistItemRawFile.h
+@@ -38,6 +38,10 @@
+ #include <QFuture>
+ #include <QString>
+ 
++#include <QFutureWatcher>
++
++#include <statistics/PixelStatistics.h>
++
+ #include "playlistItemWithVideo.h"
+ 
+ class playlistItemRawFile : public playlistItemWithVideo
+@@ -70,6 +74,18 @@ public:
+ 
+   virtual ValuePairListSets getPixelValues(const QPoint &pixelPos, int frameIdx) override;
+ 
++  // ----- Analysis grid and per block luma statistics (raw YUV only) -----
++  //!< Edge length of the analysis grid and of the statistics blocks.
++  static constexpr unsigned PIXEL_STATS_BLOCK_SIZE = 64;
++
++  unsigned getDefaultGridSize() const override;
++  bool     supportsPixelStatistics() const override;
++  unsigned getPixelStatisticsBlockSize() const override { return PIXEL_STATS_BLOCK_SIZE; }
++  void     requestPixelStatistics(int frameIdx) override;
++  std::optional<stats::PixelBlockStats> getPixelBlockStats(const QPoint &pixelPos,
++                                                          int           frameIdx) override;
++  std::vector<uint32_t>                 getLumaHistogram(int frameIdx) override;
++
+   // Add the file type filters and the extensions of files that we can load.
+   static void getSupportedFileExtensions(QStringList &allExtensions, QStringList &filters);
+ 
+@@ -91,6 +107,9 @@ private slots:
+   // if the frame that is requested to be drawn has not been loaded yet.
+   void loadRawData(int frameIdx);
+ 
++  //!< The worker finished. Runs on the GUI thread, which is the only thread that touches the cache.
++  void pixelStatisticsComputed();
++
+   void slotVideoPropertiesChanged();
+ 
+ protected:
+@@ -117,4 +136,19 @@ private:
+   QList<uint64_t> y4mFrameIndices;
+ 
+   std::optional<std::string> pixelFormatAfterLoading{};
++
++  //!< The YUV handler, or nullptr for an RGB raw file (which has no luma plane to measure).
++  video::yuv::videoHandlerYUV *yuvHandler() const;
++  //!< Everything that changes the sample values. Mismatch invalidates the cache file.
++  uint64_t pixelStatsParamHash() const;
++  void     openPixelStatsCacheIfNeeded();
++
++  stats::PixelStatisticsCache                pixelStatsCache;
++  QFutureWatcher<std::vector<stats::PixelBlockStats>> pixelStatsWatcher;
++  int                                        pixelStatsFrameInFlight{-1};
++  uint64_t                                   pixelStatsCacheParamHash{};
++
++  //!< Last computed luma histogram, kept so repeated reads of the same frame are free.
++  int                   lumaHistogramFrameIdx{-1};
++  std::vector<uint32_t> lumaHistogram;
+ };
+diff --git a/YUViewLib/src/statistics/PixelStatistics.cpp b/YUViewLib/src/statistics/PixelStatistics.cpp
+new file mode 100644
+index 00000000..3a467138
+--- /dev/null
++++ b/YUViewLib/src/statistics/PixelStatistics.cpp
+@@ -0,0 +1,379 @@
++/*  This file is part of YUView - The YUV player with advanced analytics toolset
++ *   <https://github.com/IENT/YUView>
++ *   Copyright (C) 2015  Institut für Nachrichtentechnik, RWTH Aachen University, GERMANY
++ *
++ *   This program is free software; you can redistribute it and/or modify
++ *   it under the terms of the GNU General Public License as published by
++ *   the Free Software Foundation; either version 3 of the License, or
++ *   (at your option) any later version.
++ *
++ *   In addition, as a special exception, the copyright holders give
++ *   permission to link the code of portions of this program with the
++ *   OpenSSL library under certain conditions as described in each
++ *   individual source file, and distribute linked combinations including
++ *   the two.
++ *
++ *   You must obey the GNU General Public License in all respects for all
++ *   of the code used other than OpenSSL. If you modify file(s) with this
++ *   exception, you may extend this exception to your version of the
++ *   file(s), but you are not obligated to do so. If you do not wish to do
++ *   so, delete this exception statement from your version. If you delete
++ *   this exception statement from all source files in the program, then
++ *   also delete it here.
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ *   GNU General Public License for more details.
++ *
++ *   You should have received a copy of the GNU General Public License
++ *   along with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "PixelStatistics.h"
++
++#include <QFile>
++
++#include <algorithm>
++#include <cmath>
++#include <cstring>
++#include <limits>
++
++#include <common/BDCachePaths.h>
++
++namespace stats
++{
++namespace
++{
++
++const char CACHE_MAGIC[8] = {'Y', 'V', 'B', 'D', 'B', 'S', 'T', '1'};
++
++/* The fixed part of the cache file. Written and read field by field rather than by dumping the
++ * struct, so the file does not depend on the compiler's padding.
++ */
++constexpr int HEADER_BYTES = 64;
++
++/* Reading one luma sample. Only planar formats are supported: for those the luma plane is the first
++ * plane and is a plain width x height array of samples, which is all this needs. Packed formats
++ * interleave the components, and byte packing squeezes samples across byte boundaries - both would
++ * need the full unpacking logic from videoHandlerYUV, which is not worth duplicating here.
++ */
++struct LumaPlaneReader
++{
++  const uint8_t *data{};
++  int64_t        sampleCount{};
++  unsigned       width{};
++  bool           twoBytes{};
++  bool           bigEndian{};
++
++  unsigned at(unsigned x, unsigned y) const
++  {
++    const int64_t index = int64_t(y) * this->width + x;
++    if (!this->twoBytes)
++      return this->data[index];
++    const auto *p = this->data + index * 2;
++    return this->bigEndian ? (unsigned(p[0]) << 8 | p[1]) : (unsigned(p[1]) << 8 | p[0]);
++  }
++};
++
++std::optional<LumaPlaneReader> makeLumaReader(const QByteArray                 &rawYUV,
++                                             const video::yuv::PixelFormatYUV &format,
++                                             const Size                       &frameSize)
++{
++  if (!format.isValid() || !frameSize.isValid())
++    return {};
++  if (!format.isPlanar() || format.isBytePacking())
++    return {};
++
++  const auto bitDepth = format.getBitsPerSample();
++  if (bitDepth < 8 || bitDepth > 16)
++    return {};
++
++  LumaPlaneReader reader;
++  reader.twoBytes    = bitDepth > 8;
++  reader.bigEndian   = format.isBigEndian();
++  reader.width       = frameSize.width;
++  reader.sampleCount = int64_t(frameSize.width) * frameSize.height;
++
++  const int64_t lumaBytes = reader.sampleCount * (reader.twoBytes ? 2 : 1);
++  if (rawYUV.size() < lumaBytes)
++    // Truncated frame (a cut file, or the data is not loaded yet).
++    return {};
++
++  reader.data = reinterpret_cast<const uint8_t *>(rawYUV.constData());
++  return reader;
++}
++
++} // namespace
++
++std::vector<PixelBlockStats> computeLumaBlockStats(const QByteArray                 &rawYUV,
++                                                   const video::yuv::PixelFormatYUV &format,
++                                                   const Size                       &frameSize,
++                                                   unsigned                          blockSize)
++{
++  if (blockSize == 0)
++    return {};
++  const auto reader = makeLumaReader(rawYUV, format, frameSize);
++  if (!reader)
++    return {};
++
++  const unsigned blocksPerRow    = (frameSize.width + blockSize - 1) / blockSize;
++  const unsigned blocksPerColumn = (frameSize.height + blockSize - 1) / blockSize;
++
++  std::vector<PixelBlockStats> result(size_t(blocksPerRow) * blocksPerColumn);
++
++  for (unsigned blockY = 0; blockY < blocksPerColumn; blockY++)
++  {
++    const unsigned yStart = blockY * blockSize;
++    const unsigned yEnd   = std::min(yStart + blockSize, frameSize.height);
++    for (unsigned blockX = 0; blockX < blocksPerRow; blockX++)
++    {
++      const unsigned xStart = blockX * blockSize;
++      const unsigned xEnd   = std::min(xStart + blockSize, frameSize.width);
++
++      // Sum of values and of squares in one pass. The counts here are at most 128x128 samples of at
++      // most 16 bit, so uint64 cannot overflow.
++      uint64_t sum      = 0;
++      uint64_t sumSq    = 0;
++      unsigned minimum  = std::numeric_limits<unsigned>::max();
++      unsigned maximum  = 0;
++      uint64_t nrPixels = 0;
++      for (unsigned y = yStart; y < yEnd; y++)
++        for (unsigned x = xStart; x < xEnd; x++)
++        {
++          const auto value = reader->at(x, y);
++          sum += value;
++          sumSq += uint64_t(value) * value;
++          minimum = std::min(minimum, value);
++          maximum = std::max(maximum, value);
++          ++nrPixels;
++        }
++
++      auto &stats = result[size_t(blockY) * blocksPerRow + blockX];
++      if (nrPixels == 0)
++        continue;
++      const double mean = double(sum) / double(nrPixels);
++      // E[x^2] - E[x]^2. Clamped because rounding can push it a hair below zero on a flat block.
++      const double variance = std::max(0.0, double(sumSq) / double(nrPixels) - mean * mean);
++      stats.mean            = float(mean);
++      stats.variance        = float(variance);
++      stats.minimum         = float(minimum);
++      stats.maximum         = float(maximum);
++    }
++  }
++
++  return result;
++}
++
++std::vector<uint32_t> computeLumaHistogram(const QByteArray                 &rawYUV,
++                                           const video::yuv::PixelFormatYUV &format,
++                                           const Size                       &frameSize)
++{
++  const auto reader = makeLumaReader(rawYUV, format, frameSize);
++  if (!reader)
++    return {};
++
++  // Always 256 bins so the shape is comparable regardless of bit depth.
++  const auto shift = (format.getBitsPerSample() > 8) ? (format.getBitsPerSample() - 8) : 0u;
++  std::vector<uint32_t> histogram(256, 0);
++  for (unsigned y = 0; y < frameSize.height; y++)
++    for (unsigned x = 0; x < frameSize.width; x++)
++    {
++      const auto bin = reader->at(x, y) >> shift;
++      ++histogram[std::min(bin, 255u)];
++    }
++  return histogram;
++}
++
++bool PixelStatisticsCache::open(const QString &sourceFilePath,
++                                const Size    &newFrameSize,
++                                unsigned       newBlockSize,
++                                int            newNrFrames,
++                                uint64_t       newParamHash)
++{
++  this->records.clear();
++  this->framePresent.clear();
++  this->filePath.clear();
++  this->nrFrames = 0;
++
++  if (newBlockSize == 0 || newNrFrames <= 0 || !newFrameSize.isValid())
++    return false;
++
++  this->frameSize       = newFrameSize;
++  this->blockSize       = newBlockSize;
++  this->nrFrames        = newNrFrames;
++  this->paramHash       = newParamHash;
++  this->blocksPerRow    = (newFrameSize.width + newBlockSize - 1) / newBlockSize;
++  this->blocksPerColumn = (newFrameSize.height + newBlockSize - 1) / newBlockSize;
++
++  this->records.assign(size_t(this->nrFrames) * this->getBlocksPerFrame(), PixelBlockStats{});
++  this->framePresent.assign((size_t(this->nrFrames) + 7) / 8, 0);
++
++  // A missing cache directory only costs persistence: the in-memory cache above is already usable, so
++  // there is no second code path for callers.
++  if (const auto directory = BDCachePaths::itemDirectory(sourceFilePath); !directory.isEmpty())
++  {
++    /* The parameter hash goes into the file name, not just the header: that way each pixel format and
++     * filter combination keeps its own cache, so toggling the convolution filter back and forth reuses
++     * what was already computed instead of discarding it every time.
++     */
++    this->filePath = directory + QStringLiteral("/blockstats-%1.bin")
++                                     .arg(QString::number(newParamHash, 16));
++    if (!this->readExisting())
++      this->writeHeaderAndBitmap();
++  }
++  return true;
++}
++
++int64_t PixelStatisticsCache::frameOffsetInFile(int frameIdx) const
++{
++  const int64_t bitmapBytes = int64_t(this->framePresent.size());
++  return HEADER_BYTES + bitmapBytes +
++         int64_t(frameIdx) * this->getBlocksPerFrame() * int64_t(sizeof(PixelBlockStats));
++}
++
++void PixelStatisticsCache::writeHeaderAndBitmap()
++{
++  if (this->filePath.isEmpty())
++    return;
++  QFile file(this->filePath);
++  if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
++  {
++    this->filePath.clear();
++    return;
++  }
++
++  QByteArray header(HEADER_BYTES, '\0');
++  auto      *p = header.data();
++  std::memcpy(p, CACHE_MAGIC, sizeof(CACHE_MAGIC));
++  const uint32_t u32[7] = {PIXEL_STATS_CACHE_VERSION,
++                           this->blockSize,
++                           this->frameSize.width,
++                           this->frameSize.height,
++                           this->blocksPerRow,
++                           this->blocksPerColumn,
++                           uint32_t(this->nrFrames)};
++  std::memcpy(p + 8, u32, sizeof(u32));
++  std::memcpy(p + 8 + sizeof(u32), &this->paramHash, sizeof(this->paramHash));
++  const uint32_t fieldsPerBlock = 4;
++  std::memcpy(p + 8 + sizeof(u32) + sizeof(this->paramHash), &fieldsPerBlock, sizeof(uint32_t));
++
++  file.write(header);
++  file.write(reinterpret_cast<const char *>(this->framePresent.data()),
++             qint64(this->framePresent.size()));
++  // The record area is left as a hole: only visited frames are ever written, so on a file system with
++  // sparse file support the cache costs what was actually computed.
++}
++
++bool PixelStatisticsCache::readExisting()
++{
++  if (this->filePath.isEmpty())
++    return false;
++  QFile file(this->filePath);
++  if (!file.open(QIODevice::ReadOnly))
++    return false;
++
++  const auto header = file.read(HEADER_BYTES);
++  if (header.size() != HEADER_BYTES)
++    return false;
++  if (std::memcmp(header.constData(), CACHE_MAGIC, sizeof(CACHE_MAGIC)) != 0)
++    return false;
++
++  uint32_t u32[7];
++  uint64_t storedHash{};
++  std::memcpy(u32, header.constData() + 8, sizeof(u32));
++  std::memcpy(&storedHash, header.constData() + 8 + sizeof(u32), sizeof(storedHash));
++
++  // Anything different means the numbers in the file describe other data. Start over rather than
++  // showing statistics that do not belong to what is on screen.
++  if (u32[0] != PIXEL_STATS_CACHE_VERSION || u32[1] != this->blockSize ||
++      u32[2] != this->frameSize.width || u32[3] != this->frameSize.height ||
++      u32[4] != this->blocksPerRow || u32[5] != this->blocksPerColumn ||
++      u32[6] != uint32_t(this->nrFrames) || storedHash != this->paramHash)
++    return false;
++
++  const auto bitmap = file.read(qint64(this->framePresent.size()));
++  if (bitmap.size() != qint64(this->framePresent.size()))
++    return false;
++  std::memcpy(this->framePresent.data(), bitmap.constData(), this->framePresent.size());
++
++  // Only read back the frames the bitmap says are there.
++  const auto frameBytes = qint64(this->getBlocksPerFrame() * sizeof(PixelBlockStats));
++  for (int frameIdx = 0; frameIdx < this->nrFrames; frameIdx++)
++  {
++    if (!this->has(frameIdx))
++      continue;
++    if (!file.seek(this->frameOffsetInFile(frameIdx)))
++      return false;
++    const auto data = file.read(frameBytes);
++    if (data.size() != frameBytes)
++      return false;
++    std::memcpy(this->records.data() + size_t(frameIdx) * this->getBlocksPerFrame(),
++                data.constData(),
++                size_t(frameBytes));
++  }
++  return true;
++}
++
++bool PixelStatisticsCache::has(int frameIdx) const
++{
++  if (frameIdx < 0 || frameIdx >= this->nrFrames)
++    return false;
++  return (this->framePresent[size_t(frameIdx) / 8] >> (frameIdx % 8)) & 1;
++}
++
++std::optional<PixelBlockStats> PixelStatisticsCache::at(int frameIdx, const QPoint &pixelPos) const
++{
++  if (!this->has(frameIdx) || this->blockSize == 0)
++    return {};
++  if (pixelPos.x() < 0 || pixelPos.y() < 0)
++    return {};
++  const auto blockX = unsigned(pixelPos.x()) / this->blockSize;
++  const auto blockY = unsigned(pixelPos.y()) / this->blockSize;
++  if (blockX >= this->blocksPerRow || blockY >= this->blocksPerColumn)
++    return {};
++  return this->records[size_t(frameIdx) * this->getBlocksPerFrame() +
++                       size_t(blockY) * this->blocksPerRow + blockX];
++}
++
++void PixelStatisticsCache::store(int frameIdx, const std::vector<PixelBlockStats> &blocks)
++{
++  if (frameIdx < 0 || frameIdx >= this->nrFrames)
++    return;
++  if (blocks.size() != this->getBlocksPerFrame())
++    // The frame was computed with other parameters than the ones this cache was opened with.
++    return;
++
++  std::copy(blocks.begin(),
++            blocks.end(),
++            this->records.begin() + int64_t(frameIdx) * this->getBlocksPerFrame());
++  this->framePresent[size_t(frameIdx) / 8] |= uint8_t(1u << (frameIdx % 8));
++
++  if (this->filePath.isEmpty())
++    return;
++  QFile file(this->filePath);
++  if (!file.open(QIODevice::ReadWrite))
++    return;
++  // Records first, present bit last. If we are interrupted in between, the next run sees the frame as
++  // absent and recomputes it. The other order would leave a frame marked present with zeroed
++  // statistics, which would be shown as if it were real.
++  if (!file.seek(this->frameOffsetInFile(frameIdx)))
++    return;
++  file.write(reinterpret_cast<const char *>(blocks.data()),
++             qint64(blocks.size() * sizeof(PixelBlockStats)));
++  if (!file.seek(HEADER_BYTES + qint64(frameIdx) / 8))
++    return;
++  file.write(reinterpret_cast<const char *>(&this->framePresent[size_t(frameIdx) / 8]), 1);
++}
++
++void PixelStatisticsCache::reset()
++{
++  if (!this->filePath.isEmpty())
++    QFile::remove(this->filePath);
++  this->records.clear();
++  this->framePresent.clear();
++  this->filePath.clear();
++  this->nrFrames = 0;
++}
++
++} // namespace stats
+diff --git a/YUViewLib/src/statistics/PixelStatistics.h b/YUViewLib/src/statistics/PixelStatistics.h
+new file mode 100644
+index 00000000..1b268548
+--- /dev/null
++++ b/YUViewLib/src/statistics/PixelStatistics.h
+@@ -0,0 +1,156 @@
++/*  This file is part of YUView - The YUV player with advanced analytics toolset
++ *   <https://github.com/IENT/YUView>
++ *   Copyright (C) 2015  Institut für Nachrichtentechnik, RWTH Aachen University, GERMANY
++ *
++ *   This program is free software; you can redistribute it and/or modify
++ *   it under the terms of the GNU General Public License as published by
++ *   the Free Software Foundation; either version 3 of the License, or
++ *   (at your option) any later version.
++ *
++ *   In addition, as a special exception, the copyright holders give
++ *   permission to link the code of portions of this program with the
++ *   OpenSSL library under certain conditions as described in each
++ *   individual source file, and distribute linked combinations including
++ *   the two.
++ *
++ *   You must obey the GNU General Public License in all respects for all
++ *   of the code used other than OpenSSL. If you modify file(s) with this
++ *   exception, you may extend this exception to your version of the
++ *   file(s), but you are not obligated to do so. If you do not wish to do
++ *   so, delete this exception statement from your version. If you delete
++ *   this exception statement from all source files in the program, then
++ *   also delete it here.
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ *   GNU General Public License for more details.
++ *
++ *   You should have received a copy of the GNU General Public License
++ *   along with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#pragma once
++
++#include <QByteArray>
++#include <QPoint>
++#include <QString>
++#include <QVector>
++
++#include <cstdint>
++#include <optional>
++#include <vector>
++
++#include <common/Typedef.h>
++#include <video/yuv/PixelFormatYUV.h>
++
++/* Per-block statistics of the luma plane, and their on-disk cache.
++ *
++ * These describe the *pixels*, not the coding syntax - that is what statistics/StatisticsData.h and
++ * BlockInfo.h are for. Kept apart deliberately: coding statistics come from a decoder, these are
++ * computed from the samples and exist for raw YUV too.
++ */
++namespace stats
++{
++
++/* One block's luma statistics. Stored as four float32 (16 bytes) so that the record size does not
++ * depend on the bit depth. Adding a field means bumping PIXEL_STATS_CACHE_VERSION, which makes
++ * existing cache files be discarded and recomputed.
++ */
++struct PixelBlockStats
++{
++  float mean{};
++  float variance{};
++  float minimum{};
++  float maximum{};
++};
++static_assert(sizeof(PixelBlockStats) == 16, "the on-disk record layout depends on this");
++
++//!< Bump when the record layout or the meaning of a field changes.
++constexpr uint32_t PIXEL_STATS_CACHE_VERSION = 1;
++
++/* Statistics of every blockSize x blockSize block of the luma plane, row major (left to right, top to
++ * bottom). Blocks at the right/bottom border are clipped to the picture, so their statistics only
++ * cover the pixels that exist.
++ *
++ * Returns an empty vector for formats this cannot read (packed formats, byte packing). Callers must
++ * treat that as "no statistics available" rather than an error - it is a normal outcome for an exotic
++ * pixel format.
++ *
++ * Pure and thread safe: it only reads its arguments, so it can run on a worker thread while the GUI
++ * thread carries on. rawYUV must be a full frame in the given format.
++ */
++std::vector<PixelBlockStats> computeLumaBlockStats(const QByteArray                 &rawYUV,
++                                                   const video::yuv::PixelFormatYUV &format,
++                                                   const Size                       &frameSize,
++                                                   unsigned                          blockSize);
++
++/* 256 bin histogram of the luma plane. Values are scaled down to 256 bins for bit depths above 8, so
++ * the bin index is comparable across bit depths. Empty for formats that cannot be read.
++ */
++std::vector<uint32_t> computeLumaHistogram(const QByteArray                 &rawYUV,
++                                           const video::yuv::PixelFormatYUV &format,
++                                           const Size                       &frameSize);
++
++/* The per-frame block statistics of one source file, held in memory and backed by a file under
++ * .YUViewBD so it survives a restart and fills up as frames are visited.
++ *
++ * Not thread safe. Use it from one thread only (the GUI thread); computeLumaBlockStats() is the part
++ * that is meant to run in the background.
++ */
++class PixelStatisticsCache
++{
++public:
++  /* Bind the cache to a source file. An existing file whose header does not match exactly (frame
++   * size, block size, frame count, version, or paramHash) is discarded and started over - stale
++   * statistics are worse than none.
++   *
++   * paramHash must cover everything that changes the sample values: the pixel format and the
++   * convolution filter. See playlistItemRawFile::pixelStatsParamHash().
++   *
++   * Returns false only when the parameters are unusable. A missing cache directory is not a failure:
++   * the cache then works in memory only, which callers do not have to handle separately.
++   */
++  bool open(const QString                    &sourceFilePath,
++            const Size                       &frameSize,
++            unsigned                          blockSize,
++            int                               nrFrames,
++            uint64_t                          paramHash);
++
++  bool     isOpen() const { return this->nrFrames > 0; }
++  unsigned getBlockSize() const { return this->blockSize; }
++  unsigned getBlocksPerRow() const { return this->blocksPerRow; }
++  unsigned getBlocksPerColumn() const { return this->blocksPerColumn; }
++  unsigned getBlocksPerFrame() const { return this->blocksPerRow * this->blocksPerColumn; }
++
++  bool has(int frameIdx) const;
++
++  //!< The block containing the given luma pixel position, or nothing if not computed yet.
++  std::optional<PixelBlockStats> at(int frameIdx, const QPoint &pixelPos) const;
++
++  //!< Take a computed frame into memory and append it to the file.
++  void store(int frameIdx, const std::vector<PixelBlockStats> &blocks);
++
++  //!< Drop everything, in memory and on disk. Used when the parameters change.
++  void reset();
++
++  QString getFilePath() const { return this->filePath; }
++
++private:
++  int64_t frameOffsetInFile(int frameIdx) const;
++  void    writeHeaderAndBitmap();
++  bool    readExisting();
++
++  QString  filePath;
++  Size     frameSize{};
++  unsigned blockSize{};
++  unsigned blocksPerRow{};
++  unsigned blocksPerColumn{};
++  int      nrFrames{};
++  uint64_t paramHash{};
++
++  std::vector<PixelBlockStats> records;      //!< nrFrames * blocksPerFrame, row major per frame
++  std::vector<uint8_t>         framePresent; //!< bit per frame
++};
++
++} // namespace stats
+diff --git a/YUViewLib/src/ui/Mainwindow.cpp b/YUViewLib/src/ui/Mainwindow.cpp
+index 028eca1f..44a77655 100644
+--- a/YUViewLib/src/ui/Mainwindow.cpp
++++ b/YUViewLib/src/ui/Mainwindow.cpp
+@@ -34,6 +34,7 @@
+ 
+ #include <QByteArray>
+ #include <QFileDialog>
++#include <QLocale>
+ #include <QImageWriter>
+ #include <QMessageBox>
+ #include <QShortcut>
+@@ -41,6 +42,7 @@
+ #include <QTextBrowser>
+ #include <QTextStream>
+ 
++#include <common/BDCachePaths.h>
+ #include <common/Functions.h>
+ #include <common/FunctionsGui.h>
+ #include <playlistitem/playlistItems.h>
+@@ -68,7 +70,7 @@ MainWindow::MainWindow(bool useAlternativeSources, QWidget *parent) : QMainWindo
+   statusBar()->hide();
+ 
+   saveWindowsStateOnExit = true;
+-  for (int i = 0; i < 6; i++)
++  for (int i = 0; i < 7; i++)
+     panelsVisible[i] = false;
+ 
+   // Initialize the separate window
+@@ -149,6 +151,38 @@ MainWindow::MainWindow(bool useAlternativeSources, QWidget *parent) : QMainWindo
+           &PlaylistTreeWidget::selectedItemChanged,
+           ui.blockInfoWidget,
+           &BlockInfoWidget::refresh);
++
++  /* Frame Info: the pixel side of the same click. The block statistics are computed in the background,
++   * so the widget both asks for them and is told when they arrive.
++   */
++  connect(ui.playlistTreeWidget,
++          &PlaylistTreeWidget::selectionRangeChanged,
++          ui.frameInfoWidget,
++          &FrameInfoWidget::currentSelectedItemsChanged);
++  connect(ui.playlistTreeWidget,
++          &PlaylistTreeWidget::selectedItemChanged,
++          ui.frameInfoWidget,
++          &FrameInfoWidget::refresh);
++  connect(ui.displaySplitView,
++          &splitViewWidget::blockSelected,
++          ui.frameInfoWidget,
++          &FrameInfoWidget::setSelectedBlock);
++  connect(&separateViewWindow.splitView,
++          &splitViewWidget::blockSelected,
++          ui.frameInfoWidget,
++          &FrameInfoWidget::setSelectedBlock);
++  // The grid checkbox and the View menu are two ways to the same setting, so keep them in step.
++  connect(ui.frameInfoWidget,
++          &FrameInfoWidget::gridSizeRequested,
++          [this](int size) { ui.displaySplitView->setGridSize(size); });
++  connect(ui.displaySplitView,
++          &splitViewWidget::regularGridSizeChanged,
++          ui.frameInfoWidget,
++          &FrameInfoWidget::setGridSize);
++  connect(ui.displaySplitView,
++          &splitViewWidget::viewFrameChanged,
++          ui.frameInfoWidget,
++          &FrameInfoWidget::setCurrentFrame);
+   connect(ui.playlistTreeWidget,
+           &PlaylistTreeWidget::selectedItemChanged,
+           ui.playbackController,
+@@ -394,6 +428,7 @@ void MainWindow::createMenusAndActions()
+   addDockViewAction(ui.fileInfoDock, "Show &Info", Qt::CTRL | Qt::Key_I);
+   addDockViewAction(ui.cachingInfoDock, "Show Caching Info");
+   addDockViewAction(ui.blockInfoDock, "Show &Block Info", Qt::CTRL | Qt::Key_B);
++  addDockViewAction(ui.frameInfoDock, "Show &Frame Info", Qt::CTRL | Qt::Key_F);
+   viewMenu->addSeparator();
+   addDockViewAction(ui.playbackControllerDock, "Show Playback &Controls", Qt::CTRL | Qt::Key_D);
+ 
+@@ -560,6 +595,30 @@ void MainWindow::closeEvent(QCloseEvent *event)
+   // processes.
+   ui.playlistTreeWidget->deletePlaylistItems(true);
+ 
++  /* Offer to delete the derived-data cache (.YUViewBD: decoded YUV, per block statistics). Only
++   * after deletePlaylistItems() above, because that is what stops the workers that write into it.
++   * Everything in there can be recreated from the source files, so deleting is always safe; keeping
++   * it makes the next session start warm.
++   */
++  if (const auto cacheUsage = BDCachePaths::usage(); cacheUsage.fileCount > 0)
++  {
++    const auto answer = QMessageBox::question(
++        this,
++        "Delete analysis cache",
++        tr("Delete the %1 cached analysis file(s) (%2) in\n%3 ?\n\n"
++           "They can be recreated from the source files at any time.")
++            .arg(cacheUsage.fileCount)
++            .arg(QLocale().formattedDataSize(cacheUsage.totalBytes))
++            .arg(BDCachePaths::root()),
++        QMessageBox::Yes | QMessageBox::No,
++        QMessageBox::No);
++    if (answer == QMessageBox::Yes && !BDCachePaths::clear())
++      QMessageBox::warning(this,
++                           "Delete analysis cache",
++                           tr("The cache in\n%1\ncould not be removed completely.")
++                               .arg(BDCachePaths::root()));
++  }
++
+   event->accept();
+ 
+   if (!separateViewWindow.isHidden())
+@@ -722,6 +781,8 @@ void MainWindow::toggleFullscreen()
+       ui.cachingInfoDock->show();
+     if (panelsVisible[5])
+       ui.blockInfoDock->show();
++    if (panelsVisible[6])
++      ui.frameInfoDock->show();
+ 
+     if (!is_Q_OS_MAC)
+       ui.menuBar->show();
+@@ -743,6 +804,7 @@ void MainWindow::toggleFullscreen()
+     panelsVisible[3] = ui.fileInfoDock->isVisible();
+     panelsVisible[4] = ui.cachingInfoDock->isVisible();
+     panelsVisible[5] = ui.blockInfoDock->isVisible();
++    panelsVisible[6] = ui.frameInfoDock->isVisible();
+ 
+     // Hide panels
+     ui.propertiesDock->hide();
+@@ -753,6 +815,7 @@ void MainWindow::toggleFullscreen()
+     ui.fileInfoDock->hide();
+     ui.cachingInfoDock->hide();
+     ui.blockInfoDock->hide();
++    ui.frameInfoDock->hide();
+ 
+     if (!is_Q_OS_MAC)
+       ui.menuBar->hide();
+diff --git a/YUViewLib/src/ui/Mainwindow.h b/YUViewLib/src/ui/Mainwindow.h
+index 82722c79..dc7eba88 100644
+--- a/YUViewLib/src/ui/Mainwindow.h
++++ b/YUViewLib/src/ui/Mainwindow.h
+@@ -164,5 +164,5 @@ private:
+   ViewStateHandler                   stateHandler;
+   SeparateWindow                     separateViewWindow;
+   bool showNormalMaximized;     // When going to full screen: Was this windows maximized?
+-  bool panelsVisible[6]{false}; // Which panels are visible when going to full-screen mode?
++  bool panelsVisible[7]{false}; // Which panels are visible when going to full-screen mode?
+ };
+diff --git a/YUViewLib/src/ui/views/SplitViewWidget.cpp b/YUViewLib/src/ui/views/SplitViewWidget.cpp
+index b4eec89d..601a596d 100644
+--- a/YUViewLib/src/ui/views/SplitViewWidget.cpp
++++ b/YUViewLib/src/ui/views/SplitViewWidget.cpp
+@@ -1043,16 +1043,16 @@ void splitViewWidget::applyDefaultGridSizeFromItem(playlistItem *item)
+   if (this->regularGridSizeUserSet || !item)
+     return;
+ 
+-  const auto maxBlockSize = item->getMaxBlockSize();
+-  if (maxBlockSize == 0)
+-    // Not an item with a known block size, or the sequence header was not parsed yet. Keep whatever
+-    // we have; update() calls us again on the next frame/redraw.
++  const auto defaultGridSize = item->getDefaultGridSize();
++  if (defaultGridSize == 0)
++    // The item has no opinion, or the sequence header was not parsed yet. Keep whatever we have;
++    // update() calls us again on the next frame/redraw.
+     return;
+ 
+-  if (this->regularGridSize == static_cast<int>(maxBlockSize))
++  if (this->regularGridSize == static_cast<int>(defaultGridSize))
+     return;
+ 
+-  this->setRegularGridSize(static_cast<int>(maxBlockSize), true, false, false);
++  this->setRegularGridSize(static_cast<int>(defaultGridSize), true, false, false);
+ }
+ 
+ void splitViewWidget::paintRegularGrid(QPainter *painter, playlistItem *item)
+@@ -1795,6 +1795,9 @@ void splitViewWidget::setRegularGridSize(const int  size,
+     this->actionGrid[5].setChecked(true);
+   }
+ 
++  // Let the Frame Info checkbox follow along, whoever changed the size.
++  emit regularGridSizeChanged(this->regularGridSize);
++
+   if (callUpdate)
+     update();
+ }
+@@ -1935,11 +1938,15 @@ void splitViewWidget::update(bool newFrame, bool itemRedraw)
+     // first.
+     auto item           = playlist->getSelectedItems();
+ 
+-    // The superblock size is only known after the sequence header was parsed, so this has to be
+-    // retried until it succeeds rather than done once when the item is selected.
++    // For a compressed item the grid size is the superblock size, which is only known after the
++    // sequence header was parsed, so this has to be retried until it succeeds rather than done once
++    // when the item is selected.
+     this->applyDefaultGridSizeFromItem(item[0]);
+ 
+     int  frameIdx       = playback->getCurrentFrame();
++
++    emit viewFrameChanged(item[0], frameIdx);
++
+     bool loadRawData    = showRawData() && !playing;
+     bool itemLoading[2] = {false, false};
+     if (item[0])
+diff --git a/YUViewLib/src/ui/views/SplitViewWidget.h b/YUViewLib/src/ui/views/SplitViewWidget.h
+index 3f823a56..7c1df297 100644
+--- a/YUViewLib/src/ui/views/SplitViewWidget.h
++++ b/YUViewLib/src/ui/views/SplitViewWidget.h
+@@ -135,12 +135,23 @@ signals:
+    */
+   void blockSelected(playlistItem *item, QPoint pixelPos, int frameIdx);
+ 
++  //!< The regular grid size changed (menu, checkbox, or derived from the item). 0 means no grid.
++  void regularGridSizeChanged(int size);
++
++  /* The view is now showing this item and frame. Emitted on every frame change and item redraw, so
++   * panes that are not driven by clicking (the frame histogram) can keep up.
++   */
++  void viewFrameChanged(playlistItem *item, int frameIdx);
++
+ public slots:
+ 
+   // Accept the signal from the playlisttreewidget that signals if a new (or two) item was selected.
+   // This function will restore the view/position of the items (if enabled)
+   void currentSelectedItemsChanged(playlistItem *item1, playlistItem *item2);
+ 
++  //!< From the Frame Info grid checkbox. 0 disables the grid. Counts as a user choice.
++  void setGridSize(int size) { this->setRegularGridSize(size, true, true); }
++
+   void triggerActionSeparateView() { actionSeparateView.trigger(); }
+   void toggleFullScreenAction() { actionFullScreen.trigger(); }
+ 
+diff --git a/YUViewLib/src/ui/widgets/FrameInfoWidget.cpp b/YUViewLib/src/ui/widgets/FrameInfoWidget.cpp
+new file mode 100644
+index 00000000..27a825d1
+--- /dev/null
++++ b/YUViewLib/src/ui/widgets/FrameInfoWidget.cpp
+@@ -0,0 +1,240 @@
++/*  This file is part of YUView - The YUV player with advanced analytics toolset
++ *   <https://github.com/IENT/YUView>
++ *   Copyright (C) 2015  Institut für Nachrichtentechnik, RWTH Aachen University, GERMANY
++ *
++ *   This program is free software; you can redistribute it and/or modify
++ *   it under the terms of the GNU General Public License as published by
++ *   the Free Software Foundation; either version 3 of the License, or
++ *   (at your option) any later version.
++ *
++ *   In addition, as a special exception, the copyright holders give
++ *   permission to link the code of portions of this program with the
++ *   OpenSSL library under certain conditions as described in each
++ *   individual source file, and distribute linked combinations including
++ *   the two.
++ *
++ *   You must obey the GNU General Public License in all respects for all
++ *   of the code used other than OpenSSL. If you modify file(s) with this
++ *   exception, you may extend this exception to your version of the
++ *   file(s), but you are not obligated to do so. If you do not wish to do
++ *   so, delete this exception statement from your version. If you delete
++ *   this exception statement from all source files in the program, then
++ *   also delete it here.
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ *   GNU General Public License for more details.
++ *
++ *   You should have received a copy of the GNU General Public License
++ *   along with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "FrameInfoWidget.h"
++
++#include <QHeaderView>
++
++#include <cmath>
++
++#include <playlistitem/playlistItem.h>
++
++namespace
++{
++
++/* The rows of the block statistics table. Adding a value means adding one entry here and one field to
++ * stats::PixelBlockStats (which needs PIXEL_STATS_CACHE_VERSION bumped so old cache files are
++ * discarded) - nothing else in the widget has to change.
++ */
++struct StatisticRow
++{
++  const char *name;
++  QString (*format)(const stats::PixelBlockStats &);
++};
++
++QString formatValue(double value)
++{
++  return QString::number(value, 'f', 2);
++}
++
++const StatisticRow STATISTIC_ROWS[] = {
++    {"mean", [](const stats::PixelBlockStats &s) { return formatValue(s.mean); }},
++    {"variance", [](const stats::PixelBlockStats &s) { return formatValue(s.variance); }},
++    {"std deviation",
++     [](const stats::PixelBlockStats &s) { return formatValue(std::sqrt(s.variance)); }},
++    {"minimum", [](const stats::PixelBlockStats &s) { return QString::number(int(s.minimum)); }},
++    {"maximum", [](const stats::PixelBlockStats &s) { return QString::number(int(s.maximum)); }},
++};
++
++} // namespace
++
++FrameInfoWidget::FrameInfoWidget(QWidget *parent) : QWidget(parent)
++{
++  this->gridCheckBox.setText("Analysis grid");
++  this->gridCheckBox.setToolTip("Draw the block grid the statistics below are computed on.");
++  connect(&this->gridCheckBox,
++          &QCheckBox::toggled,
++          this,
++          [this](bool checked) { emit gridSizeRequested(checked ? this->itemGridSize : 0); });
++
++  this->histogramLabel.setText("Image attribute - luma histogram");
++  this->histogram.setPlaceholderText("No luma data");
++
++  this->blockTree.setColumnCount(2);
++  this->blockTree.setHeaderLabels({"Value", "Y"});
++  this->blockTree.setRootIsDecorated(false);
++  this->blockTree.setUniformRowHeights(true);
++  this->blockTree.setSelectionMode(QAbstractItemView::NoSelection);
++  this->blockTree.setFocusPolicy(Qt::NoFocus);
++  this->blockTree.header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
++
++  this->layout.setContentsMargins(4, 4, 4, 4);
++  this->layout.addWidget(&this->gridCheckBox);
++  this->layout.addWidget(&this->histogramLabel);
++  this->layout.addWidget(&this->histogram);
++  this->layout.addWidget(&this->blockLabel);
++  this->layout.addWidget(&this->blockTree, 1);
++  this->setLayout(&this->layout);
++
++  this->showBlockMessage("Click in the video to analyze a block.");
++}
++
++void FrameInfoWidget::setItem(playlistItem *item)
++{
++  if (this->selectedItem == item)
++    return;
++  this->selectedItem = item;
++  if (item)
++    // UniqueConnection so re-selecting the same item does not stack connections.
++    connect(item,
++            &playlistItem::pixelStatisticsReady,
++            this,
++            &FrameInfoWidget::pixelStatisticsReady,
++            Qt::UniqueConnection);
++}
++
++void FrameInfoWidget::setGridSize(int size)
++{
++  // Reflect what the view does (the View menu can change it too) without asking for it back.
++  QSignalBlocker blocker(this->gridCheckBox);
++  this->gridCheckBox.setChecked(size > 0);
++  if (size > 0)
++    this->itemGridSize = size;
++}
++
++void FrameInfoWidget::setSelectedBlock(playlistItem *item, QPoint pixelPos, int frameIdx)
++{
++  this->setItem(item);
++  this->selectedFrameIdx = frameIdx;
++  if (item)
++    this->selectedPos = pixelPos;
++  else
++    this->selectedPos.reset();
++  this->refresh();
++}
++
++void FrameInfoWidget::setCurrentFrame(playlistItem *item, int frameIdx)
++{
++  if (this->selectedItem != item)
++    // A different item: the position that was clicked in the old one means nothing here.
++    this->selectedPos.reset();
++  if (this->selectedItem == item && this->selectedFrameIdx == frameIdx)
++    return;
++  this->setItem(item);
++  this->selectedFrameIdx = frameIdx;
++  this->refresh();
++}
++
++void FrameInfoWidget::currentSelectedItemsChanged(playlistItem *item1, playlistItem *item2)
++{
++  if (this->selectedItem && this->selectedItem != item1 && this->selectedItem != item2)
++  {
++    this->selectedItem     = nullptr;
++    this->selectedFrameIdx = -1;
++  }
++  // The grid size is a property of the newly selected item.
++  if (item1)
++    if (const auto size = int(item1->getDefaultGridSize()); size > 0)
++      this->itemGridSize = size;
++  this->refresh();
++}
++
++void FrameInfoWidget::pixelStatisticsReady(int frameIdx)
++{
++  if (frameIdx == this->selectedFrameIdx)
++    this->updateBlockStatistics();
++}
++
++void FrameInfoWidget::refresh()
++{
++  this->updateHistogram();
++  this->updateBlockStatistics();
++}
++
++void FrameInfoWidget::updateHistogram()
++{
++  auto *item = this->selectedItem.data();
++  if (!item || this->selectedFrameIdx < 0)
++  {
++    this->histogram.setHistogram({});
++    this->histogram.setPlaceholderText("Select a raw YUV item");
++    return;
++  }
++  const auto bins = item->getLumaHistogram(this->selectedFrameIdx);
++  this->histogram.setHistogram(bins);
++  if (bins.empty())
++    this->histogram.setPlaceholderText(item->supportsPixelStatistics()
++                                           ? "Frame not loaded yet"
++                                           : "Only available for raw YUV");
++  this->histogramLabel.setText(bins.empty()
++                                   ? QString("Image attribute - luma histogram")
++                                   : QString("Image attribute - luma histogram, frame %1")
++                                         .arg(this->selectedFrameIdx));
++}
++
++void FrameInfoWidget::showBlockMessage(const QString &text)
++{
++  this->blockTree.clear();
++  this->blockLabel.setText(text);
++}
++
++void FrameInfoWidget::updateBlockStatistics()
++{
++  auto *item = this->selectedItem.data();
++  if (!item || this->selectedFrameIdx < 0 || !this->selectedPos)
++    return this->showBlockMessage("Click in the video to analyze a block.");
++  if (!item->supportsPixelStatistics())
++    return this->showBlockMessage("Pixel statistics are only available for raw YUV items.");
++
++  const auto blockSize = item->getPixelStatisticsBlockSize();
++  if (blockSize == 0)
++    return this->showBlockMessage("No block size reported.");
++
++  const auto blockX = (this->selectedPos->x() / int(blockSize)) * int(blockSize);
++  const auto blockY = (this->selectedPos->y() / int(blockSize)) * int(blockSize);
++
++  const auto values = item->getPixelBlockStats(*this->selectedPos, this->selectedFrameIdx);
++  if (!values)
++  {
++    /* Not computed yet. Ask for it - the whole frame is done in one background pass - and come back
++     * when pixelStatisticsReady() arrives.
++     */
++    item->requestPixelStatistics(this->selectedFrameIdx);
++    return this->showBlockMessage(QString("Block (%1,%2) %3x%3 - computing...")
++                                      .arg(blockX)
++                                      .arg(blockY)
++                                      .arg(blockSize));
++  }
++
++  this->blockLabel.setText(
++      QString("Block (%1,%2) %3x%3, frame %4").arg(blockX).arg(blockY).arg(blockSize).arg(
++          this->selectedFrameIdx));
++
++  this->blockTree.clear();
++  for (const auto &row : STATISTIC_ROWS)
++  {
++    auto *treeItem = new QTreeWidgetItem(&this->blockTree);
++    treeItem->setText(0, row.name);
++    treeItem->setText(1, row.format(*values));
++    treeItem->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
++  }
++}
+diff --git a/YUViewLib/src/ui/widgets/FrameInfoWidget.h b/YUViewLib/src/ui/widgets/FrameInfoWidget.h
+new file mode 100644
+index 00000000..00819e23
+--- /dev/null
++++ b/YUViewLib/src/ui/widgets/FrameInfoWidget.h
+@@ -0,0 +1,113 @@
++/*  This file is part of YUView - The YUV player with advanced analytics toolset
++ *   <https://github.com/IENT/YUView>
++ *   Copyright (C) 2015  Institut für Nachrichtentechnik, RWTH Aachen University, GERMANY
++ *
++ *   This program is free software; you can redistribute it and/or modify
++ *   it under the terms of the GNU General Public License as published by
++ *   the Free Software Foundation; either version 3 of the License, or
++ *   (at your option) any later version.
++ *
++ *   In addition, as a special exception, the copyright holders give
++ *   permission to link the code of portions of this program with the
++ *   OpenSSL library under certain conditions as described in each
++ *   individual source file, and distribute linked combinations including
++ *   the two.
++ *
++ *   You must obey the GNU General Public License in all respects for all
++ *   of the code used other than OpenSSL. If you modify file(s) with this
++ *   exception, you may extend this exception to your version of the
++ *   file(s), but you are not obligated to do so. If you do not wish to do
++ *   so, delete this exception statement from your version. If you delete
++ *   this exception statement from all source files in the program, then
++ *   also delete it here.
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ *   GNU General Public License for more details.
++ *
++ *   You should have received a copy of the GNU General Public License
++ *   along with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#pragma once
++
++#include <QCheckBox>
++#include <QLabel>
++#include <QPointer>
++#include <QTreeWidget>
++#include <QVBoxLayout>
++#include <QWidget>
++
++#include <optional>
++
++#include <ui/widgets/HistogramWidget.h>
++
++class playlistItem;
++
++/* Frame level analysis of a raw YUV item: the luma histogram of the frame, and the statistics of the
++ * 64x64 block that was clicked.
++ *
++ * Separate from BlockInfoWidget on purpose. That one reports what the *bitstream* says about a block
++ * (AV1 syntax from the decoder); this one reports what the *pixels* are, which also exists for raw
++ * files where there is no bitstream.
++ *
++ * The statistics of the whole frame are computed in the background and cached (see
++ * stats::PixelStatisticsCache), so clicking around a frame costs nothing after the first request.
++ */
++class FrameInfoWidget : public QWidget
++{
++  Q_OBJECT
++
++public:
++  explicit FrameInfoWidget(QWidget *parent = nullptr);
++
++  //!< Whether the analysis grid should be drawn. Mirrors the view, see setGridSize().
++  bool isGridEnabled() const { return this->gridCheckBox.isChecked(); }
++
++signals:
++  /* The user toggled the grid. size is the item's grid size when enabling and 0 when disabling, which
++   * is exactly what splitViewWidget::setRegularGridSize() takes.
++   */
++  void gridSizeRequested(int size);
++
++public slots:
++  //!< From splitViewWidget::blockSelected. item == nullptr clears the block section.
++  void setSelectedBlock(playlistItem *item, QPoint pixelPos, int frameIdx);
++  //!< Re-read everything for the stored selection (new frame loaded, format changed, filter changed).
++  void refresh();
++  //!< The playlist selection changed. Clears when our item is no longer selected.
++  void currentSelectedItemsChanged(playlistItem *item1, playlistItem *item2);
++  //!< Reflect the grid size the view actually uses, without emitting gridSizeRequested().
++  void setGridSize(int size);
++  //!< The background computation for a frame finished.
++  void pixelStatisticsReady(int frameIdx);
++  /* Which item and frame the view is showing. The histogram follows the displayed frame, so it must
++   * not wait for a click. The block statistics follow it too, so stepping frames re-reads the same
++   * position.
++   */
++  void setCurrentFrame(playlistItem *item, int frameIdx);
++
++private:
++  /* Take over a new item, connecting to its background-statistics signal. Items come and go with the
++   * playlist, so the connection is made here rather than once in the main window.
++   */
++  void setItem(playlistItem *item);
++  void updateHistogram();
++  void updateBlockStatistics();
++  void showBlockMessage(const QString &text);
++
++  QVBoxLayout     layout;
++  QCheckBox       gridCheckBox;
++  QLabel          histogramLabel;
++  HistogramWidget histogram;
++  QLabel          blockLabel;
++  QTreeWidget     blockTree;
++
++  QPointer<playlistItem>  selectedItem;
++  int                     selectedFrameIdx{-1};
++  //!< Nothing until the user clicks in the view.
++  std::optional<QPoint>   selectedPos;
++  //!< The grid size the item wants, remembered so the checkbox can ask for it again.
++  int                    itemGridSize{64};
++};
+diff --git a/YUViewLib/src/ui/widgets/HistogramWidget.cpp b/YUViewLib/src/ui/widgets/HistogramWidget.cpp
+new file mode 100644
+index 00000000..58cda3f2
+--- /dev/null
++++ b/YUViewLib/src/ui/widgets/HistogramWidget.cpp
+@@ -0,0 +1,103 @@
++/*  This file is part of YUView - The YUV player with advanced analytics toolset
++ *   <https://github.com/IENT/YUView>
++ *   Copyright (C) 2015  Institut für Nachrichtentechnik, RWTH Aachen University, GERMANY
++ *
++ *   This program is free software; you can redistribute it and/or modify
++ *   it under the terms of the GNU General Public License as published by
++ *   the Free Software Foundation; either version 3 of the License, or
++ *   (at your option) any later version.
++ *
++ *   In addition, as a special exception, the copyright holders give
++ *   permission to link the code of portions of this program with the
++ *   OpenSSL library under certain conditions as described in each
++ *   individual source file, and distribute linked combinations including
++ *   the two.
++ *
++ *   You must obey the GNU General Public License in all respects for all
++ *   of the code used other than OpenSSL. If you modify file(s) with this
++ *   exception, you may extend this exception to your version of the
++ *   file(s), but you are not obligated to do so. If you do not wish to do
++ *   so, delete this exception statement from your version. If you delete
++ *   this exception statement from all source files in the program, then
++ *   also delete it here.
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ *   GNU General Public License for more details.
++ *
++ *   You should have received a copy of the GNU General Public License
++ *   along with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "HistogramWidget.h"
++
++#include <QPainter>
++#include <QPaintEvent>
++
++#include <algorithm>
++
++HistogramWidget::HistogramWidget(QWidget *parent) : QWidget(parent)
++{
++  this->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
++}
++
++void HistogramWidget::setHistogram(const std::vector<uint32_t> &newBins)
++{
++  this->bins       = newBins;
++  this->maximumBin = this->bins.empty() ? 0 : *std::max_element(this->bins.begin(), this->bins.end());
++  this->update();
++}
++
++void HistogramWidget::setPlaceholderText(const QString &text)
++{
++  if (this->placeholder == text)
++    return;
++  this->placeholder = text;
++  this->update();
++}
++
++void HistogramWidget::paintEvent(QPaintEvent *)
++{
++  QPainter painter(this);
++  const auto area = this->rect().adjusted(0, 0, -1, -1);
++
++  painter.fillRect(area, this->palette().base());
++  painter.setPen(this->palette().mid().color());
++  painter.drawRect(area);
++
++  if (this->bins.empty() || this->maximumBin == 0)
++  {
++    if (!this->placeholder.isEmpty())
++    {
++      painter.setPen(this->palette().placeholderText().color());
++      painter.drawText(area, Qt::AlignCenter | Qt::TextWordWrap, this->placeholder);
++    }
++    return;
++  }
++
++  const auto plot = area.adjusted(1, 1, -1, -1);
++  if (plot.width() <= 0 || plot.height() <= 0)
++    return;
++
++  /* One column of pixels per bin would need 256 px of width, which the pane does not always have.
++   * Draw one bar per pixel column and take the largest bin that falls into it, so a narrow widget
++   * still shows the peaks rather than dropping them.
++   */
++  painter.setPen(Qt::NoPen);
++  painter.setBrush(this->palette().highlight());
++  const auto nrBins = int(this->bins.size());
++  for (int x = 0; x < plot.width(); x++)
++  {
++    const auto firstBin = int(int64_t(x) * nrBins / plot.width());
++    const auto lastBin  = std::max(firstBin, int(int64_t(x + 1) * nrBins / plot.width()) - 1);
++    uint32_t   peak     = 0;
++    for (int bin = firstBin; bin <= lastBin && bin < nrBins; bin++)
++      peak = std::max(peak, this->bins[size_t(bin)]);
++    if (peak == 0)
++      continue;
++    const auto barHeight =
++        std::max(1, int(int64_t(peak) * plot.height() / int64_t(this->maximumBin)));
++    painter.drawRect(plot.left() + x, plot.bottom() - barHeight + 1, 1, barHeight);
++  }
++}
+diff --git a/YUViewLib/src/ui/widgets/HistogramWidget.h b/YUViewLib/src/ui/widgets/HistogramWidget.h
+new file mode 100644
+index 00000000..94e7d76a
+--- /dev/null
++++ b/YUViewLib/src/ui/widgets/HistogramWidget.h
+@@ -0,0 +1,68 @@
++/*  This file is part of YUView - The YUV player with advanced analytics toolset
++ *   <https://github.com/IENT/YUView>
++ *   Copyright (C) 2015  Institut für Nachrichtentechnik, RWTH Aachen University, GERMANY
++ *
++ *   This program is free software; you can redistribute it and/or modify
++ *   it under the terms of the GNU General Public License as published by
++ *   the Free Software Foundation; either version 3 of the License, or
++ *   (at your option) any later version.
++ *
++ *   In addition, as a special exception, the copyright holders give
++ *   permission to link the code of portions of this program with the
++ *   OpenSSL library under certain conditions as described in each
++ *   individual source file, and distribute linked combinations including
++ *   the two.
++ *
++ *   You must obey the GNU General Public License in all respects for all
++ *   of the code used other than OpenSSL. If you modify file(s) with this
++ *   exception, you may extend this exception to your version of the
++ *   file(s), but you are not obligated to do so. If you do not wish to do
++ *   so, delete this exception statement from your version. If you delete
++ *   this exception statement from all source files in the program, then
++ *   also delete it here.
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ *   GNU General Public License for more details.
++ *
++ *   You should have received a copy of the GNU General Public License
++ *   along with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#pragma once
++
++#include <QWidget>
++
++#include <cstdint>
++#include <vector>
++
++/* A 256 bin bar graph, drawn directly in paintEvent().
++ *
++ * Deliberately not a charting library: the deployment bundle should not grow a dependency (and Qt
++ * Charts is not part of the Qt install used here) for what is a few lines of painting.
++ */
++class HistogramWidget : public QWidget
++{
++  Q_OBJECT
++
++public:
++  explicit HistogramWidget(QWidget *parent = nullptr);
++
++  //!< Empty clears the graph. Any bin count is accepted; 256 is what the luma histogram produces.
++  void setHistogram(const std::vector<uint32_t> &bins);
++
++  //!< Shown centered when there is nothing to draw.
++  void setPlaceholderText(const QString &text);
++
++  QSize minimumSizeHint() const override { return QSize(120, 70); }
++  QSize sizeHint() const override { return QSize(256, 90); }
++
++protected:
++  void paintEvent(QPaintEvent *event) override;
++
++private:
++  std::vector<uint32_t> bins;
++  uint32_t              maximumBin{};
++  QString               placeholder{};
++};
+diff --git a/YUViewLib/src/video/yuv/ConvolutionFilter.cpp b/YUViewLib/src/video/yuv/ConvolutionFilter.cpp
+new file mode 100644
+index 00000000..a52fa8f0
+--- /dev/null
++++ b/YUViewLib/src/video/yuv/ConvolutionFilter.cpp
+@@ -0,0 +1,166 @@
++/*  This file is part of YUView - The YUV player with advanced analytics toolset
++ *   <https://github.com/IENT/YUView>
++ *   Copyright (C) 2015  Institut für Nachrichtentechnik, RWTH Aachen University, GERMANY
++ *
++ *   This program is free software; you can redistribute it and/or modify
++ *   it under the terms of the GNU General Public License as published by
++ *   the Free Software Foundation; either version 3 of the License, or
++ *   (at your option) any later version.
++ *
++ *   In addition, as a special exception, the copyright holders give
++ *   permission to link the code of portions of this program with the
++ *   OpenSSL library under certain conditions as described in each
++ *   individual source file, and distribute linked combinations including
++ *   the two.
++ *
++ *   You must obey the GNU General Public License in all respects for all
++ *   of the code used other than OpenSSL. If you modify file(s) with this
++ *   exception, you may extend this exception to your version of the
++ *   file(s), but you are not obligated to do so. If you do not wish to do
++ *   so, delete this exception statement from your version. If you delete
++ *   this exception statement from all source files in the program, then
++ *   also delete it here.
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ *   GNU General Public License for more details.
++ *
++ *   You should have received a copy of the GNU General Public License
++ *   along with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "ConvolutionFilter.h"
++
++#include <algorithm>
++#include <cmath>
++#include <cstdint>
++#include <cstring>
++#include <vector>
++
++namespace video::yuv
++{
++
++double ConvolutionFilter::coefficientSum() const
++{
++  double sum = 0.0;
++  for (const auto coefficient : this->kernel)
++    sum += coefficient;
++  return sum;
++}
++
++bool ConvolutionFilter::isNoOp() const
++{
++  if (!this->enabled)
++    return true;
++  // The identity kernel, allowing for the fact that the values come from text input.
++  for (size_t i = 0; i < this->kernel.size(); i++)
++  {
++    const auto expected = (i == 4) ? 1.0 : 0.0;
++    if (std::abs(this->kernel[i] - expected) > 1e-12)
++      return false;
++  }
++  return true;
++}
++
++QByteArray ConvolutionFilter::key() const
++{
++  if (this->isNoOp())
++    // Everything that changes nothing must share one key, so toggling an identity kernel on and off
++    // does not throw away the cached statistics.
++    return QByteArrayLiteral("conv:none");
++  QByteArray key = QByteArrayLiteral("conv:");
++  for (const auto coefficient : this->kernel)
++    key += QByteArray::number(coefficient, 'g', 17) + ',';
++  return key;
++}
++
++void ConvolutionFilter::applyToLuma(QByteArray           &rawYUV,
++                                    const PixelFormatYUV &format,
++                                    const Size           &frameSize) const
++{
++  if (this->isNoOp())
++    return;
++  if (!format.isValid() || !frameSize.isValid())
++    return;
++  // Planar only: for those the luma plane is the first plane and a plain width x height array, which
++  // is all this needs. Unpacking a packed format would mean duplicating videoHandlerYUV's conversion.
++  if (!format.isPlanar() || format.isBytePacking())
++    return;
++
++  const auto bitDepth = format.getBitsPerSample();
++  if (bitDepth < 8 || bitDepth > 16)
++    return;
++
++  const bool     twoBytes  = bitDepth > 8;
++  const bool     bigEndian = format.isBigEndian();
++  const unsigned width     = frameSize.width;
++  const unsigned height    = frameSize.height;
++  const int64_t  nrSamples = int64_t(width) * height;
++  const int64_t  lumaBytes = nrSamples * (twoBytes ? 2 : 1);
++  if (rawYUV.size() < lumaBytes)
++    return;
++
++  auto *plane = reinterpret_cast<uint8_t *>(rawYUV.data());
++
++  const auto readSample = [&](unsigned x, unsigned y) -> unsigned {
++    const int64_t index = int64_t(y) * width + x;
++    if (!twoBytes)
++      return plane[index];
++    const auto *p = plane + index * 2;
++    return bigEndian ? (unsigned(p[0]) << 8 | p[1]) : (unsigned(p[1]) << 8 | p[0]);
++  };
++  const auto writeSample = [&](unsigned x, unsigned y, unsigned value) {
++    const int64_t index = int64_t(y) * width + x;
++    if (!twoBytes)
++    {
++      plane[index] = uint8_t(value);
++      return;
++    }
++    auto *p = plane + index * 2;
++    if (bigEndian)
++    {
++      p[0] = uint8_t(value >> 8);
++      p[1] = uint8_t(value & 0xff);
++    }
++    else
++    {
++      p[0] = uint8_t(value & 0xff);
++      p[1] = uint8_t(value >> 8);
++    }
++  };
++
++  // A convolution reads neighbors, so it cannot run in place. One copy of the luma plane is enough.
++  std::vector<uint16_t> source(static_cast<size_t>(nrSamples));
++  for (unsigned y = 0; y < height; y++)
++    for (unsigned x = 0; x < width; x++)
++      source[size_t(y) * width + x] = uint16_t(readSample(x, y));
++
++  const auto     sum       = this->coefficientSum();
++  const double   divisor   = (std::abs(sum) < 1e-12) ? 1.0 : sum;
++  const unsigned maxValue  = (1u << bitDepth) - 1u;
++
++  for (unsigned y = 0; y < height; y++)
++  {
++    for (unsigned x = 0; x < width; x++)
++    {
++      double accumulated = 0.0;
++      for (int ky = -1; ky <= 1; ky++)
++      {
++        // Replicate the border instead of treating the outside as black, which would darken the edges.
++        const unsigned sampleY =
++            unsigned(std::clamp(int(y) + ky, 0, int(height) - 1));
++        for (int kx = -1; kx <= 1; kx++)
++        {
++          const unsigned sampleX = unsigned(std::clamp(int(x) + kx, 0, int(width) - 1));
++          accumulated += this->kernel[size_t((ky + 1) * 3 + (kx + 1))] *
++                         double(source[size_t(sampleY) * width + sampleX]);
++        }
++      }
++      const auto scaled = std::lround(accumulated / divisor);
++      writeSample(x, y, unsigned(std::clamp<int64_t>(scaled, 0, int64_t(maxValue))));
++    }
++  }
++}
++
++} // namespace video::yuv
+diff --git a/YUViewLib/src/video/yuv/ConvolutionFilter.h b/YUViewLib/src/video/yuv/ConvolutionFilter.h
+new file mode 100644
+index 00000000..56df0a26
+--- /dev/null
++++ b/YUViewLib/src/video/yuv/ConvolutionFilter.h
+@@ -0,0 +1,83 @@
++/*  This file is part of YUView - The YUV player with advanced analytics toolset
++ *   <https://github.com/IENT/YUView>
++ *   Copyright (C) 2015  Institut für Nachrichtentechnik, RWTH Aachen University, GERMANY
++ *
++ *   This program is free software; you can redistribute it and/or modify
++ *   it under the terms of the GNU General Public License as published by
++ *   the Free Software Foundation; either version 3 of the License, or
++ *   (at your option) any later version.
++ *
++ *   In addition, as a special exception, the copyright holders give
++ *   permission to link the code of portions of this program with the
++ *   OpenSSL library under certain conditions as described in each
++ *   individual source file, and distribute linked combinations including
++ *   the two.
++ *
++ *   You must obey the GNU General Public License in all respects for all
++ *   of the code used other than OpenSSL. If you modify file(s) with this
++ *   exception, you may extend this exception to your version of the
++ *   file(s), but you are not obligated to do so. If you do not wish to do
++ *   so, delete this exception statement from your version. If you delete
++ *   this exception statement from all source files in the program, then
++ *   also delete it here.
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ *   GNU General Public License for more details.
++ *
++ *   You should have received a copy of the GNU General Public License
++ *   along with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#pragma once
++
++#include <QByteArray>
++
++#include <array>
++
++#include <common/Typedef.h>
++#include <video/yuv/PixelFormatYUV.h>
++
++namespace video::yuv
++{
++
++/* A 3x3 convolution applied to the luma plane.
++ *
++ * A plain value type on purpose: the caching threads snapshot it (like they already do for the pixel
++ * format and the frame size) instead of reading fields that the GUI thread may be editing.
++ *
++ * Only luma is filtered. Chroma is left alone, so the colors of the picture stay put while the
++ * structure changes - which is what makes the result readable when looking for edges or noise.
++ */
++struct ConvolutionFilter
++{
++  //!< Row major, kernel[4] is the center. The default is the identity.
++  std::array<double, 9> kernel{{0, 0, 0, 0, 1, 0, 0, 0, 0}};
++  bool                  enabled{false};
++
++  //!< Sum of the coefficients. The result is divided by it unless it is zero (edge detectors).
++  double coefficientSum() const;
++
++  //!< True when applying this would not change anything, so the work can be skipped.
++  bool isNoOp() const;
++
++  /* Identifies the filter for the statistics cache: two filters with the same key produce the same
++   * samples, so cached statistics stay valid exactly while the key does not change.
++   */
++  QByteArray key() const;
++
++  /* Rewrite the luma plane of one full frame in place. Border pixels replicate the edge. Does
++   * nothing for formats whose plane layout this cannot read (packed or byte packed formats), and
++   * nothing when isNoOp().
++   */
++  void applyToLuma(QByteArray &rawYUV, const PixelFormatYUV &format, const Size &frameSize) const;
++
++  bool operator==(const ConvolutionFilter &other) const
++  {
++    return this->enabled == other.enabled && this->kernel == other.kernel;
++  }
++  bool operator!=(const ConvolutionFilter &other) const { return !(*this == other); }
++};
++
++} // namespace video::yuv
+diff --git a/YUViewLib/src/video/yuv/videoHandlerYUV.cpp b/YUViewLib/src/video/yuv/videoHandlerYUV.cpp
+index 013affa5..f9539a20 100644
+--- a/YUViewLib/src/video/yuv/videoHandlerYUV.cpp
++++ b/YUViewLib/src/video/yuv/videoHandlerYUV.cpp
+@@ -2542,6 +2542,8 @@ QLayout *videoHandlerYUV::createVideoHandlerControls(bool isSizeAndFormatFixed)
+   connect(
+     ui.chromaInvertCheckBox, QCheckBoxStateChanged, this, &videoHandlerYUV::slotYUVControlChanged);
+ 
++  ui.topVBoxLayout->addWidget(this->createConvolutionFilterControls());
++
+   if (!isSizeAndFormatFixed && newVBoxLayout)
+     newVBoxLayout->addLayout(ui.topVBoxLayout);
+ 
+@@ -3220,6 +3222,7 @@ void videoHandlerYUV::loadFrameForCaching(int frameIndex, QImage &frameToCache)
+   const auto yuvFormat          = this->srcPixelFormat;
+   const auto curFrameSize       = this->frameSize;
+   const auto conversionSettings = this->conversionSettings;
++  const auto filter             = this->convolutionFilter;
+ 
+   requestDataMutex.lock();
+   emit       signalRequestRawData(frameIndex, true);
+@@ -3233,6 +3236,8 @@ void videoHandlerYUV::loadFrameForCaching(int frameIndex, QImage &frameToCache)
+     return;
+   }
+ 
++  filter.applyToLuma(tmpBufferRawYUVDataCaching, yuvFormat, curFrameSize);
++
+   // Convert YUV to image. This can then be cached.
+   convertYUVToImage(
+     tmpBufferRawYUVDataCaching, frameToCache, yuvFormat, curFrameSize, conversionSettings);
+@@ -3262,6 +3267,10 @@ bool videoHandlerYUV::loadRawYUVData(int frameIndex)
+ 
+   currentFrameRawData            = rawData;
+   currentFrameRawData_frameIndex = frameIndex;
++  // Filter here, where the samples enter the buffer, so it happens exactly once per loaded frame -
++  // the early return above means this function does not run again for a frame already in the buffer.
++  this->convolutionFilter.applyToLuma(
++      this->currentFrameRawData, this->srcPixelFormat, this->frameSize);
+   requestDataMutex.unlock();
+ 
+   DEBUG_YUV("videoHandlerYUV::loadRawYUVData " << frameIndex << " Done");
+@@ -3894,4 +3903,88 @@ void videoHandlerYUV::loadPlaylist(const YUViewDomElement &element)
+     (element.findChildValue("math.chroma.invert") == "True");
+ }
+ 
++QWidget *videoHandlerYUV::createConvolutionFilterControls()
++{
++  auto *group  = new QGroupBox("Convolution filter (luma)");
++  auto *layout = new QVBoxLayout(group);
++
++  this->convEnableCheckBox = new QCheckBox("Enable");
++  this->convEnableCheckBox->setToolTip(
++      "Apply the 3x3 kernel below to the luma plane. The result is divided by the sum of the "
++      "coefficients (not divided when the sum is zero, as for edge detectors). Chroma is not "
++      "touched. Everything downstream sees the filtered picture: the displayed image, the pixel "
++      "values and the block statistics.");
++  this->convEnableCheckBox->setChecked(this->convolutionFilter.enabled);
++  layout->addWidget(this->convEnableCheckBox);
++
++  this->convKernelTable = new QTableWidget(3, 3);
++  this->convKernelTable->horizontalHeader()->hide();
++  this->convKernelTable->verticalHeader()->hide();
++  this->convKernelTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
++  this->convKernelTable->verticalHeader()->setSectionResizeMode(QHeaderView::Stretch);
++  this->convKernelTable->setSelectionMode(QAbstractItemView::SingleSelection);
++  // Three rows of text plus the frame. Without this the table claims far more height than it needs.
++  this->convKernelTable->setFixedHeight(3 * 24 + 4);
++  for (int row = 0; row < 3; row++)
++    for (int column = 0; column < 3; column++)
++    {
++      auto *cell = new QTableWidgetItem(
++          QString::number(this->convolutionFilter.kernel[size_t(row * 3 + column)]));
++      cell->setTextAlignment(Qt::AlignCenter);
++      this->convKernelTable->setItem(row, column, cell);
++    }
++  layout->addWidget(this->convKernelTable);
++
++  connect(this->convEnableCheckBox,
++          &QCheckBox::toggled,
++          this,
++          &videoHandlerYUV::slotConvolutionFilterChanged);
++  connect(this->convKernelTable,
++          &QTableWidget::itemChanged,
++          this,
++          &videoHandlerYUV::slotConvolutionFilterChanged);
++
++  return group;
++}
++
++void videoHandlerYUV::slotConvolutionFilterChanged()
++{
++  if (!this->convKernelTable || !this->convEnableCheckBox)
++    return;
++
++  ConvolutionFilter filter;
++  filter.enabled = this->convEnableCheckBox->isChecked();
++  for (int row = 0; row < 3; row++)
++    for (int column = 0; column < 3; column++)
++    {
++      const auto *cell = this->convKernelTable->item(row, column);
++      // Unparsable text counts as 0 rather than rejecting the edit, so a half typed "-" or "." does
++      // not fight the user while they are typing.
++      filter.kernel[size_t(row * 3 + column)] = cell ? cell->text().toDouble() : 0.0;
++    }
++
++  this->setConvolutionFilter(filter);
++}
++
++void videoHandlerYUV::setConvolutionFilter(const ConvolutionFilter &filter)
++{
++  if (filter == this->convolutionFilter)
++    return;
++  // Two filters that both do nothing produce the same samples, so there is nothing to redo.
++  const auto wasNoOp = this->convolutionFilter.isNoOp();
++  this->convolutionFilter = filter;
++  if (wasNoOp && filter.isNoOp())
++    return;
++
++  /* Same invalidation the other YUV controls do (slotYUVControlChanged). The filter runs while the
++   * raw samples are read, so unlike a display-only setting the raw buffer has to be re-read as well -
++   * hence currentFrameRawData_frameIndex too.
++   */
++  this->currentImageIndex              = -1;
++  this->currentImage_frameIndex        = -1;
++  this->currentFrameRawData_frameIndex = -1;
++  this->setCacheInvalid();
++  emit signalHandlerChanged(true, RECACHE_CLEAR);
++}
++
+ } // namespace video::yuv
+diff --git a/YUViewLib/src/video/yuv/videoHandlerYUV.h b/YUViewLib/src/video/yuv/videoHandlerYUV.h
+index 22b2efee..870cac11 100644
+--- a/YUViewLib/src/video/yuv/videoHandlerYUV.h
++++ b/YUViewLib/src/video/yuv/videoHandlerYUV.h
+@@ -35,6 +35,12 @@
+ #include <common/EnumMapper.h>
+ #include <optional>
+ #include <video/videoHandler.h>
++#include <QCheckBox>
++#include <QGroupBox>
++#include <QHeaderView>
++#include <QTableWidget>
++
++#include <video/yuv/ConvolutionFilter.h>
+ #include <video/yuv/PixelFormatYUV.h>
+ 
+ #include "ui_videoHandlerYUV.h"
+@@ -146,6 +152,9 @@ public:
+   // other sources might provide a fixed format which the user cannot change (HEVC file, ...)
+   virtual QLayout *createVideoHandlerControls(bool isSizeAndFormatFixed = false) override;
+ 
++  //!< The format the raw samples in the buffer are in.
++  PixelFormatYUV getPixelFormatYUV() const { return this->srcPixelFormat; }
++
+   // Get the name of the currently selected YUV pixel format
+   virtual QString getRawPixelFormatYUVName() const
+   {
+@@ -185,6 +194,28 @@ public:
+   bool showPixelValuesAsDiff{false};
+ 
+   QByteArray     getDiffYUV() const { return this->diffYUV; };
++
++  /* The raw YUV bytes of the frame currently in the buffer, and which frame that is (-1 for none).
++   * QByteArray is copy-on-write, so the returned copy is cheap and keeps its data even when the
++   * handler moves on to the next frame - that is what makes it safe to hand to a worker thread.
++   */
++  // ----- 3x3 convolution of the luma plane -----
++  /* Applied to the raw samples right after they are read, so everything downstream sees the filtered
++   * picture: the displayed image, the cached frames, the pixel values under the cursor and the per
++   * block statistics. That way what is measured is what is on screen.
++   */
++  ConvolutionFilter getConvolutionFilter() const { return this->convolutionFilter; }
++  //!< The "Convolution filter" group for the properties pane (3x3 coefficients plus Enable).
++  QWidget          *createConvolutionFilterControls();
++  void              setConvolutionFilter(const ConvolutionFilter &filter);
++  //!< Identifies the filter for the statistics cache. See ConvolutionFilter::key().
++  QByteArray        convolutionFilterKey() const { return this->convolutionFilter.key(); }
++
++  QByteArray getCurrentRawYUVData(int &frameIndex) const
++  {
++    frameIndex = this->currentFrameRawData_frameIndex;
++    return this->currentFrameRawData;
++  }
+   PixelFormatYUV getDiffYUVFormat() const { return this->diffYUVFormat; }
+ 
+   bool isDiffReady() const { return this->diffReady; }
+@@ -229,6 +260,11 @@ private:
+ 
+   bool           diffReady{};
+   QByteArray     diffYUV;
++
++  ConvolutionFilter convolutionFilter;
++  // Owned by the properties widget, so plain pointers. Null until createVideoHandlerControls() ran.
++  QTableWidget     *convKernelTable{};
++  QCheckBox        *convEnableCheckBox{};
+   PixelFormatYUV diffYUVFormat{};
+ 
+   static std::vector<PixelFormatYUV> formatPresetList;
+@@ -239,6 +275,8 @@ private slots:
+   void slotYUVControlChanged();
+   // The YUV format combo box was changed
+   void slotYUVFormatControlChanged(int idx);
++  //!< A coefficient or the enable box changed: rebuild the filter and reload.
++  void slotConvolutionFilterChanged();
+ };
+ 
+ } // namespace video::yuv
+diff --git a/YUViewLib/ui/mainwindow.ui b/YUViewLib/ui/mainwindow.ui
+index 074a7ea6..6fa74f8f 100644
+--- a/YUViewLib/ui/mainwindow.ui
++++ b/YUViewLib/ui/mainwindow.ui
+@@ -280,6 +280,21 @@
+    </attribute>
+    <widget class="BlockInfoWidget" name="blockInfoWidget"/>
+   </widget>
++  <widget class="QDockWidget" name="frameInfoDock">
++   <property name="minimumSize">
++    <size>
++     <width>200</width>
++     <height>150</height>
++    </size>
++   </property>
++   <property name="windowTitle">
++    <string>Frame Info</string>
++   </property>
++   <attribute name="dockWidgetArea">
++    <number>2</number>
++   </attribute>
++   <widget class="FrameInfoWidget" name="frameInfoWidget"/>
++  </widget>
+   <action name="actionOpen">
+    <property name="text">
+     <string>Open...</string>
+@@ -288,6 +303,12 @@
+  </widget>
+  <layoutdefault spacing="6" margin="11"/>
+  <customwidgets>
++  <customwidget>
++   <class>FrameInfoWidget</class>
++   <extends>QWidget</extends>
++   <header>ui/widgets/FrameInfoWidget.h</header>
++   <container>1</container>
++  </customwidget>
+   <customwidget>
+    <class>BlockInfoWidget</class>
+    <extends>QWidget</extends>
