@@ -137,7 +137,7 @@ if [[ ! -s "$RAWYUV" ]]; then
         -pix_fmt yuv420p "$RAWYUV" >/dev/null 2>&1
 fi
 if [[ -s "$RAWYUV" ]]; then
-    run_test "$ROOT/tests/regression/12-raw-yuv-pixel-analysis.cpp"    "$RAWYUV"
+    run_test "$ROOT/tests/regression/12-raw-yuv-pixel-analysis.cpp"    "$RAWYUV" "$STREAM"
 else
     echo "  SKIP  12-raw-yuv-pixel-analysis (raw YUV 생성 실패)"
     ((skip_count++))

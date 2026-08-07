@@ -1,0 +1,487 @@
+diff --git a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+index 544d0757..7ee1ac1f 100644
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+@@ -1493,3 +1493,12 @@ void playlistItemCompressedVideo::decoderComboxBoxChanged(int idx)
+     emit SignalItemChanged(true, RECACHE_CLEAR);
+   }
+ }
++
++QString playlistItemCompressedVideo::pixelStatsSourcePath() const
++{
++  /* The compressed file itself. The statistics describe the decoded samples, and which samples those
++   * are is pinned by the pixel format and the filter in the cache key, so keying on the source file is
++   * enough to tell two streams apart.
++   */
++  return this->properties().name;
++}
+diff --git a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
+index 9f6b9080..66b25548 100644
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
+@@ -126,6 +126,11 @@ public:
+   InputFormat getInputFormat() const { return this->inputFormat; }
+ 
+ protected:
++  /* The decoded frames are cached under .YUViewBD keyed on the compressed file, so the pixel
++   * statistics of an AV1 stream survive a restart just like a raw file's do.
++   */
++  QString pixelStatsSourcePath() const override;
++
+   virtual void createPropertiesWidget() override;
+ 
+   // We allocate two decoder: One for loading images in the foreground and one for caching in the
+diff --git a/YUViewLib/src/playlistitem/playlistItemRawFile.cpp b/YUViewLib/src/playlistitem/playlistItemRawFile.cpp
+index 756aa9f3..a06d010e 100644
+--- a/YUViewLib/src/playlistitem/playlistItemRawFile.cpp
++++ b/YUViewLib/src/playlistitem/playlistItemRawFile.cpp
+@@ -170,13 +170,6 @@ playlistItemRawFile::playlistItemRawFile(const QString &rawFilePath,
+ 
+   this->pixelFormatAfterLoading = this->video->getFormatAsString();
+ 
+-  // The block statistics are computed on a worker thread; the result is taken over here, on the GUI
+-  // thread, which is the only thread that touches the cache.
+-  connect(&this->pixelStatsWatcher,
+-          &QFutureWatcherBase::finished,
+-          this,
+-          &playlistItemRawFile::pixelStatisticsComputed);
+-
+   // A raw file can be cached.
+   this->cachingEnabled = true;
+ }
+@@ -615,134 +608,15 @@ void playlistItemRawFile::reloadItemSource()
+   emit SignalItemChanged(true, RECACHE_NONE);
+ }
+ 
+-video::yuv::videoHandlerYUV *playlistItemRawFile::yuvHandler() const
+-{
+-  // A raw file is either YUV or RGB (see the constructor). Only YUV has a luma plane to measure.
+-  return dynamic_cast<video::yuv::videoHandlerYUV *>(this->video.get());
+-}
+ 
+-bool playlistItemRawFile::supportsPixelStatistics() const
++QString playlistItemRawFile::pixelStatsSourcePath() const
+ {
+-  const auto handler = this->yuvHandler();
+-  return handler != nullptr && handler->isFormatValid();
++  return QString::fromStdString(this->dataSource.getAbsoluteFilePath());
+ }
+ 
+ unsigned playlistItemRawFile::getDefaultGridSize() const
+ {
+   // Only offer the grid where the statistics behind it exist, so the grid never implies numbers that
+   // cannot be shown.
+-  return this->supportsPixelStatistics() ? PIXEL_STATS_BLOCK_SIZE : 0;
+-}
+-
+-uint64_t playlistItemRawFile::pixelStatsParamHash() const
+-{
+-  const auto handler = this->yuvHandler();
+-  if (!handler)
+-    return 0;
+-  /* Everything that changes the samples we measure. The pixel format decides how the plane is read;
+-   * the convolution filter rewrites it. Luma scale/offset/invert are display-only (applied during the
+-   * conversion to RGB) and deliberately not included.
+-   */
+-  QByteArray key;
+-  key += QByteArray::fromStdString(handler->getPixelFormatYUV().getName());
+-  key += handler->convolutionFilterKey();
+-  const auto digest = QCryptographicHash::hash(key, QCryptographicHash::Sha1);
+-  uint64_t   hash{};
+-  std::memcpy(&hash, digest.constData(), sizeof(hash));
+-  return hash;
+-}
+-
+-void playlistItemRawFile::openPixelStatsCacheIfNeeded()
+-{
+-  const auto handler = this->yuvHandler();
+-  if (!handler)
+-    return;
+-  // startEndRange is (0, nrFrames-1), or (-1, -1) while the format is not known yet.
+-  if (this->properties().startEndRange.second < 0)
+-    return;
+-  const auto hash = this->pixelStatsParamHash();
+-  if (this->pixelStatsCache.isOpen() && hash == this->pixelStatsCacheParamHash)
+-    return;
+-
+-  // The format or the filter changed, so everything computed so far describes other samples.
+-  this->pixelStatsCache.reset();
+-  this->pixelStatsCacheParamHash = hash;
+-  this->lumaHistogramFrameIdx    = -1;
+-  this->pixelStatsCache.open(QString::fromStdString(this->dataSource.getAbsoluteFilePath()),
+-                             handler->getFrameSize(),
+-                             PIXEL_STATS_BLOCK_SIZE,
+-                             this->properties().startEndRange.second + 1,
+-                             hash);
+-}
+-
+-void playlistItemRawFile::requestPixelStatistics(int frameIdx)
+-{
+-  const auto handler = this->yuvHandler();
+-  if (!handler)
+-    return;
+-  this->openPixelStatsCacheIfNeeded();
+-  if (this->pixelStatsCache.has(frameIdx))
+-    return;
+-  if (this->pixelStatsWatcher.isRunning())
+-    // One frame at a time. The caller asks again when the running one reports back.
+-    return;
+-
+-  /* Measure the frame that is actually in the buffer. Asking for a frame that is not loaded would
+-   * mean reading the file a second time here; instead we simply wait to be asked again once the
+-   * normal load path has it.
+-   */
+-  int  loadedFrame = -1;
+-  auto rawData     = handler->getCurrentRawYUVData(loadedFrame);
+-  if (loadedFrame != frameIdx || rawData.isEmpty())
+-    return;
+-
+-  const auto format    = handler->getPixelFormatYUV();
+-  const auto frameSize = handler->getFrameSize();
+-
+-  this->pixelStatsFrameInFlight = frameIdx;
+-  this->pixelStatsWatcher.setFuture(QtConcurrent::run(
+-      [rawData, format, frameSize]
+-      { return stats::computeLumaBlockStats(rawData, format, frameSize, PIXEL_STATS_BLOCK_SIZE); }));
+-}
+-
+-void playlistItemRawFile::pixelStatisticsComputed()
+-{
+-  const auto frameIdx = this->pixelStatsFrameInFlight;
+-  this->pixelStatsFrameInFlight = -1;
+-  if (frameIdx < 0)
+-    return;
+-  const auto blocks = this->pixelStatsWatcher.result();
+-  if (blocks.empty())
+-    // The pixel format cannot be read (packed, byte packed). Nothing to cache.
+-    return;
+-  this->pixelStatsCache.store(frameIdx, blocks);
+-  emit pixelStatisticsReady(frameIdx);
+-}
+-
+-std::optional<stats::PixelBlockStats> playlistItemRawFile::getPixelBlockStats(const QPoint &pixelPos,
+-                                                                             int frameIdx)
+-{
+-  if (!this->pixelStatsCache.isOpen())
+-    return {};
+-  return this->pixelStatsCache.at(frameIdx, pixelPos);
+-}
+-
+-std::vector<uint32_t> playlistItemRawFile::getLumaHistogram(int frameIdx)
+-{
+-  const auto handler = this->yuvHandler();
+-  if (!handler)
+-    return {};
+-  if (frameIdx == this->lumaHistogramFrameIdx)
+-    return this->lumaHistogram;
+-
+-  int  loadedFrame = -1;
+-  auto rawData     = handler->getCurrentRawYUVData(loadedFrame);
+-  if (loadedFrame != frameIdx || rawData.isEmpty())
+-    return {};
+-
+-  this->lumaHistogram = stats::computeLumaHistogram(rawData,
+-                                                    handler->getPixelFormatYUV(),
+-                                                    handler->getFrameSize());
+-  this->lumaHistogramFrameIdx = this->lumaHistogram.empty() ? -1 : frameIdx;
+-  return this->lumaHistogram;
++  return this->supportsPixelStatistics() ? PIXEL_STATS_DEFAULT_BLOCK_SIZE : 0;
+ }
+diff --git a/YUViewLib/src/playlistitem/playlistItemRawFile.h b/YUViewLib/src/playlistitem/playlistItemRawFile.h
+index 80529e70..c9fc4597 100644
+--- a/YUViewLib/src/playlistitem/playlistItemRawFile.h
++++ b/YUViewLib/src/playlistitem/playlistItemRawFile.h
+@@ -74,17 +74,8 @@ public:
+ 
+   virtual ValuePairListSets getPixelValues(const QPoint &pixelPos, int frameIdx) override;
+ 
+-  // ----- Analysis grid and per block luma statistics (raw YUV only) -----
+-  //!< Edge length of the analysis grid and of the statistics blocks.
+-  static constexpr unsigned PIXEL_STATS_BLOCK_SIZE = 64;
+-
++  //!< A raw file has no coding blocks, so it uses the fixed analysis grid.
+   unsigned getDefaultGridSize() const override;
+-  bool     supportsPixelStatistics() const override;
+-  unsigned getPixelStatisticsBlockSize() const override { return PIXEL_STATS_BLOCK_SIZE; }
+-  void     requestPixelStatistics(int frameIdx) override;
+-  std::optional<stats::PixelBlockStats> getPixelBlockStats(const QPoint &pixelPos,
+-                                                          int           frameIdx) override;
+-  std::vector<uint32_t>                 getLumaHistogram(int frameIdx) override;
+ 
+   // Add the file type filters and the extensions of files that we can load.
+   static void getSupportedFileExtensions(QStringList &allExtensions, QStringList &filters);
+@@ -107,9 +98,6 @@ private slots:
+   // if the frame that is requested to be drawn has not been loaded yet.
+   void loadRawData(int frameIdx);
+ 
+-  //!< The worker finished. Runs on the GUI thread, which is the only thread that touches the cache.
+-  void pixelStatisticsComputed();
+-
+   void slotVideoPropertiesChanged();
+ 
+ protected:
+@@ -137,18 +125,6 @@ private:
+ 
+   std::optional<std::string> pixelFormatAfterLoading{};
+ 
+-  //!< The YUV handler, or nullptr for an RGB raw file (which has no luma plane to measure).
+-  video::yuv::videoHandlerYUV *yuvHandler() const;
+-  //!< Everything that changes the sample values. Mismatch invalidates the cache file.
+-  uint64_t pixelStatsParamHash() const;
+-  void     openPixelStatsCacheIfNeeded();
+-
+-  stats::PixelStatisticsCache                pixelStatsCache;
+-  QFutureWatcher<std::vector<stats::PixelBlockStats>> pixelStatsWatcher;
+-  int                                        pixelStatsFrameInFlight{-1};
+-  uint64_t                                   pixelStatsCacheParamHash{};
+-
+-  //!< Last computed luma histogram, kept so repeated reads of the same frame are free.
+-  int                   lumaHistogramFrameIdx{-1};
+-  std::vector<uint32_t> lumaHistogram;
++protected:
++  QString pixelStatsSourcePath() const override;
+ };
+diff --git a/YUViewLib/src/playlistitem/playlistItemWithVideo.cpp b/YUViewLib/src/playlistitem/playlistItemWithVideo.cpp
+index b88e134e..32d2865d 100644
+--- a/YUViewLib/src/playlistitem/playlistItemWithVideo.cpp
++++ b/YUViewLib/src/playlistitem/playlistItemWithVideo.cpp
+@@ -32,6 +32,11 @@
+ 
+ #include "playlistItemWithVideo.h"
+ 
++#include <QCryptographicHash>
++#include <QtConcurrent>
++
++#include <cstring>
++
+ // Activate this if you want to know when which buffer is loaded/converted to image and so on.
+ #define PLAYLISTITEMWITHVIDEO_DEBUG_LOADING 0
+ #if PLAYLISTITEMWITHVIDEO_DEBUG_LOADING && !NDEBUG
+@@ -150,4 +155,149 @@ QList<int> playlistItemWithVideo::getCachedFrames() const
+   if (video)
+     return video->getCachedFrames();
+   return {};
+-}
+\ No newline at end of file
++}
++bool playlistItemWithVideo::supportsPixelStatistics() const
++{
++  // Needs the luma plane, so only for YUV output. A decoder that hands back RGB has none.
++  if (this->rawFormat != video::RawFormat::YUV || !this->video)
++    return false;
++  const auto handler = this->getYUVVideo();
++  return handler != nullptr && handler->isFormatValid();
++}
++
++unsigned playlistItemWithVideo::getPixelStatisticsBlockSize() const
++{
++  if (!this->supportsPixelStatistics())
++    return 0;
++  /* Use the grid the view draws, so the numbers describe exactly the cells the user sees: the AV1
++   * superblock for a compressed stream, the fixed analysis grid for a raw file. Before the sequence
++   * header is parsed a compressed item reports 0, so fall back until it knows.
++   */
++  const auto gridSize = this->getDefaultGridSize();
++  return gridSize > 0 ? gridSize : PIXEL_STATS_DEFAULT_BLOCK_SIZE;
++}
++
++uint64_t playlistItemWithVideo::pixelStatsParamHash() const
++{
++  if (!this->supportsPixelStatistics())
++    return 0;
++  const auto handler = this->getYUVVideo();
++  /* Everything that changes the samples or how they are grouped. Luma scale/offset/invert are
++   * display-only (applied when converting to RGB) and deliberately not included.
++   */
++  QByteArray key;
++  key += QByteArray::fromStdString(handler->getPixelFormatYUV().getName());
++  key += handler->convolutionFilterKey();
++  key += QByteArrayLiteral(";blk=") + QByteArray::number(this->getPixelStatisticsBlockSize());
++  const auto digest = QCryptographicHash::hash(key, QCryptographicHash::Sha1);
++  uint64_t   hash{};
++  std::memcpy(&hash, digest.constData(), sizeof(hash));
++  return hash;
++}
++
++void playlistItemWithVideo::openPixelStatsCacheIfNeeded()
++{
++  if (!this->supportsPixelStatistics())
++    return;
++  // startEndRange is (0, nrFrames-1), or (-1, -1) while the format is not known yet.
++  if (this->properties().startEndRange.second < 0)
++    return;
++
++  const auto hash = this->pixelStatsParamHash();
++  if (this->pixelStatsCache.isOpen() && hash == this->pixelStatsCacheParamHash)
++    return;
++
++  // The format, the filter or the block size changed, so everything computed so far describes
++  // something else.
++  this->pixelStatsCache.reset();
++  this->pixelStatsCacheParamHash = hash;
++  this->lumaHistogramFrameIdx    = -1;
++  this->pixelStatsCache.open(this->pixelStatsSourcePath(),
++                             this->getYUVVideo()->getFrameSize(),
++                             this->getPixelStatisticsBlockSize(),
++                             this->properties().startEndRange.second + 1,
++                             hash);
++}
++
++void playlistItemWithVideo::requestPixelStatistics(int frameIdx)
++{
++  if (!this->supportsPixelStatistics())
++    return;
++  if (!this->pixelStatsWatcherConnected)
++  {
++    // Lambda rather than a slot: this class has no Q_OBJECT of its own.
++    connect(&this->pixelStatsWatcher,
++            &QFutureWatcherBase::finished,
++            this,
++            [this] { this->takeComputedPixelStatistics(); });
++    this->pixelStatsWatcherConnected = true;
++  }
++
++  this->openPixelStatsCacheIfNeeded();
++  if (this->pixelStatsCache.has(frameIdx))
++    return;
++  if (this->pixelStatsWatcher.isRunning())
++    // One frame at a time. The caller asks again when the running one reports back.
++    return;
++
++  /* Measure the frame that is actually in the buffer. Asking for a frame that is not loaded would
++   * mean decoding or reading it a second time here; instead we wait to be asked again once the normal
++   * load path has it.
++   */
++  const auto handler     = this->getYUVVideo();
++  int        loadedFrame = -1;
++  auto       rawData     = handler->getCurrentRawYUVData(loadedFrame);
++  if (loadedFrame != frameIdx || rawData.isEmpty())
++    return;
++
++  const auto format    = handler->getPixelFormatYUV();
++  const auto frameSize = handler->getFrameSize();
++  const auto blockSize = this->getPixelStatisticsBlockSize();
++
++  this->pixelStatsFrameInFlight = frameIdx;
++  this->pixelStatsWatcher.setFuture(QtConcurrent::run(
++      [rawData, format, frameSize, blockSize]
++      { return stats::computeLumaBlockStats(rawData, format, frameSize, blockSize); }));
++}
++
++void playlistItemWithVideo::takeComputedPixelStatistics()
++{
++  const auto frameIdx          = this->pixelStatsFrameInFlight;
++  this->pixelStatsFrameInFlight = -1;
++  if (frameIdx < 0)
++    return;
++  const auto blocks = this->pixelStatsWatcher.result();
++  if (blocks.empty())
++    // The pixel format cannot be read (packed, byte packed). Nothing to cache.
++    return;
++  this->pixelStatsCache.store(frameIdx, blocks);
++  emit pixelStatisticsReady(frameIdx);
++}
++
++std::optional<stats::PixelBlockStats>
++playlistItemWithVideo::getPixelBlockStats(const QPoint &pixelPos, int frameIdx)
++{
++  if (!this->pixelStatsCache.isOpen())
++    return {};
++  return this->pixelStatsCache.at(frameIdx, pixelPos);
++}
++
++std::vector<uint32_t> playlistItemWithVideo::getLumaHistogram(int frameIdx)
++{
++  if (!this->supportsPixelStatistics())
++    return {};
++  if (frameIdx == this->lumaHistogramFrameIdx)
++    return this->lumaHistogram;
++
++  const auto handler     = this->getYUVVideo();
++  int        loadedFrame = -1;
++  auto       rawData     = handler->getCurrentRawYUVData(loadedFrame);
++  if (loadedFrame != frameIdx || rawData.isEmpty())
++    return {};
++
++  this->lumaHistogram = stats::computeLumaHistogram(rawData,
++                                                    handler->getPixelFormatYUV(),
++                                                    handler->getFrameSize());
++  this->lumaHistogramFrameIdx = this->lumaHistogram.empty() ? -1 : frameIdx;
++  return this->lumaHistogram;
++}
+diff --git a/YUViewLib/src/playlistitem/playlistItemWithVideo.h b/YUViewLib/src/playlistitem/playlistItemWithVideo.h
+index ed719b73..1ccc7ce1 100644
+--- a/YUViewLib/src/playlistitem/playlistItemWithVideo.h
++++ b/YUViewLib/src/playlistitem/playlistItemWithVideo.h
+@@ -36,8 +36,12 @@
+ #include <video/rgb/videoHandlerRGB.h>
+ #include <video/yuv/videoHandlerYUV.h>
+ 
++#include <QFutureWatcher>
++
+ #include <memory>
+ 
++#include <statistics/PixelStatistics.h>
++
+ /* This class is a helper class that you can inherit from if your playlistItem uses a videoHandler.
+  * Here, we already define a lot of the forwards to the video handler. If you have multiple videos
+  * or also handle statistics, you have to reimplement some of the functions.
+@@ -63,6 +67,18 @@ public:
+   // Do we need to load the frame first?
+   virtual ItemLoadingState needsLoading(int frameIdx, bool loadRawValues) override;
+ 
++  /* ----- Per block luma statistics and histogram of the decoded pixels -----
++   * Implemented here rather than per item because everything needed is the YUV handler's raw sample
++   * buffer, which every video item has: a raw YUV file and a decoded AV1 stream are the same thing at
++   * this point. Items only have to say where their cache may live (pixelStatsSourcePath).
++   */
++  bool                                  supportsPixelStatistics() const override;
++  unsigned                              getPixelStatisticsBlockSize() const override;
++  void                                  requestPixelStatistics(int frameIdx) override;
++  std::optional<stats::PixelBlockStats> getPixelBlockStats(const QPoint &pixelPos,
++                                                          int           frameIdx) override;
++  std::vector<uint32_t>                 getLumaHistogram(int frameIdx) override;
++
+   // -- Caching
+   // Cache the given frame
+   virtual void cacheFrame(int frameIdx, bool testMode) override
+@@ -115,6 +131,14 @@ protected:
+   // A pointer to the videHandler. In the derived class, don't forget to set this.
+   std::unique_ptr<video::videoHandler> video;
+ 
++  /* Where the on disk statistics cache for this item may live. Empty (the default) means the cache
++   * works in memory only, which is right for items with no single source file.
++   */
++  virtual QString pixelStatsSourcePath() const { return {}; }
++
++  //!< Used when the item does not report a grid size of its own (yet).
++  static constexpr unsigned PIXEL_STATS_DEFAULT_BLOCK_SIZE = 64;
++
+   // The videoHandler can be a videoHandlerRGB or a videoHandlerYUV
+   video::RawFormat rawFormat{video::RawFormat::Invalid};
+   // Get a raw pointer to either version of the videoHandler
+@@ -139,6 +163,24 @@ protected:
+     return dynamic_cast<const video::rgb::videoHandlerRGB *>(video.get());
+   }
+ 
++private:
++  //!< Everything that changes the samples we measure. A mismatch invalidates the cache.
++  uint64_t pixelStatsParamHash() const;
++  void     openPixelStatsCacheIfNeeded();
++  //!< Runs on the GUI thread, the only thread that touches the cache.
++  void     takeComputedPixelStatistics();
++
++  stats::PixelStatisticsCache                         pixelStatsCache;
++  QFutureWatcher<std::vector<stats::PixelBlockStats>> pixelStatsWatcher;
++  int                                                 pixelStatsFrameInFlight{-1};
++  uint64_t                                            pixelStatsCacheParamHash{};
++  bool                                                pixelStatsWatcherConnected{false};
++
++  //!< Last computed luma histogram, so repeated reads of the same frame are free.
++  int                   lumaHistogramFrameIdx{-1};
++  std::vector<uint32_t> lumaHistogram;
++
++protected:
+   // Connect the basic signals from the video
+   void connectVideo();
+ 

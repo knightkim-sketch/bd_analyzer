@@ -20,6 +20,7 @@
 #include <iostream>
 #include <unistd.h>
 
+#include "playlistitem/playlistItemCompressedVideo.h"
 #include "playlistitem/playlistItemRawFile.h"
 #include "video/yuv/videoHandlerYUV.h"
 
@@ -230,6 +231,40 @@ int main(int argc, char **argv)
               << elapsedUs << " us" << std::endl;
     check(!blocks.empty(), "the timing run produced statistics");
   }
+
+  /* --- the same analysis must work on a decoded stream ------------------------------------------
+   * The machinery lives in playlistItemWithVideo, so a compressed item gets it for free. What is
+   * item specific is the block size: it follows the coding grid, which for AV1 is the superblock.
+   */
+  if (argc > 2)
+  {
+    playlistItemCompressedVideo av1(argv[2], 0, InputFormat::Libav,
+                                    decoder::DecoderEngine::Invalid);
+    av1.loadFrame(frameIdx, false, true, false);
+    check(av1.supportsPixelStatistics(), "a decoded AV1 item reports pixel statistics support");
+    check(av1.getPixelStatisticsBlockSize() == av1.getDefaultGridSize() &&
+              av1.getDefaultGridSize() > 0,
+          "the AV1 statistics block size is the superblock grid size");
+
+    QEventLoop loop;
+    QObject::connect(&av1, &playlistItem::pixelStatisticsReady, &loop, &QEventLoop::quit);
+    QTimer::singleShot(20000, &loop, &QEventLoop::quit);
+    av1.requestPixelStatistics(frameIdx);
+    if (!av1.getPixelBlockStats(QPoint(0, 0), frameIdx))
+      loop.exec();
+
+    const auto block = av1.getPixelBlockStats(QPoint(64, 64), frameIdx);
+    check(block.has_value(), "AV1 block statistics are available");
+    check(block && block->maximum >= block->minimum, "the AV1 values are self consistent");
+    const auto hist = av1.getLumaHistogram(frameIdx);
+    uint64_t   sum  = 0;
+    for (const auto count : hist)
+      sum += count;
+    check(hist.size() == 256 && sum == uint64_t(w) * h,
+          "the AV1 histogram counts every luma sample");
+  }
+  else
+    std::cout << "  skip  AV1 checks (no compressed stream given)" << std::endl;
 
   std::cout << (g_failures == 0 ? "PASS" : "FAIL") << std::endl;
   std::cout.flush();
