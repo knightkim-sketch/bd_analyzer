@@ -1,0 +1,124 @@
+diff --git a/YUViewLib/src/decoder/decoderDav1d.cpp b/YUViewLib/src/decoder/decoderDav1d.cpp
+index 16ca2cf0..d138dd93 100644
+--- a/YUViewLib/src/decoder/decoderDav1d.cpp
++++ b/YUViewLib/src/decoder/decoderDav1d.cpp
+@@ -662,13 +662,7 @@ void decoderDav1d::fillStatisticList(stats::StatisticsData &statisticsData) cons
+ 
+   statisticsData.addStatType(intraPredModeChroma);
+ 
+-  stats::StatisticsType paletteSizeLuma(
+-      6, "palette size (Y)", ColorMapper({0, 255}, Color(0, 0, 0), Color(0, 0, 255)));
+-  statisticsData.addStatType(paletteSizeLuma);
+ 
+-  stats::StatisticsType paletteSizeChroma(
+-      7, "palette size (U)", ColorMapper({0, 255}, Color(0, 0, 0), Color(0, 0, 255)));
+-  statisticsData.addStatType(paletteSizeChroma);
+ 
+   stats::StatisticsType intraAngleDeltaLuma(
+       8, "intra angle delta (Y)", ColorMapper({-3, 4}, PredefinedType::Col3_bblg));
+@@ -712,51 +706,13 @@ void decoderDav1d::fillStatisticList(stats::StatisticsData &statisticsData) cons
+       15, "ref frame index 1", ColorMapper({0, 7}, PredefinedType::Jet));
+   statisticsData.addStatType(refFrames1);
+ 
+-  stats::StatisticsType compoundPredType(
+-      16, "compound prediction type", ColorMapper({0, 4}, PredefinedType::Jet));
+-  compoundPredType.setMappingValues({"COMP_INTER_NONE",
+-                                     "COMP_INTER_WEIGHTED_AVG",
+-                                     "COMP_INTER_AVG",
+-                                     "COMP_INTER_SEG",
+-                                     "COMP_INTER_WEDGE"});
+-  statisticsData.addStatType(compoundPredType);
+-
+-  stats::StatisticsType wedgeIndex(17, "wedge index", ColorMapper({0, 16}, PredefinedType::Jet));
+-  statisticsData.addStatType(wedgeIndex);
+-
+-  stats::StatisticsType maskSign(
+-      18, "mask sign", ColorMapper({0, 1}, Color(0, 0, 0), Color(0, 255, 255)));
+-  statisticsData.addStatType(maskSign);
+-
+-  stats::StatisticsType interMode(19, "inter mode", ColorMapper({0, 7}, PredefinedType::Jet));
+-  interMode.setMappingValues({"NEARESTMV_NEARESTMV",
+-                              "NEARMV_NEARMV",
+-                              "NEARESTMV_NEWMV",
+-                              "NEWMV_NEARESTMV",
+-                              "NEARMV_NEWMV",
+-                              "NEWMV_NEARMV",
+-                              "GLOBALMV_GLOBALMV",
+-                              "NEWMV_NEWMV"});
+-  statisticsData.addStatType(interMode);
+-
+-  stats::StatisticsType drlIndex(
+-      20, "dynamic reference list index", ColorMapper({0, 16}, Color(0, 0, 0), Color(0, 255, 255)));
+-  statisticsData.addStatType(drlIndex);
+-
+-  stats::StatisticsType interintraType(
+-      21, "inter-intra type", ColorMapper({0, 2}, PredefinedType::Jet));
+-  interintraType.setMappingValues({"INTER_INTRA_NONE", "INTER_INTRA_BLEND", "INTER_INTRA_WEDGE"});
+-  statisticsData.addStatType(interintraType);
+-
+-  stats::StatisticsType interintraMode(
+-      22, "inter-intra mode", ColorMapper({0, 4}, PredefinedType::Jet));
+-  interintraMode.setMappingValues(
+-      {"II_DC_PRED", "II_VERT_PRED", "II_HOR_PRED", "II_SMOOTH_PRED", "N_INTER_INTRA_PRED_MODES"});
+-  statisticsData.addStatType(interintraMode);
+-
+-  stats::StatisticsType motionMode(23, "motion mode", ColorMapper({0, 2}, PredefinedType::Jet));
+-  motionMode.setMappingValues({"MM_TRANSLATION", "MM_OBMC", "MM_WARP"});
+-  statisticsData.addStatType(motionMode);
++
++
++
++
++
++
++
+ 
+   /* The two motion vectors get a colour each so a compound block's two references can be told apart
+    * at a glance, and a width of 2 instead of the 0.25 default, which is close to invisible at normal
+@@ -1007,9 +963,6 @@ void decoderDav1d::parseBlockPartition(Av1Block       *blockData,
+     this->statisticsData->at(4).addBlockValue(cbPosX, cbPosY, cbWidth, cbHeight, b.y_mode);
+     this->statisticsData->at(5).addBlockValue(cbPosX, cbPosY, cbWidth, cbHeight, b.uv_mode);
+ 
+-    // Set the palette size Y/UV (ID 6, 7)
+-    this->statisticsData->at(6).addBlockValue(cbPosX, cbPosY, cbWidth, cbHeight, b.pal_sz[0]);
+-    this->statisticsData->at(7).addBlockValue(cbPosX, cbPosY, cbWidth, cbHeight, b.pal_sz[1]);
+ 
+     // Set the intra angle delta luma/chroma (ID 8, 9)
+     this->statisticsData->at(8).addBlockValue(cbPosX, cbPosY, cbWidth, cbHeight, b.y_angle);
+@@ -1049,36 +1002,12 @@ void decoderDav1d::parseBlockPartition(Av1Block       *blockData,
+     if (isCompound)
+       this->statisticsData->at(15).addBlockValue(cbPosX, cbPosY, cbWidth, cbHeight, b.ref[1]);
+ 
+-    // Set the compound prediction type (ID 16)
+-    this->statisticsData->at(16).addBlockValue(cbPosX, cbPosY, cbWidth, cbHeight, b.comp_type);
+ 
+-    // Set the wedge index (ID 17)
+-    if (b.comp_type == COMP_INTER_WEDGE || b.interintra_type == INTER_INTRA_WEDGE)
+-      this->statisticsData->at(17).addBlockValue(cbPosX, cbPosY, cbWidth, cbHeight, b.wedge_idx);
+ 
+-    // Set the mask sign (ID 18)
+-    if (isCompound) // TODO: This might not be correct
+-      this->statisticsData->at(18).addBlockValue(cbPosX, cbPosY, cbWidth, cbHeight, b.mask_sign);
+ 
+-    // Set the inter mode (ID 19)
+-    this->statisticsData->at(19).addBlockValue(cbPosX, cbPosY, cbWidth, cbHeight, b.inter_mode);
+ 
+-    // Set the dynamic reference list index (ID 20)
+-    if (isCompound) // TODO: This might not be correct
+-      this->statisticsData->at(20).addBlockValue(cbPosX, cbPosY, cbWidth, cbHeight, b.drl_idx);
+ 
+-    if (isCompound)
+-    {
+-      // Set inter intra type (ID 21)
+-      this->statisticsData->at(21).addBlockValue(
+-          cbPosX, cbPosY, cbWidth, cbHeight, b.interintra_type);
+-      // Set inter intra mode (ID 22)
+-      this->statisticsData->at(22).addBlockValue(
+-          cbPosX, cbPosY, cbWidth, cbHeight, b.interintra_mode);
+-    }
+ 
+-    // Set motion mode (ID 23)
+-    this->statisticsData->at(23).addBlockValue(cbPosX, cbPosY, cbWidth, cbHeight, b.motion_mode);
+ 
+     // Set motion vector 0/1 (ID 24, 25)
+     this->statisticsData->at(24).addBlockVector(
