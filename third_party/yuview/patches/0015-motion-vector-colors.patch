@@ -1,0 +1,26 @@
+diff --git a/YUViewLib/src/decoder/decoderDav1d.cpp b/YUViewLib/src/decoder/decoderDav1d.cpp
+index 245ab832..16ca2cf0 100644
+--- a/YUViewLib/src/decoder/decoderDav1d.cpp
++++ b/YUViewLib/src/decoder/decoderDav1d.cpp
+@@ -758,12 +758,21 @@ void decoderDav1d::fillStatisticList(stats::StatisticsData &statisticsData) cons
+   motionMode.setMappingValues({"MM_TRANSLATION", "MM_OBMC", "MM_WARP"});
+   statisticsData.addStatType(motionMode);
+ 
++  /* The two motion vectors get a colour each so a compound block's two references can be told apart
++   * at a glance, and a width of 2 instead of the 0.25 default, which is close to invisible at normal
++   * zoom. setInitialState() is called again afterwards so these count as the defaults that the
++   * statistics style dialog resets to.
++   */
+   stats::StatisticsType motionVec0(24, "Motion Vector 0", 4);
+   motionVec0.description = "The motion vector for component 0";
++  motionVec0.vectorStyle = stats::LineDrawStyle({Color(255, 0, 0), 2.0, stats::Pattern::Solid});
++  motionVec0.setInitialState();
+   statisticsData.addStatType(motionVec0);
+ 
+   stats::StatisticsType motionVec1(25, "Motion Vector 1", 4);
+   motionVec1.description = "The motion vector for component 1";
++  motionVec1.vectorStyle = stats::LineDrawStyle({Color(0, 0, 255), 2.0, stats::Pattern::Solid});
++  motionVec1.setInitialState();
+   statisticsData.addStatType(motionVec1);
+ 
+   stats::StatisticsType transformDepth(
