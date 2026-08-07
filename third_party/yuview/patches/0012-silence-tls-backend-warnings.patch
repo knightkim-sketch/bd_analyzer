@@ -1,0 +1,37 @@
+diff --git a/YUViewApp/src/yuviewapp.cpp b/YUViewApp/src/yuviewapp.cpp
+index f6362829..bf30990d 100644
+--- a/YUViewApp/src/yuviewapp.cpp
++++ b/YUViewApp/src/yuviewapp.cpp
+@@ -31,6 +31,7 @@
+ */
+ 
+ #include <QCoreApplication>
++#include <QLoggingCategory>
+ 
+ #include <common/Typedef.h>
+ #include <ui/YUViewApplication.h>
+@@ -44,8 +45,23 @@ int main(int argc, char *argv[])
+   QCoreApplication::setAttribute(Qt::AA_SynthesizeMouseForUnhandledTouchEvents,false);
+   QCoreApplication::setAttribute(Qt::AA_SynthesizeTouchForUnhandledMouseEvents,false);
+ 
++  /* The Qt 6.5 binaries are built against OpenSSL 3, but Rocky 8 only ships OpenSSL 1.1. The
++   * openssl TLS backend therefore refuses to load and Qt falls back to the "cert-only" backend,
++   * which cannot do TLS at all. The automatic update check (on by default) then prints 15 lines of
++   * warnings on every start:
++   *   qt.tlsbackend.ossl: Incompatible version of OpenSSL ...
++   *   qt.network.ssl: The backend "cert-only" does not support QSslKey
++   *   qt.network.ssl: Active TLS backend does not support key creation
++   * Nothing in this environment can use TLS, so the warnings carry no actionable information.
++   * Silence the two categories they come from. An explicit QT_LOGGING_RULES still wins, so the
++   * messages can be brought back without rebuilding.
++   */
++  if (qEnvironmentVariableIsEmpty("QT_LOGGING_RULES"))
++    QLoggingCategory::setFilterRules(QStringLiteral("qt.network.ssl.warning=false\n"
++                                                   "qt.tlsbackend.ossl.warning=false"));
++
+   qRegisterMetaType<recacheIndicator>("recacheIndicator");
+-  
++
+   YUViewApplication app(argc, argv);
+ 
+   return app.returnCode;
