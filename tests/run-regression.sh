@@ -144,6 +144,49 @@ else
 fi
 
 echo
+echo "== 프레임 비트스트림 덤프 (hexdump 패널) =="
+# annexB 쪽 검사는 B 프레임이 있는 스트림이 필요하다. display order 와 coding order 가
+# 갈리지 않으면 인덱스 순서 회귀를 잡을 수 없다.
+H264="$DATA/test_bframes.h264"
+if [[ ! -s "$H264" ]]; then
+    ff="$(command -v ffmpeg || echo /usr/local/bin/ffmpeg)"
+    [[ -x "$ff" ]] && "$ff" -hide_banner -loglevel error -y \
+        -f lavfi -i "testsrc2=size=176x144:rate=25:duration=1" \
+        -c:v libx264 -bf 3 -g 10 -pix_fmt yuv420p -f h264 "$H264" >/dev/null 2>&1
+fi
+if [[ -s "$H264" ]]; then
+    run_test "$ROOT/tests/regression/13-frame-bitstream-dump.cpp"       "$STREAM" "$H264"
+else
+    echo "  (annexB 스트림 생성 실패 - AV1 경로만 검사한다)"
+    run_test "$ROOT/tests/regression/13-frame-bitstream-dump.cpp"       "$STREAM"
+fi
+
+# 블록 단위 비트 위치는 dav1d analyzer 라이브러리에서만 나온다.
+if [[ -e "$APPDIR/decoder/libdav1d-internals.so" ]]; then
+    run_test "$ROOT/tests/regression/14-block-bitstream-range.cpp"      "$STREAM"
+    run_test "$ROOT/tests/regression/16-statistics-ui-grouping.cpp"     "$STREAM"
+else
+    echo "  SKIP  14-block-bitstream-range (libdav1d-internals.so 없음)"
+    ((skip_count++))
+    echo "  SKIP  16-statistics-ui-grouping (libdav1d-internals.so 없음)"
+    ((skip_count++))
+fi
+
+# 컨테이너 없는 raw AV1 (.av1 / .obu) 도 .ivf 와 동일하게 열려야 한다.
+RAWAV1="$DATA/test_raw.av1"
+if [[ ! -s "$RAWAV1" ]]; then
+    ff="$(command -v ffmpeg || echo /usr/local/bin/ffmpeg)"
+    [[ -x "$ff" ]] && "$ff" -hide_banner -loglevel error -y -i "$STREAM" \
+        -c:v copy -f obu "$RAWAV1" >/dev/null 2>&1
+fi
+if [[ -s "$RAWAV1" ]]; then
+    run_test "$ROOT/tests/regression/15-raw-av1-extension.cpp"           "$STREAM" "$RAWAV1"
+else
+    echo "  SKIP  15-raw-av1-extension (raw AV1 생성 실패)"
+    ((skip_count++))
+fi
+
+echo
 echo "== 디코더 전환 안정성 (크래시 + 행 회귀) =="
 run_test "$ROOT/tests/regression/07-decoder-switch-slot.cpp"          "$STREAM"
 run_test "$ROOT/tests/regression/08-decoder-switch-stress.cpp"        "$STREAM"
