@@ -1,0 +1,184 @@
+diff --git a/YUViewLib/src/parser/AVFormat/ParserAVFormat.cpp b/YUViewLib/src/parser/AVFormat/ParserAVFormat.cpp
+index e0f7e22e..73c9e007 100644
+--- a/YUViewLib/src/parser/AVFormat/ParserAVFormat.cpp
++++ b/YUViewLib/src/parser/AVFormat/ParserAVFormat.cpp
+@@ -383,6 +383,8 @@ bool ParserAVFormat::parseAVPacket(unsigned         packetID,
+   // Log all the packet info
+   itemTree->createChildItem("stream_index", packet.getStreamIndex());
+   itemTree->createChildItem("Global AVPacket Count", packetID);
++  if (packet.getPacketType() == PacketType::VIDEO)
++    itemTree->createChildItem("YUView frame index", streamPacketID);
+   itemTree->createChildItem("pts", formatTimestamp(packet.getPTS(), timeBase));
+   itemTree->createChildItem("dts", formatTimestamp(packet.getDTS(), timeBase));
+   itemTree->createChildItem("duration", formatTimestamp(packet.getDuration(), timeBase));
+diff --git a/YUViewLib/src/ui/Mainwindow.cpp b/YUViewLib/src/ui/Mainwindow.cpp
+index 9f7075f0..0a70f93f 100644
+--- a/YUViewLib/src/ui/Mainwindow.cpp
++++ b/YUViewLib/src/ui/Mainwindow.cpp
+@@ -237,6 +237,7 @@ MainWindow::MainWindow(bool useAlternativeSources, QWidget *parent) : QMainWindo
+ 
+   ui.playbackController->setSplitViews(ui.displaySplitView, &separateViewWindow.splitView);
+   ui.playbackController->setPlaylist(ui.playlistTreeWidget);
++  ui.bitstreamAnalysis->setPlaybackController(ui.playbackController);
+   ui.displaySplitView->setPlaybackController(ui.playbackController);
+   ui.displaySplitView->setPlaylistTreeWidget(ui.playlistTreeWidget);
+   ui.displaySplitView->setVideoCache(this->cache.get());
+diff --git a/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.cpp b/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.cpp
+index baf37762..ed4730fc 100644
+--- a/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.cpp
++++ b/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.cpp
+@@ -37,6 +37,11 @@
+ #include "parser/HEVC/ParserAnnexBHEVC.h"
+ #include "parser/Mpeg2/ParserAnnexBMpeg2.h"
+ #include "parser/VVC/ParserAnnexBVVC.h"
++#include "ui/PlaybackController.h"
++
++#include <QSortFilterProxyModel>
++
++#include <optional>
+ 
+ #define BITSTREAM_ANALYSIS_WIDGET_DEBUG_OUTPUT 0
+ #if BITSTREAM_ANALYSIS_WIDGET_DEBUG_OUTPUT
+@@ -46,6 +51,52 @@
+ #define DEBUG_ANALYSIS(msg) ((void)0)
+ #endif
+ 
++namespace
++{
++
++constexpr auto YUVIEW_FRAME_INDEX_NAME = "YUView frame index";
++
++std::optional<int> getChildIntValue(const TreeItem &item, const std::string &childName)
++{
++  for (size_t i = 0; i < item.getNrChildItems(); ++i)
++  {
++    const auto child = item.getChild(unsigned(i));
++    if (!child || child->getData(0) != childName)
++      continue;
++
++    bool ok = false;
++    const auto value = QString::fromStdString(child->getData(1)).toInt(&ok);
++    if (ok)
++      return value;
++    return {};
++  }
++  return {};
++}
++
++std::optional<int> getFrameIndexForObuTreeItem(TreeItem *item)
++{
++  bool sawObu = false;
++  while (item)
++  {
++    const auto itemName = item->getData(0);
++    if (itemName.rfind("OBU ", 0) == 0)
++      sawObu = true;
++
++    if (itemName.rfind("AVPacket ", 0) == 0)
++    {
++      if (!sawObu)
++        return {};
++      return getChildIntValue(*item, YUVIEW_FRAME_INDEX_NAME);
++    }
++
++    const auto parent = item->getParentItem().lock();
++    item              = parent.get();
++  }
++  return {};
++}
++
++} // namespace
++
+ BitstreamAnalysisWidget::BitstreamAnalysisWidget(QWidget *parent) : QWidget(parent)
+ {
+   this->ui.setupUi(this);
+@@ -68,10 +119,19 @@ BitstreamAnalysisWidget::BitstreamAnalysisWidget(QWidget *parent) : QWidget(pare
+                 QOverload<int>::of(&QComboBox::currentIndexChanged),
+                 this,
+                 &BitstreamAnalysisWidget::bitratePlotOrderComboBoxIndexChanged);
++  this->connect(this->ui.dataTreeView,
++                &QTreeView::doubleClicked,
++                this,
++                &BitstreamAnalysisWidget::dataTreeViewDoubleClicked);
+ 
+   this->currentSelectedItemsChanged(nullptr, nullptr, false);
+ }
+ 
++void BitstreamAnalysisWidget::setPlaybackController(PlaybackController *playbackController)
++{
++  this->playbackController = playbackController;
++}
++
+ MoveAndZoomableView *BitstreamAnalysisWidget::getCurrentActiveView()
+ {
+   const auto idx = this->ui.analysisTab->currentIndex();
+@@ -150,6 +210,28 @@ void BitstreamAnalysisWidget::bitratePlotOrderComboBoxIndexChanged(int index)
+     this->parser->setBitrateSortingIndex(index);
+ }
+ 
++void BitstreamAnalysisWidget::dataTreeViewDoubleClicked(const QModelIndex &index)
++{
++  if (!this->playbackController || !index.isValid())
++    return;
++
++  auto sourceIndex = index;
++  if (auto proxy = qobject_cast<QSortFilterProxyModel *>(this->ui.dataTreeView->model()))
++    sourceIndex = proxy->mapToSource(index);
++  if (!sourceIndex.isValid())
++    return;
++
++  const auto item = static_cast<TreeItem *>(sourceIndex.internalPointer());
++  if (!item)
++    return;
++
++  const auto frameIndex = getFrameIndexForObuTreeItem(item);
++  if (!frameIndex)
++    return;
++
++  this->playbackController->setCurrentFrameAndUpdate(*frameIndex);
++}
++
+ void BitstreamAnalysisWidget::updateParsingStatusText(int progressValue)
+ {
+   if (progressValue <= -1)
+diff --git a/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.h b/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.h
+index dfb1a04a..abcfe1be 100644
+--- a/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.h
++++ b/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.h
+@@ -37,10 +37,12 @@
+ #include <playlistitem/playlistItem.h>
+ #include <playlistitem/playlistItemCompressedVideo.h>
+ 
++#include <QPointer>
+ #include <QWidget>
+ #include <QtConcurrent>
+ 
+ #include "ui_bitstreamAnalysisWidget.h"
++class PlaybackController;
+ class BitstreamAnalysisWidget : public QWidget
+ {
+   Q_OBJECT
+@@ -50,6 +52,7 @@ public:
+   ~BitstreamAnalysisWidget() { stopAndDeleteParserBlocking(); }
+ 
+   MoveAndZoomableView *getCurrentActiveView();
++  void                 setPlaybackController(PlaybackController *playbackController);
+ 
+ public slots:
+   void currentSelectedItemsChanged(playlistItem *item1, playlistItem *item2, bool chageByPlayback);
+@@ -64,6 +67,7 @@ private slots:
+   void colorCodeStreamsCheckBoxToggled(bool state) { this->parser->setStreamColorCoding(state); }
+   void parseEntireBitstreamCheckBoxToggled(bool) { this->restartParsingOfCurrentItem(); }
+   void bitratePlotOrderComboBoxIndexChanged(int index);
++  void dataTreeViewDoubleClicked(const QModelIndex &index);
+ 
+ protected:
+   void hideEvent(QHideEvent *event) override;
+@@ -85,6 +89,7 @@ private:
+   void                            backgroundParsingFunction();
+ 
+   QPointer<playlistItemCompressedVideo> currentCompressedVideo;
++  QPointer<PlaybackController>          playbackController;
+ 
+   // -1: Show all streams. Otherwise only show the given stream index.
+   int showOnlyStream{-1};

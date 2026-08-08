@@ -1,0 +1,300 @@
+diff --git a/YUViewLib/src/ui/Mainwindow.cpp b/YUViewLib/src/ui/Mainwindow.cpp
+index 0a70f93f..8ee64696 100644
+--- a/YUViewLib/src/ui/Mainwindow.cpp
++++ b/YUViewLib/src/ui/Mainwindow.cpp
+@@ -112,6 +112,14 @@ MainWindow::MainWindow(bool useAlternativeSources, QWidget *parent) : QMainWindo
+             if (items[infoIndex])
+               items[infoIndex]->infoListButtonPressed(row);
+           });
++  connect(ui.bitstreamAnalysis,
++          &BitstreamAnalysisWidget::packetItemModelChanged,
++          ui.fileInfoWidget,
++          &FileInfoWidget::setObuModel);
++  connect(ui.fileInfoWidget,
++          &FileInfoWidget::obuTreeIndexActivated,
++          ui.bitstreamAnalysis,
++          &BitstreamAnalysisWidget::seekToPacketTreeIndex);
+   connect(ui.playlistTreeWidget,
+           &PlaylistTreeWidget::selectionRangeChanged,
+           ui.playbackController,
+diff --git a/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.cpp b/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.cpp
+index ed4730fc..d5c740b5 100644
+--- a/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.cpp
++++ b/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.cpp
+@@ -211,13 +211,16 @@ void BitstreamAnalysisWidget::bitratePlotOrderComboBoxIndexChanged(int index)
+ }
+ 
+ void BitstreamAnalysisWidget::dataTreeViewDoubleClicked(const QModelIndex &index)
++{
++  this->seekToPacketTreeIndex(index);
++}
++
++void BitstreamAnalysisWidget::seekToPacketTreeIndex(const QModelIndex &index)
+ {
+   if (!this->playbackController || !index.isValid())
+     return;
+ 
+-  auto sourceIndex = index;
+-  if (auto proxy = qobject_cast<QSortFilterProxyModel *>(this->ui.dataTreeView->model()))
+-    sourceIndex = proxy->mapToSource(index);
++  const auto sourceIndex = this->mapToSourceModel(index);
+   if (!sourceIndex.isValid())
+     return;
+ 
+@@ -232,6 +235,15 @@ void BitstreamAnalysisWidget::dataTreeViewDoubleClicked(const QModelIndex &index
+   this->playbackController->setCurrentFrameAndUpdate(*frameIndex);
+ }
+ 
++QModelIndex BitstreamAnalysisWidget::mapToSourceModel(const QModelIndex &index) const
++{
++  if (!index.isValid())
++    return {};
++  if (auto proxy = qobject_cast<const QSortFilterProxyModel *>(index.model()))
++    return proxy->mapToSource(index);
++  return index;
++}
++
+ void BitstreamAnalysisWidget::updateParsingStatusText(int progressValue)
+ {
+   if (progressValue <= -1)
+@@ -252,6 +264,11 @@ void BitstreamAnalysisWidget::stopAndDeleteParserBlocking()
+   if (!this->parser)
+     return;
+ 
++  this->ui.dataTreeView->setModel(nullptr);
++  this->ui.plotViewWidget->setModel(nullptr);
++  this->ui.hrdPlotWidget->setModel(nullptr);
++  emit packetItemModelChanged(nullptr);
++
+   this->disconnect(this->parser.get(),
+                    &parser::Parser::modelDataUpdated,
+                    this,
+@@ -302,12 +319,6 @@ void BitstreamAnalysisWidget::updateSettings()
+ 
+ void BitstreamAnalysisWidget::restartParsingOfCurrentItem()
+ {
+-  if (!this->isVisible())
+-  {
+-    DEBUG_ANALYSIS("BitstreamAnalysisWidget::restartParsingOfCurrentItem not visible - abort");
+-    return;
+-  }
+-
+   this->stopAndDeleteParserBlocking();
+ 
+   if (this->currentCompressedVideo.isNull())
+@@ -330,6 +341,7 @@ void BitstreamAnalysisWidget::restartParsingOfCurrentItem()
+   this->ui.dataTreeView->setColumnWidth(2, 120);
+   this->ui.plotViewWidget->setModel(this->parser->getBitratePlotModel());
+   this->ui.hrdPlotWidget->setModel(this->parser->getHRDPlotModel());
++  emit packetItemModelChanged(this->parser->getPacketItemModel());
+ 
+   this->updateStreamInfo();
+ 
+@@ -373,13 +385,13 @@ void BitstreamAnalysisWidget::createAndConnectNewParser(InputFormat inputFormat)
+ void BitstreamAnalysisWidget::hideEvent(QHideEvent *event)
+ {
+   DEBUG_ANALYSIS("BitstreamAnalysisWidget::hideEvent");
+-  this->stopAndDeleteParserBlocking();
+   QWidget::hideEvent(event);
+ }
+ 
+ void BitstreamAnalysisWidget::showEvent(QShowEvent *event)
+ {
+   DEBUG_ANALYSIS("BitstreamAnalysisWidget::showEvent");
+-  this->restartParsingOfCurrentItem();
++  if (!this->parser && !this->currentCompressedVideo.isNull())
++    this->restartParsingOfCurrentItem();
+   QWidget::showEvent(event);
+ }
+diff --git a/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.h b/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.h
+index abcfe1be..8e858a4d 100644
+--- a/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.h
++++ b/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.h
+@@ -57,6 +57,10 @@ public:
+ public slots:
+   void currentSelectedItemsChanged(playlistItem *item1, playlistItem *item2, bool chageByPlayback);
+   void updateSettings();
++  void seekToPacketTreeIndex(const QModelIndex &index);
++
++signals:
++  void packetItemModelChanged(QAbstractItemModel *model);
+ 
+ private slots:
+   void updateParserItemModel();
+@@ -83,6 +87,7 @@ private:
+ 
+   void restartParsingOfCurrentItem();
+   void createAndConnectNewParser(InputFormat inputFormatType);
++  QModelIndex mapToSourceModel(const QModelIndex &index) const;
+ 
+   std::unique_ptr<parser::Parser> parser;
+   QFuture<void>                   backgroundParserFuture;
+diff --git a/YUViewLib/src/ui/widgets/FileInfoWidget.cpp b/YUViewLib/src/ui/widgets/FileInfoWidget.cpp
+index 6b9f2d38..e0c3a3ff 100644
+--- a/YUViewLib/src/ui/widgets/FileInfoWidget.cpp
++++ b/YUViewLib/src/ui/widgets/FileInfoWidget.cpp
+@@ -33,9 +33,13 @@
+ #include "FileInfoWidget.h"
+ 
+ #include <QGridLayout>
++#include <QHeaderView>
+ #include <QPointer>
+ #include <QPushButton>
++#include <QTabWidget>
++#include <QTreeView>
+ #include <QVariant>
++#include <QVBoxLayout>
+ 
+ #include "QLabelElided.h"
+ 
+@@ -61,8 +65,30 @@ void clearItemsPastGivenRow(QGridLayout &grid, const int row)
+  * If you provide a list of QString tuples, this class will fill a grid layout with the
+  * corresponding labels.
+  */
+-FileInfoWidget::FileInfoWidget(QWidget *parent) : QWidget(parent), grid(this)
++FileInfoWidget::FileInfoWidget(QWidget *parent) : QWidget(parent)
+ {
++  this->rootLayout = new QVBoxLayout(this);
++  this->rootLayout->setContentsMargins(0, 0, 0, 0);
++  this->tabs = new QTabWidget(this);
++  this->rootLayout->addWidget(this->tabs);
++
++  this->infoPage = new QWidget(this->tabs);
++  this->grid     = new QGridLayout(this->infoPage);
++  this->tabs->addTab(this->infoPage, "File");
++
++  this->obuTreeView = new QTreeView(this->tabs);
++  this->obuTreeView->setRootIsDecorated(true);
++  this->obuTreeView->setUniformRowHeights(true);
++  this->obuTreeView->setAlternatingRowColors(true);
++  this->obuTreeView->setSelectionBehavior(QAbstractItemView::SelectRows);
++  this->obuTreeView->setSelectionMode(QAbstractItemView::SingleSelection);
++  this->obuTabIndex = this->tabs->addTab(this->obuTreeView, "OBU");
++  this->tabs->setTabEnabled(this->obuTabIndex, false);
++  connect(this->obuTreeView,
++          &QTreeView::doubleClicked,
++          this,
++          &FileInfoWidget::obuTreeIndexActivated);
++
+   // Load the warning icon
+   warningIcon = QPixmap(":img_warning.png");
+ 
+@@ -104,29 +130,42 @@ int FileInfoWidget::addInfoDataItemsAndGetNextRowIndex(const InfoData &data, int
+ {
+   for (auto &info : data.items)
+   {
+-    auto name = widgetAt<QLabel>(&this->grid, row, 0);
++    auto name = widgetAt<QLabel>(this->grid, row, 0);
+     if (info.name != "Warning")
+       name->setText(QString::fromStdString(info.name));
+     else
+       name->setPixmap(this->warningIcon);
+ 
+-    auto textLabel = widgetAt<QLabelElided>(&this->grid, row, 1);
++    auto textLabel = widgetAt<QLabelElided>(this->grid, row, 1);
+     textLabel->setText(QString::fromStdString(info.text));
+     textLabel->setToolTip(QString::fromStdString(info.description));
+ 
+-    this->grid.setRowStretch(row, 0);
++    this->grid->setRowStretch(row, 0);
+     ++row;
+   }
+   return row;
+ }
+ 
++void FileInfoWidget::setObuModel(QAbstractItemModel *model)
++{
++  this->obuTreeView->setModel(model);
++  this->tabs->setTabEnabled(this->obuTabIndex, model != nullptr);
++  if (!model)
++    return;
++
++  this->obuTreeView->setColumnWidth(0, 360);
++  this->obuTreeView->setColumnWidth(1, 90);
++  this->obuTreeView->setColumnWidth(2, 110);
++  this->obuTreeView->header()->setStretchLastSection(true);
++}
++
+ void FileInfoWidget::setInfo(const InfoData &info1, const InfoData &info2)
+ {
+   QString topTitle = FILEINFOWIDGET_DEFAULT_WINDOW_TITLE;
+   int     row      = 0;
+ 
+   if (!info2.isEmpty())
+-    widgetAt<QLabel>(&grid, row++, 0, 2)->setText(QStringLiteral("1: %1").arg(info1.title));
++    widgetAt<QLabel>(grid, row++, 0, 2)->setText(QStringLiteral("1: %1").arg(info1.title));
+   else if (!info1.title.isEmpty())
+     topTitle = info1.title;
+ 
+@@ -134,18 +173,18 @@ void FileInfoWidget::setInfo(const InfoData &info1, const InfoData &info2)
+ 
+   if (!info2.isEmpty())
+   {
+-    widgetAt<QFrame>(&grid, row++, 0, 2)->setFrameStyle(QFrame::HLine);
+-    widgetAt<QLabel>(&grid, row++, 0, 2)->setText(QStringLiteral("2: %2").arg(info2.title));
++    widgetAt<QFrame>(grid, row++, 0, 2)->setFrameStyle(QFrame::HLine);
++    widgetAt<QLabel>(grid, row++, 0, 2)->setText(QStringLiteral("2: %2").arg(info2.title));
+   }
+ 
+   row = this->addInfoDataItemsAndGetNextRowIndex(info2, row);
+ 
+-  clearItemsPastGivenRow(this->grid, row);
++  clearItemsPastGivenRow(*this->grid, row);
+ 
+   if (row > 0)
+   {
+-    grid.setColumnStretch(1, 1);    // Last column should stretch
+-    grid.setRowStretch(row - 1, 1); // Last row should stretch
++    grid->setColumnStretch(1, 1);    // Last column should stretch
++    grid->setRowStretch(row - 1, 1); // Last row should stretch
+   }
+ 
+   if (this->parentWidget())
+diff --git a/YUViewLib/src/ui/widgets/FileInfoWidget.h b/YUViewLib/src/ui/widgets/FileInfoWidget.h
+index 10aa2cab..58f32885 100644
+--- a/YUViewLib/src/ui/widgets/FileInfoWidget.h
++++ b/YUViewLib/src/ui/widgets/FileInfoWidget.h
+@@ -32,12 +32,18 @@
+ 
+ #pragma once
+ 
+-#include <QGridLayout>
++#include <QAbstractItemModel>
+ #include <QPixmap>
+ #include <QWidget>
+ 
+ #include "common/InfoItemAndData.h"
+ 
++class QGridLayout;
++class QModelIndex;
++class QTabWidget;
++class QTreeView;
++class QVBoxLayout;
++
+ class FileInfoWidget : public QWidget
+ {
+   Q_OBJECT
+@@ -49,14 +55,21 @@ public:
+   // the given list of InfoItems (Qpai<QString,QString>) will be added as labels into
+   // the QGridLayout infoLayout.
+   Q_SLOT void setInfo(const InfoData &info1 = InfoData(), const InfoData &info2 = InfoData());
++  Q_SLOT void setObuModel(QAbstractItemModel *model);
+ 
+   // One at a given row of a given infoIndex (0 or 1) was clicked.
+   // infoIndex 0 refers to info1 above, infoIndex 1 refers to info2 above
+   Q_SIGNAL void infoButtonClicked(int infoIndex, int row);
++  Q_SIGNAL void obuTreeIndexActivated(const QModelIndex &index);
+ 
+ private:
+   int addInfoDataItemsAndGetNextRowIndex(const InfoData &data, int row);
+ 
+-  QGridLayout grid;
+-  QPixmap     warningIcon;
++  QVBoxLayout *rootLayout{};
++  QTabWidget  *tabs{};
++  QWidget     *infoPage{};
++  QGridLayout *grid{};
++  QTreeView   *obuTreeView{};
++  int          obuTabIndex{-1};
++  QPixmap      warningIcon;
+ };

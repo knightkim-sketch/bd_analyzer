@@ -73,4 +73,4 @@ verified: yes | partial | no      # 도구 출력으로 교차검증했는가
 - [TASK-0003](40-tasks/TASK-0003-av1-parsing-dav1d.md) — AV1 분석 + dav1d 블록 통계 + 크래시 수정 7건 (**진행중** — 상설화 남음)
 - [TASK-0004](40-tasks/TASK-0004-decoded-yuv-cache.md) — 디코딩 YUV + 블록통계를 `.YUViewBD` 에 저장 / playlist 아이템 / 종료 시 삭제 (검토 완료, 미착수)
 - [TASK-0005](40-tasks/TASK-0005-block-info-on-click.md) — 클릭 시 블록 경계 하이라이트 + 블록 모드 정보 pane (**구현 완료**, GUI 확인)
-- [TASK-0006](40-tasks/TASK-0006-av1-syntax-consolidation.md) — AV1 syntax 항목 통합 + OBU info 탭/이동 (**todo**, 사양 확정)
+- [TASK-0006](40-tasks/TASK-0006-av1-syntax-consolidation.md) — AV1 syntax 항목 통합 + OBU 목록에서 YUV frame 이동 (**구현 완료** — GUI 직접 클릭 확인만 남음)

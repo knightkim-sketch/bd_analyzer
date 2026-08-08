@@ -1,10 +1,10 @@
 ---
-title: TASK-0006 AV1 syntax 항목 통합 + OBU info 탭
-status: in-progress
+title: TASK-0006 AV1 syntax 항목 통합 + OBU frame 이동
+status: implemented
 created: 2026-08-07
 updated: 2026-08-08
 author: claude-opus-5
-verified: B 는 실측 확인, D/E 는 미구현
+verified: "B/D/E 빌드·회귀·헤드리스 smoke 확인, GUI 직접 클릭 확인은 미수행"
 upstream: IENT/YUView @ a72eb3488097313511e60ed70db4af6071cbe9fe
 ---
 
@@ -12,7 +12,11 @@ upstream: IENT/YUView @ a72eb3488097313511e60ed70db4af6071cbe9fe
 
 AV1 analyzer 의 syntax 표와 오버레이 목록이 너무 길다. 사용자가 항목 제거/통합과
 OBU 탐색 기능을 요청했다. 제거(A)와 레이아웃(C)은 이미 끝났다 (커밋 `1dde6d3`, `e6d6f2e`).
-이 문서는 **남은 B, D, E** 의 확정된 사양이다. 설계 결정은 모두 사용자와 합의됐다.
+이 문서는 **B/D/E 구현 기록**이다. 설계 결정은 모두 사용자와 합의됐다.
+
+정정: OBU 더블클릭의 목표는 OBU 상세 정보를 별도로 보여주거나 Bitstream Analysis 트리로
+이동하는 것이 아니다. 해당 OBU 가 속한 **YUV frame 을 보여주고 하단 frame slider/spinbox 를
+현재 위치로 갱신**하는 것이다.
 
 ## 현재 등록된 통계 타입 (제거 후, 실측)
 
@@ -58,7 +62,7 @@ MV 오버레이는 변경 전과 동일(빨강 3046px / 파랑 789px).
 **남은 미검증 1건**: 블록 내부 텍스트는 `zoomFactor >= STATISTICS_DRAW_VALUES_ZOOM` 일 때만
 그려진다. 높은 배율에서 실제로 화면에 찍히는지는 GUI 로 확인하지 않았다.
 
-## D. 좌측 Info listbox 에 OBU info 탭
+## D. 좌측 Info listbox 에 OBU 목록 탭 — **완료** (패치 `0021`)
 
 - 현재 Info pane 은 `playlistItem::getInfo()` 의 key/value 목록 (`ui/widgets/FileInfoWidget.*`).
 - OBU 트리의 실제 소유자는 **`BitstreamAnalysisWidget`** 이다:
@@ -90,39 +94,60 @@ MV 오버레이는 변경 전과 동일(빨강 3046px / 파랑 789px).
    모든 스트림을 통틀어 센다. YUView 의 프레임 인덱스는 비디오 스트림의 표시 순서다.
    기존 매핑은 **없다** — `FileSourceFFmpegFile` 에는 `nrFrames` 와 DTS 기반 seek 경로만 있고
    packet→frame 표는 없다 (`FileSourceFFmpegFile.h:183`).
-   E-1 을 정확히 하려면 셋 중 하나를 정해야 한다:
-   - ⓐ 파싱 중 **비디오 스트림 패킷만 세는 카운터**를 따로 두고 그 값을 패킷 아이템에 넣는다.
-     재정렬(B-frame 등)이 없으면 프레임 인덱스와 일치한다. AV1 은 show_existing_frame 때문에
-     완전히 일치한다는 보장은 없다.
+   E-1 은 우선 ⓐ 로 구현했다 (패치 `0020`): 파싱 중 `streamPacketID` 를
+   `YUView frame index` 로 패킷 아이템에 넣고, OBU 더블클릭 시 그 값을
+   `PlaybackController::setCurrentFrameAndUpdate()` 에 넘긴다. 기존 `FileSourceFFmpegFile::scanBitstream()`
+   도 비디오 패킷을 세서 YUView 프레임 수를 만들기 때문에 현재 구조와 가장 잘 맞는 작은 변경이다.
+   단, 재정렬(B-frame 등)이 없으면 프레임 인덱스와 일치한다. AV1 은 show_existing_frame 때문에
+   완전히 일치한다는 보장은 없다.
    - ⓑ 패킷의 **pts 를 프레임 인덱스로 환산**한다 (timeBase + framerate). 표시 순서라 더 정확.
    - ⓒ `show_frame` / `show_existing_frame` 을 OBU 파싱에서 읽어 표시 프레임을 직접 센다.
      가장 정확하지만 파서 수정이 필요하다.
-   **추측으로 구현하면 엉뚱한 프레임으로 점프한다. 반드시 먼저 결정할 것.**
+   향후 더 정확한 seek 가 필요하다고 판단되면 ⓑ 또는 ⓒ 로 승격한다.
 
-## E. OBU double-click → 이동 (둘 다)
+### 구현 결과 (패치 `0021`)
 
-사용자 결정: **ⓒ 둘 다 수행**한다.
-1. 해당 OBU 가 속한 **프레임으로 seek** (`PlaybackController::setCurrentFrame` 계열)
-2. **Bitstream Analysis 탭의 파스 트리**에서 해당 노드로 스크롤 + 선택
+- `FileInfoWidget` 가 내부적으로 `File` / `OBU` 탭을 가진다. 기존 key/value 정보는
+  `File` 탭에 유지하고, `OBU` 탭은 `QTreeView` 로 `BitstreamAnalysisWidget` 의 packet model 을
+  공유한다. 이 탭은 OBU 를 고르는 목록 역할이며, 더블클릭 결과 화면은 YUV view 이다.
+- OBU 모델은 새 signal/slot 인 `BitstreamAnalysisWidget::packetItemModelChanged()` →
+  `FileInfoWidget::setObuModel()` 로 전달한다. 파서가 사라질 때는 먼저 OBU 탭 모델을 `nullptr`
+  로 지워 dangling model 을 피한다.
+- `BitstreamAnalysisWidget::restartParsingOfCurrentItem()` 의 `isVisible()` early return 을 제거하고,
+  `hideEvent()` 에서 파서를 삭제하지 않게 했다. 그래서 Bitstream Analysis 중앙 탭을 열지 않아도
+  선택된 compressed video 의 파싱 모델이 유지되고, Info pane 의 OBU 탭과 중앙 packet tree 가
+  같은 model 을 본다.
+- 새 파서를 따로 만들지 않는다. 파일을 두 번 파싱하지 않고, 소유권은 기존처럼
+  `BitstreamAnalysisWidget` 의 `parser` 가 가진다.
 
-## 작업 순서 권장 (갱신)
+## E. OBU double-click → YUV frame 이동
 
-B 는 끝났다. 남은 것을 크기 순으로 자르면:
+- 해당 OBU 가 속한 **프레임으로 seek** 한다 (`PlaybackController::setCurrentFrameAndUpdate()`).
+  이 함수가 내부에서 YUV view 를 redraw 하고 하단 frame slider/spinbox 값을 갱신한다
+  (`PlaybackController.cpp:662-691`).
+- Bitstream Analysis 탭의 OBU 하위 노드를 더블클릭해도 부모 OBU/패킷을 타고 올라가 같은
+  프레임으로 이동한다 (패치 `0020`).
+- Info pane 의 `OBU` 탭에서 더블클릭해도 중앙 탭을 Bitstream Analysis 로 바꾸지 않는다.
+  `FileInfoWidget::obuTreeIndexActivated` 는 `BitstreamAnalysisWidget::seekToPacketTreeIndex()` 로
+  직접 연결되고, 이 함수는 source/proxy model index 에서 frame index 를 찾아 playback controller 로
+  넘기는 일만 한다 (패치 `0021`).
 
-1. **E-1 먼저** — double-click seek 는 **Bitstream Analysis 탭 안에서** 구현할 수 있다.
-   거기엔 이미 OBU 트리와 파서가 있으므로 **파서 배선이 전혀 필요 없다** (제약 1 을 우회).
-   `ui.dataTreeView` 에 `doubleClicked` 를 연결하고, 노드에서 부모 패킷을 찾아 프레임을 구해
-   `PlaybackController` 로 seek 한다. 위 3번 결정만 하면 바로 착수 가능.
-2. **E-2** — 같은 탭 안이면 "노드로 스크롤+선택" 은 자기 자신이라 의미가 없다.
-   D(Info 탭) 가 생긴 뒤에 의미가 생기므로 D 와 함께 한다.
-3. **D** — Info 탭에 OBU 목록. 제약 1(파서가 Bitstream Analysis 가 보일 때만 돈다) 때문에
-   가장 크다. ⓑ(파서를 공용으로 끌어올림) 를 권장.
+## 완료 상태
+
+- B: AV1 syntax 항목 통합 완료 (패치 `0019`).
+- D: Info pane OBU 목록 탭 + Bitstream Analysis parser model 공유 완료 (패치 `0021`).
+- E: OBU 더블클릭 시 해당 YUV frame 표시 + 하단 slider/spinbox 갱신 경로 완료
+  (패치 `0020`, `0021`).
+- 남은 확인: 실제 GUI 에서 Info pane 의 `OBU` 탭을 열고 더블클릭하는 수동 확인은 아직 하지 않았다.
+  빌드, 회귀, `FileInfoWidget` headless smoke 는 통과했다.
+- 추후 개선 후보: E-1 의 frame index 계산은 현재 `streamPacketID` 기반이다. AV1 표시 순서까지
+  엄밀히 맞춰야 하는 스트림이 나오면 위 ⓑ/ⓒ 방식으로 승격한다.
 
 ## 다음 세션 착수 지점
 
-- 결정 필요: 위 "제약 3" 의 ⓐ/ⓑ/ⓒ 중 하나 (프레임 인덱스를 어떻게 구할지)
-- 그 다음 파일: `ui/widgets/BitstreamAnalysisWidget.cpp` (트리 뷰 + 파서 소유)
-  / `parser/AVFormat/ParserAVFormat.cpp:384-432` (패킷·OBU 아이템 생성)
+- 실제 GUI 에서 `Info` dock → `OBU` 탭 → OBU 노드 더블클릭 시 YUV view 가 해당 frame 으로
+  이동하고 하단 slider/spinbox 가 같은 frame 번호로 바뀌는지 확인한다.
+- 필요 시 `ParserAVFormat.cpp` 의 `YUView frame index` 를 ⓑ/ⓒ 방식으로 교체한다.
 
 ## 검증
 
@@ -130,6 +155,16 @@ B 는 끝났다. 남은 것을 크기 순으로 자르면:
   `tests/regression/12-*` 와 세션 중 쓴 `probe-mvdraw.cpp` 참고).
 - 오버레이 렌더는 오버레이를 끈 렌더와 **차분**해서 확인한다. 테스트 패턴 자체에 순수
   빨강/파랑이 있어 색 픽셀을 그냥 세면 아무것도 증명하지 못한다 (커밋 `953ebeb` 참고).
+- E-1 은 `./scripts/build.sh` 통과, 임시 헤드리스 프로브로 `test.ivf` 파싱 후
+  첫 OBU 패킷에 `YUView frame index=0` 이 들어가는 것을 확인했다.
+- corrected D/E 는 `0021-obu-info-tab-frame-seek.patch` 를 `0020` 까지 적용한 임시 worktree 에서
+  `git apply --check` / apply / 바이트 동일 재현 / 재적용 거부로 확인했다.
+- corrected `0021` 에는 `setCurrentWidget(ui.bitstreamAnalysis)` / `scrollTo()` / packet tree 선택
+  helper 가 남아 있지 않다.
+- 전체 패치 시리즈 `0001`..`0021` 은 깨끗한 upstream worktree 에 순서대로 적용됨을 확인했다.
+- 최종 `./scripts/build.sh` 통과, `./tests/run-regression.sh` 결과 `PASS 12 FAIL 0 SKIP 0`.
+- 추가 headless smoke: `FileInfoWidget` 이 `File`/`OBU` 탭을 만들고, 모델 설정/해제와
+  OBU tree double-click signal forwarding 이 동작함을 확인했다.
 
 ---
 
@@ -144,7 +179,7 @@ B 는 끝났다. 남은 것을 크기 순으로 자르면:
 
 - 실제 코드는 git submodule `third_party/yuview/upstream` 에 있다 (upstream YUView,
   **`a72eb348` 에 고정**).
-- 우리 변경은 전부 `third_party/yuview/patches/NNNN-*.patch` 로 보관한다 (현재 **19개**).
+- 우리 변경은 전부 `third_party/yuview/patches/NNNN-*.patch` 로 보관한다 (현재 **21개**).
 - `scripts/build.sh` 가 빌드 전에 이 패치들을 순서대로 `git apply` 한다 (이미 적용돼 있으면 건너뜀).
 - 따라서 **submodule 포인터는 절대 커밋하지 않는다.** `git status` 에 항상 뜨는
   `m third_party/yuview/upstream` 은 정상이다 (빌드가 패치를 적용해 놓은 상태).
@@ -248,13 +283,11 @@ cd build/YUViewApp && QT_QPA_PLATFORM=offscreen LD_LIBRARY_PATH=$QT/lib /tmp/pro
 
 ## 지금 남은 작업
 
-본문 "작업 순서 권장 (갱신)" 과 "다음 세션 착수 지점" 참조. 요약하면:
+본문 "완료 상태" 와 "다음 세션 착수 지점" 참조. 요약하면:
 
-1. **결정 먼저**: OBU 노드에서 프레임 인덱스를 어떻게 구할지 (본문 제약 3 의 ⓐ/ⓑ/ⓒ).
-   추측하면 엉뚱한 프레임으로 seek 하는 기능이 된다.
-2. **E-1** (double-click → seek) 을 `BitstreamAnalysisWidget` 안에서 구현.
-   그 탭엔 이미 파서와 트리가 있어 배선이 필요 없다.
-3. **D + E-2** (Info 탭의 OBU 목록 + 노드 선택) — 파서를 공용으로 끌어올려야 해서 가장 크다.
+1. 실제 GUI 에서 Info pane OBU 탭 더블클릭 시 YUV frame 과 하단 slider/spinbox 가 이동하는지
+   수동 확인한다.
+2. 필요하면 E-1 의 frame index 계산을 ⓑ/ⓒ 로 승격한다.
 
 ## 코드 규약 (이 리포지토리)
 
