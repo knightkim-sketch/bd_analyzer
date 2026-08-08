@@ -1,0 +1,230 @@
+diff --git a/include/dav1d/dav1d.h b/include/dav1d/dav1d.h
+index 866c81c..6f94c80 100644
+--- a/include/dav1d/dav1d.h
++++ b/include/dav1d/dav1d.h
+@@ -123,6 +123,18 @@ DAV1D_API int dav1d_open(Dav1dContext **c_out, const Dav1dSettings *s);
+  */
+ DAV1D_API int dav1d_set_analyzer_flags(Dav1dContext *c, const Dav1dAnalyzerFlags *s);
+ 
++/**
++ * Size of one entry in Dav1dPicture.blk_data, in bytes.
++ *
++ * blk_data is an array of the internal Av1Block struct, so a consumer has to know its layout to
++ * index it - and indexing it with the wrong size silently yields garbage for every block rather
++ * than failing. Compare this against the sizeof of your own copy of the struct before reading
++ * blk_data, and do not read it if they differ.
++ *
++ * Returns 0 if this build cannot export block data at all.
++ */
++DAV1D_API size_t dav1d_analyzer_block_data_size(void);
++
+ /**
+  * Parse a Sequence Header OBU from bitstream data.
+  *
+diff --git a/src/decode.c b/src/decode.c
+index 683f726..3f51b16 100644
+--- a/src/decode.c
++++ b/src/decode.c
+@@ -719,6 +719,18 @@ static int decode_b(Dav1dTileContext *const t,
+                            (bw4 > ss_hor || t->bx & 1) &&
+                            (bh4 > ss_ver || t->by & 1);
+ 
++    /* Analyzer extension: bracket the arithmetic decoder position around this block. Pass 2 only
++     * reconstructs from what pass 1 already parsed, so it reads no symbols and must not overwrite
++     * the range with the position it happens to be sitting at. */
++    const int export_blk_range = (c->analyzer_flags & EXPORT_BLKDATA) &&
++                                 f->frame_thread.pass != 2;
++    const uint64_t blk_start_bit =
++        export_blk_range ? dav1d_msac_abs_bit_pos(&ts->msac) : 0;
++    if (export_blk_range) {
++        b->bitstream_start_bit = blk_start_bit;
++        b->bitstream_end_bit = blk_start_bit;
++    }
++
+     if (f->frame_thread.pass == 2) {
+         if (b->intra) {
+             f->bd_fn.recon_b_intra(t, bs, intra_edge_flags, b);
+@@ -1922,6 +1934,14 @@ static int decode_b(Dav1dTileContext *const t,
+         case_set(bw4, NULL, 0, 0);
+ #undef set_ctx
+     }
++    /* Analyzer extension: the decoder has now read this block's mode info and, in the single pass
++     * case, its residual too. ts->last_qidx is likewise final - the delta-q above already ran for
++     * the superblock's first block, and every later block of the superblock keeps that value. */
++    if (export_blk_range) {
++        const uint64_t end = dav1d_msac_abs_bit_pos(&ts->msac);
++        b->bitstream_end_bit = end > blk_start_bit ? end : blk_start_bit + 1;
++        b->sb_qindex = (uint8_t) ts->last_qidx;
++    }
+     if (!b->skip) {
+         uint16_t (*noskip_mask)[2] = &t->lf_mask->noskip_mask[by4];
+         const unsigned mask = (~0U >> (32 - bw4)) << (bx4 & 15);
+@@ -2549,8 +2569,31 @@ int dav1d_decode_tile_sbrow(Dav1dTileContext *const t) {
+                 read_restoration_info(t, lr, p, frame_type);
+             }
+         }
++        /* Analyzer extension: the cost of a whole superblock. Its symbols are contiguous in the tile
++         * data, so bracketing the call measures it exactly - no need to add up the per block ranges,
++         * which do not account for what the partition tree itself costs. */
++        const int export_sb_cost = (c->analyzer_flags & EXPORT_BLKDATA) &&
++                                   f->frame_thread.pass != 2 && f->cur.blk_data;
++        const uint64_t sb_bits_before =
++            export_sb_cost ? dav1d_msac_consumed_bits(&ts->msac) : 0;
++
+         if (decode_sb(t, root_bl, c->intra_edge.root[root_bl]))
+             return 1;
++
++        if (export_sb_cost) {
++            const uint64_t sb_bits = dav1d_msac_consumed_bits(&ts->msac) - sb_bits_before;
++            const int y_end = imin(t->by + sb_step, f->bh);
++            const int x_end = imin(t->bx + sb_step, f->bw);
++            /* Into every cell, not just the block top-left ones: the consumer indexes blk_data by
++             * whatever position it is looking at, and this way it always finds the value. Only this
++             * one field is touched, so the block data decode_b wrote stays intact. */
++            for (int y = t->by; y < y_end; y++) {
++                Av1Block *const row = &((Av1Block *) f->cur.blk_data)[y * f->b4_stride];
++                for (int x = t->bx; x < x_end; x++)
++                    row[x].sb_bit_count = (uint32_t) sb_bits;
++            }
++        }
++
+         if (t->bx & 16 || f->seq_hdr->sb128) {
+             t->a++;
+             t->lf_mask++;
+@@ -2872,8 +2915,22 @@ int dav1d_decode_frame(Dav1dFrameContext *const f) {
+                 if (tile_sz > size) goto error;
+             }
+ 
++            /* Analyzer extension: where this tile's data sits in the buffer the caller pushed.
++             * f->tile[i].data was ref'd from that buffer, so the ref holds its start; m.offset is
++             * whatever the caller declared for the buffer itself (0 by default). */
++            uint64_t tile_abs_bit_offset = 0;
++            if (f->tile[i].data.ref && f->tile[i].data.ref->const_data) {
++                const uint8_t *const buf_base =
++                    (const uint8_t *) f->tile[i].data.ref->const_data;
++                if (data >= buf_base)
++                    tile_abs_bit_offset = (uint64_t)(data - buf_base) * 8;
++            }
++            if (f->tile[i].data.m.offset > 0)
++                tile_abs_bit_offset += (uint64_t) f->tile[i].data.m.offset * 8;
++
+             setup_tile(&f->ts[j], f, data, tile_sz, tile_row, tile_col++,
+                        c->n_fc > 1 ? f->frame_thread.tile_start_off[j] : 0);
++            dav1d_msac_set_abs_bit_offset(&f->ts[j].msac, tile_abs_bit_offset);
+ 
+             if (tile_col == f->frame_hdr->tiling.cols) {
+                 tile_col = 0;
+diff --git a/src/levels.h b/src/levels.h
+index 427b25b..ae56564 100644
+--- a/src/levels.h
++++ b/src/levels.h
+@@ -287,6 +287,37 @@ typedef struct Av1Block {
+             mv mv[2];
+         }; // inter
+     };
++    /* Analyzer extension. Where this block's symbols were read from, counted in bits from the start
++     * of the buffer that was handed to dav1d_send_data(), plus whatever the caller put in
++     * Dav1dData.m.offset for that buffer. So with m.offset set to the position of the pushed OBU
++     * inside its demuxed packet, these are positions inside that packet.
++     *
++     * Only filled when EXPORT_BLKDATA is set. Both are 0 when the position is unknown.
++     *
++     * These are the arithmetic decoder's read positions, not a bit field boundary: AV1 codes block
++     * syntax with a multi-symbol arithmetic coder, so a block has no exact bit range of its own.
++     * The interval does contain every byte the block's symbols were drawn from, which is what makes
++     * it useful for locating the block in the bitstream.
++     */
++    uint64_t bitstream_start_bit;
++    uint64_t bitstream_end_bit;
++    /* Analyzer extension. The quantizer index in effect for the superblock this block belongs to,
++     * which is the spec's CurrentQIndex: the frame's base y AC qindex plus whatever delta_q was read
++     * for the superblock. Every block of a superblock reports the same value, since delta_q is only
++     * read at the superblock's first block.
++     *
++     * Note this is the superblock value, not the block's final qindex - segmentation can shift it
++     * further per block (see get_qidx()).
++     */
++    uint8_t sb_qindex;
++    /* Analyzer extension. Bits the arithmetic decoder consumed for the whole superblock this block
++     * belongs to, so every block of a superblock reports the same number. Unlike the per block range
++     * above this is a real total: a superblock's symbols are contiguous in the tile data, so the
++     * difference between the coder's position before and after it is exactly its cost.
++     *
++     * Written after the superblock finished decoding, into every 4x4 cell it covers.
++     */
++    uint32_t sb_bit_count;
+ } Av1Block;
+ 
+ // analyzer flags
+diff --git a/src/lib.c b/src/lib.c
+index 91406f1..7a1fabd 100644
+--- a/src/lib.c
++++ b/src/lib.c
+@@ -210,6 +210,10 @@ int dav1d_set_analyzer_flags(Dav1dContext *const c, const Dav1dAnalyzerFlags *co
+     return 0;
+ }
+ 
++size_t dav1d_analyzer_block_data_size(void) {
++    return sizeof(Av1Block);
++}
++
+ static void dummy_free(const uint8_t *const data, void *const user_data) {
+     assert(data && !user_data);
+ }
+diff --git a/src/msac.c b/src/msac.c
+index 9e6d32b..2f6fcae 100644
+--- a/src/msac.c
++++ b/src/msac.c
+@@ -209,5 +209,11 @@ void dav1d_msac_init(MsacContext *const s, const uint8_t *const data,
+     s->rng = 0x8000;
+     s->cnt = -15;
+     s->allow_update_cdf = !disable_cdf_update_flag;
++    s->buf_start = data;
++    s->abs_bit_offset = 0;
+     ctx_refill(s);
+ }
++
++void dav1d_msac_set_abs_bit_offset(MsacContext *const s, const uint64_t abs_bit_offset) {
++    s->abs_bit_offset = abs_bit_offset;
++}
+diff --git a/src/msac.h b/src/msac.h
+index 91556fc..f44b38c 100644
+--- a/src/msac.h
++++ b/src/msac.h
+@@ -41,10 +41,36 @@ typedef struct MsacContext {
+     uint16_t rng;
+     int cnt;
+     int allow_update_cdf;
++    /* Analyzer extension. Where this tile's data started, so that a bit position can be reported
++     * relative to it, and where that data sits in the buffer the caller sent in. */
++    const uint8_t *buf_start;
++    uint64_t abs_bit_offset;
+ } MsacContext;
+ 
++/* Number of bits the arithmetic decoder has consumed from buf_start.
++ *
++ * dav1d_msac_init() leaves cnt at -15 before the first refill, and every refill adds 8 bits per
++ * byte it takes from the buffer while ctx_norm() subtracts the bits a symbol actually used. So the
++ * bits still sitting unused in `dif` are cnt + 15, and everything else that was read has been
++ * consumed. This is exact bookkeeping of the coder, not an estimate - but note that an arithmetic
++ * coder does not give each syntax element its own bits, so a per-block range is only a range of the
++ * bytes the block's symbols were drawn from.
++ */
++static inline uint64_t dav1d_msac_consumed_bits(const MsacContext *const s) {
++    const int64_t bits = (int64_t)(s->buf_pos - s->buf_start) * 8 - s->cnt - 15;
++    return bits < 0 ? 0 : (uint64_t)bits;
++}
++
++/* The same position, but counted in the stream the caller pushed (see Dav1dData.m.offset). */
++static inline uint64_t dav1d_msac_abs_bit_pos(const MsacContext *const s) {
++    return s->abs_bit_offset + dav1d_msac_consumed_bits(s);
++}
++
+ void dav1d_msac_init(MsacContext *c, const uint8_t *data, size_t sz,
+                      int disable_cdf_update_flag);
++/* Analyzer extension: tell the context where `data` sits, in bits, in the buffer the caller pushed.
++ * Call right after dav1d_msac_init(). */
++void dav1d_msac_set_abs_bit_offset(MsacContext *c, uint64_t abs_bit_offset);
+ unsigned dav1d_msac_decode_symbol_adapt(MsacContext *s, uint16_t *cdf,
+                                         const unsigned n_symbols);
+ unsigned dav1d_msac_decode_bool_equi(MsacContext *const s);

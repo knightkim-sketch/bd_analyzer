@@ -25,6 +25,11 @@ aqtinstall.log
 # generated test streams
 tests/data/*.ivf
 tests/data/*.yuv
+tests/data/*.h264
+tests/data/*.av1
+
+# dav1d analyzer 소스 (submodule 이 아니라 shallow clone, README.md 참조) 와 그 빌드 산출물
+third_party/dav1d/upstream/
 
 # 배포 번들 (scripts/make-bin-bundle.sh 로 생성, ~86MB의 Qt/FFmpeg 사본)
 bin/
