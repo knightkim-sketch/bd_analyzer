@@ -1,0 +1,2130 @@
+diff --git a/YUViewLib/YUViewLib.pro b/YUViewLib/YUViewLib.pro
+index 06e539a8..9fe2adb5 100644
+--- a/YUViewLib/YUViewLib.pro
++++ b/YUViewLib/YUViewLib.pro
+@@ -45,3 +45,10 @@ win32-g++ | linux | macx {
+ 
+ VERSTR = '\\"$${SVNN}\\"'
+ DEFINES += YUVIEW_VERSION=$${VERSTR}
++
++# The dav1d analyzer library this project ships (third_party/dav1d, tag 0.2.1.0.analyze plus the
++# bitstream range fields) reports where each block's symbols were read from. Those two fields sit at
++# the end of Av1Block, so this define changes the struct layout on our side and MUST match the
++# loaded libdav1d-internals.so - with a stock analyzer build the block statistics would be indexed
++# with the wrong stride and come out as garbage. See third_party/dav1d/README.md.
++DEFINES += YUVIEW_DAV1D_AV1BLOCK_HAS_BITSTREAM_RANGE
+diff --git a/YUViewLib/src/decoder/decoderBase.h b/YUViewLib/src/decoder/decoderBase.h
+index 9279d2c0..623fcf0f 100644
+--- a/YUViewLib/src/decoder/decoderBase.h
++++ b/YUViewLib/src/decoder/decoderBase.h
+@@ -129,6 +129,12 @@ public:
+   // codes
+   virtual bool pushData(QByteArray &data) = 0;
+ 
++  /* Tell the decoder where the next pushed buffer sits inside the container packet it came from.
++   * A decoder that reports per block bitstream positions can then report them in packet coordinates,
++   * which is what the frame bitstream view shows. Decoders that do not care ignore it.
++   */
++  virtual void setNextDataOffsetInPacket(int) {}
++
+   DecoderState state() const { return this->decoderState; }
+ 
+   // Get the statistics values for the current frame. In order to enable statistics retrievel,
+diff --git a/YUViewLib/src/decoder/decoderDav1d.cpp b/YUViewLib/src/decoder/decoderDav1d.cpp
+index 0d2a302c..9c2ab5fb 100644
+--- a/YUViewLib/src/decoder/decoderDav1d.cpp
++++ b/YUViewLib/src/decoder/decoderDav1d.cpp
+@@ -228,6 +228,23 @@ void decoderDav1d::resolveLibraryFunctionPointers()
+   if (!resolve(this->lib.dav1d_set_analyzer_settings, "dav1d_set_analyzer_flags", true))
+     return;
+ 
++  /* The block data array is indexed with our own sizeof(Av1Block), so the library has to agree on
++   * the layout. Refuse rather than read every block at the wrong offset: that produces plausible
++   * looking but wrong modes, vectors and partitioning with nothing to indicate it went wrong.
++   */
++  resolve(this->lib.dav1d_analyzer_block_data_size, "dav1d_analyzer_block_data_size", true);
++  const auto libBlockSize =
++      this->lib.dav1d_analyzer_block_data_size ? this->lib.dav1d_analyzer_block_data_size() : 0;
++  if (libBlockSize != sizeof(Av1Block))
++  {
++    setError(QStringLiteral("The libdav1d analyzer library reports a block data size of %1 bytes "
++                            "but this build expects %2. Use the dav1d built from "
++                            "third_party/dav1d (see its README).")
++                 .arg(libBlockSize)
++                 .arg(sizeof(Av1Block)));
++    return;
++  }
++
+   DEBUG_DAV1D("decoderDav1d::resolveLibraryFunctionPointers - analyzer functions found");
+   internalsSupported = true;
+   nrSignals          = 3; // We can also get prediction and reconstruction before filtering
+@@ -469,6 +486,12 @@ bool decoderDav1d::pushData(QByteArray &data)
+     Dav1dData *dav1dData      = new Dav1dData;
+     uint8_t   *rawDataPointer = this->lib.dav1d_data_create(dav1dData, data.size());
+     memcpy(rawDataPointer, data.data(), data.size());
++    /* Declare where this buffer came from. The analyzer build carries m.offset through to the tile
++     * data, so the per block bitstream positions it reports are offsets into the demuxed packet
++     * rather than into this one OBU. Harmless with a stock dav1d, which only passes the value on to
++     * the output picture.
++     */
++    dav1dData->m.offset = this->nextDataOffsetInPacket;
+ 
+     int err = this->lib.dav1d_send_data(decoder, dav1dData);
+     if (err == -EAGAIN)
+@@ -605,6 +628,27 @@ void decoderDav1d::fillStatisticList(stats::StatisticsData &statisticsData) cons
+ {
+   using namespace stats::color;
+ 
++  /* Superblock level values come first: they are what one looks at to see where the bitrate went,
++   * before drilling into the per block modes. The properties panel lists the types in this order.
++   */
++  stats::StatisticsType sbQIndex(12, "sb_qindex", ColorMapper({0, 255}, PredefinedType::Jet));
++  sbQIndex.description =
++      "CurrentQIndex: the quantizer index in effect for the superblock, that is the frame's base y "
++      "AC qindex plus the superblock's delta_q. Segmentation can shift the qindex further per block, "
++      "which this does not include.";
++  statisticsData.addStatType(sbQIndex);
++
++  /* An exact figure, unlike the per block bit ranges: a superblock's symbols are contiguous in the
++   * tile data, so the arithmetic coder's position before and after it bounds exactly its cost - the
++   * partition tree included. The upper bound of the colour range is a display choice, not a limit;
++   * 4096 bits per superblock is already a very expensive one.
++   */
++  stats::StatisticsType sbBitCount(13, "sb_bitcount", ColorMapper({0, 4096}, PredefinedType::Jet));
++  sbBitCount.description =
++      "Bits the arithmetic decoder consumed for the whole superblock, mode info and residual "
++      "together. Every block of a superblock reports the same number.";
++  statisticsData.addStatType(sbBitCount);
++
+   /* One fixed colour per prediction class instead of a gradient, so the overlay can be read without
+    * consulting a legend: intra green, single reference red when it points into the past and blue
+    * when it points into the future, compound (two references) purple.
+@@ -618,6 +662,11 @@ void decoderDav1d::fillStatisticList(stats::StatisticsData &statisticsData) cons
+   predMode.description = "The prediction mode per block: intra, single reference (forward or "
+                          "backward) or compound";
+   predMode.setMappingValues({"INTRA", "SINGLE_REF_FWD", "SINGLE_REF_BWD", "COMPOUND"});
++  /* The prediction mode and the two intra prediction mode types are one thing to switch on or off:
++   * they all answer "how is this block predicted". Sharing a row keeps the list readable while the
++   * three types keep their own colours and their own rows in the block syntax table.
++   */
++  predMode.uiGroup = "Pred Mode";
+   statisticsData.addStatType(predMode);
+ 
+   // LastActiveSegId indicates the real maximum. But that can also vary per frame.
+@@ -693,6 +742,7 @@ void decoderDav1d::fillStatisticList(stats::StatisticsData &statisticsData) cons
+   auto intraPredModeLuma = buildIntraType(4, "intra pred mode (Y)", INTRA_MODE_NAMES_LUMA);
+   intraPredModeLuma.description =
+       "Intra prediction mode Luma (Y), with the angle delta and the prediction direction";
++  intraPredModeLuma.uiGroup = "Pred Mode";
+   statisticsData.addStatType(intraPredModeLuma);
+ 
+   auto intraModeNamesChroma = INTRA_MODE_NAMES_LUMA;
+@@ -700,28 +750,20 @@ void decoderDav1d::fillStatisticList(stats::StatisticsData &statisticsData) cons
+   auto intraPredModeChroma = buildIntraType(5, "intra pred mode (UV)", intraModeNamesChroma);
+   intraPredModeChroma.description =
+       "Intra prediction mode Chroma (UV), with the angle delta and the prediction direction";
++  intraPredModeChroma.uiGroup = "Pred Mode";
+   statisticsData.addStatType(intraPredModeChroma);
+ 
+-  stats::StatisticsType chromaFromLumaAlphaU(
+-      12, "chroma from luma alpha (U)", ColorMapper({-128, 128}, PredefinedType::Col3_bblg));
+-  chromaFromLumaAlphaU.description =
+-      "CflAlphaU: contains the signed value of the alpha component for the U component";
+-  statisticsData.addStatType(chromaFromLumaAlphaU);
+-
+-  stats::StatisticsType chromaFromLumaAlphaV(
+-      13, "chroma from luma alpha (V)", ColorMapper({-128, 128}, PredefinedType::Col3_bblg));
+-  chromaFromLumaAlphaV.description =
+-      "CflAlphaU: contains the signed value of the alpha component for the U component";
+-  statisticsData.addStatType(chromaFromLumaAlphaV);
+ 
+   // Inter specific values
+ 
+   stats::StatisticsType refFrames0(
+       14, "ref frame index 0", ColorMapper({0, 7}, PredefinedType::Jet));
++  refFrames0.uiGroup = "ref frame index";
+   statisticsData.addStatType(refFrames0);
+ 
+   stats::StatisticsType refFrames1(
+       15, "ref frame index 1", ColorMapper({0, 7}, PredefinedType::Jet));
++  refFrames1.uiGroup = "ref frame index";
+   statisticsData.addStatType(refFrames1);
+ 
+ 
+@@ -741,12 +783,14 @@ void decoderDav1d::fillStatisticList(stats::StatisticsData &statisticsData) cons
+   motionVec0.description = "The motion vector for component 0";
+   motionVec0.vectorStyle = stats::LineDrawStyle({Color(255, 0, 0), 2.0, stats::Pattern::Solid});
+   motionVec0.setInitialState();
++  motionVec0.uiGroup = "Motion Vector";
+   statisticsData.addStatType(motionVec0);
+ 
+   stats::StatisticsType motionVec1(25, "Motion Vector 1", 4);
+   motionVec1.description = "The motion vector for component 1";
+   motionVec1.vectorStyle = stats::LineDrawStyle({Color(0, 0, 255), 2.0, stats::Pattern::Solid});
+   motionVec1.setInitialState();
++  motionVec1.uiGroup = "Motion Vector";
+   statisticsData.addStatType(motionVec1);
+ 
+   stats::StatisticsType transformDepth(
+@@ -945,6 +989,15 @@ void decoderDav1d::parseBlockPartition(Av1Block       *blockData,
+   const auto cbWidth  = blockWidth4 * 4;
+   const auto cbHeight = blockHeight4 * 4;
+ 
++#if defined(YUVIEW_DAV1D_AV1BLOCK_HAS_BITSTREAM_RANGE)
++  stats::BitstreamRange bitstreamRange;
++  bitstreamRange.startBit = b.bitstream_start_bit;
++  bitstreamRange.endBit   = b.bitstream_end_bit;
++  bitstreamRange.origin   = "packet payload";
++  this->statisticsData->addBlockBitstreamRange(
++      cbPosX, cbPosY, cbWidth, cbHeight, bitstreamRange);
++#endif
++
+   // Set prediction mode (ID 0)
+   const bool isIntra = (b.intra != 0);
+   int        predMode;
+@@ -975,6 +1028,13 @@ void decoderDav1d::parseBlockPartition(Av1Block       *blockData,
+   // Set the skip_mode (ID 3)
+   this->statisticsData->at(3).addBlockValue(cbPosX, cbPosY, cbWidth, cbHeight, b.skip_mode);
+ 
++#if defined(YUVIEW_DAV1D_AV1BLOCK_HAS_BITSTREAM_RANGE)
++  // Superblock level values (ID 12, 13). Apply to intra and inter blocks alike.
++  this->statisticsData->at(12).addBlockValue(cbPosX, cbPosY, cbWidth, cbHeight, b.sb_qindex);
++  this->statisticsData->at(13).addBlockValue(
++      cbPosX, cbPosY, cbWidth, cbHeight, int(b.sb_bit_count));
++#endif
++
+   if (isIntra)
+   {
+     // Set the intra pred mode incl. the angle delta luma/chroma (ID 4, 5)
+@@ -1000,12 +1060,6 @@ void decoderDav1d::parseBlockPartition(Av1Block       *blockData,
+           cbPosX, cbPosY, cbWidth, cbHeight, vecX, vecY);
+     }
+ 
+-    if (b.y_mode == CFL_PRED)
+-    {
+-      // Set the chroma from luma alpha U/V (ID 12, 13)
+-      this->statisticsData->at(12).addBlockValue(cbPosX, cbPosY, cbWidth, cbHeight, b.cfl_alpha[0]);
+-      this->statisticsData->at(13).addBlockValue(cbPosX, cbPosY, cbWidth, cbHeight, b.cfl_alpha[1]);
+-    }
+   }
+   else // inter
+   {
+diff --git a/YUViewLib/src/decoder/decoderDav1d.h b/YUViewLib/src/decoder/decoderDav1d.h
+index 6fc4c06a..8746431c 100644
+--- a/YUViewLib/src/decoder/decoderDav1d.h
++++ b/YUViewLib/src/decoder/decoderDav1d.h
+@@ -59,6 +59,13 @@ struct LibraryFunctionsDav1d
+   // The interface for the analizer. These might not be available in the library.
+   void (*dav1d_default_analyzer_settings)(Dav1dAnalyzerFlags *s){};
+   int (*dav1d_set_analyzer_settings)(Dav1dContext *c, const Dav1dAnalyzerFlags *s){};
++  /* Size of one Dav1dPicture::blk_data entry as the library sees it. Only our own analyzer build
++   * exports this; older ones do not, and their Av1Block is 16 bytes shorter. We index blk_data with
++   * our sizeof, so a mismatch is not a missing feature - it shifts every block read and turns all
++   * block statistics into garbage without any error. Hence the check in
++   * resolveLibraryFunctionPointers().
++   */
++  size_t (*dav1d_analyzer_block_data_size)(){};
+ };
+ 
+ class Dav1dPictureWrapper
+@@ -125,6 +132,10 @@ public:
+   bool       decodeNextFrame() override;
+   QByteArray getRawFrameData() override;
+   bool       pushData(QByteArray &data) override;
++  void       setNextDataOffsetInPacket(int offset) override
++  {
++    this->nextDataOffsetInPacket = offset;
++  }
+ 
+   // Check if the given library file is an existing libde265 decoder that we can use.
+   static bool checkLibraryFile(QString libFilePath, QString &error);
+@@ -158,6 +169,13 @@ private:
+   bool flushing{};
+   bool sequenceHeaderPushed{};
+ 
++  /* Byte offset of the next buffer to push, inside the packet it was cut out of. It is handed to
++   * dav1d as Dav1dData.m.offset, which dav1d carries along with that buffer's reference all the way
++   * to the tile data - so the block positions come back already in packet coordinates and no
++   * bookkeeping is needed to match a decoded frame to the data that produced it.
++   */
++  int nextDataOffsetInPacket{0};
++
+   // When pushing frames, the decoder will try to decode a frame to check if this is possible.
+   // If this is true, a frame is waiting from that step and decodeNextFrame will not actually decode
+   // a new frame.
+diff --git a/YUViewLib/src/decoder/externalHeader/dav1d/blockData.h b/YUViewLib/src/decoder/externalHeader/dav1d/blockData.h
+index 932b460a..8039a751 100644
+--- a/YUViewLib/src/decoder/externalHeader/dav1d/blockData.h
++++ b/YUViewLib/src/decoder/externalHeader/dav1d/blockData.h
+@@ -209,6 +209,29 @@ typedef struct Av1Block {
+       motionVector mv[2];
+     }; // inter
+   };
++#if defined(YUVIEW_DAV1D_AV1BLOCK_HAS_BITSTREAM_RANGE)
++  /*
++   * Optional analyzer extension.
++   *
++   * These offsets are relative to the compressed frame packet payload passed to dav1d, not to the
++   * original container file. Build YUView with this macro only when the loaded dav1d analyzer
++   * library was built with the same Av1Block layout.
++   */
++  uint64_t bitstream_start_bit;
++  uint64_t bitstream_end_bit;
++  /*
++   * Quantizer index of the superblock this block belongs to (the spec's CurrentQIndex): the frame's
++   * base y AC qindex plus the superblock's delta_q. Not the block's final qindex - segmentation can
++   * shift it further per block.
++   */
++  uint8_t sb_qindex;
++  /*
++   * Bits the arithmetic decoder consumed for the whole superblock this block belongs to. Every block
++   * of a superblock reports the same number. This is an exact total, unlike the per block range: a
++   * superblock's symbols are contiguous in the tile data.
++   */
++  uint32_t sb_bit_count;
++#endif
+ } Av1Block;
+ 
+ #endif // __DAV1D_BLOCKDATA_H__
+diff --git a/YUViewLib/src/ffmpeg/FFmpegVersionHandler.cpp b/YUViewLib/src/ffmpeg/FFmpegVersionHandler.cpp
+index b4fafa63..d561a2cc 100644
+--- a/YUViewLib/src/ffmpeg/FFmpegVersionHandler.cpp
++++ b/YUViewLib/src/ffmpeg/FFmpegVersionHandler.cpp
+@@ -422,6 +422,21 @@ bool FFmpegVersionHandler::openInput(AVFormatContextWrapper &fmt, QString url)
+   return true;
+ }
+ 
++void FFmpegVersionHandler::closeInput(AVFormatContextWrapper &fmt)
++{
++  if (!fmt)
++    return;
++
++  /* avformat_close_input() also releases the AVIOContext, which is what holds the open file. The
++   * stream wrappers the caller may still be holding point into this context, so replacing the
++   * wrapper with an empty one is not enough on its own - the caller must be done with them. That is
++   * why this is called from the FileSourceFFmpegFile destructor and nowhere else.
++   */
++  auto *ctx = fmt.getFormatCtx();
++  this->lib.avformat.avformat_close_input(&ctx);
++  fmt = AVFormatContextWrapper();
++}
++
+ AVCodecParametersWrapper FFmpegVersionHandler::allocCodecParameters()
+ {
+   return AVCodecParametersWrapper(this->lib.avcodec.avcodec_parameters_alloc(), libVersion);
+diff --git a/YUViewLib/src/ffmpeg/FFmpegVersionHandler.h b/YUViewLib/src/ffmpeg/FFmpegVersionHandler.h
+index b916a246..2e667c0b 100644
+--- a/YUViewLib/src/ffmpeg/FFmpegVersionHandler.h
++++ b/YUViewLib/src/ffmpeg/FFmpegVersionHandler.h
+@@ -87,6 +87,11 @@ public:
+ 
+   // Open the input file. This will call avformat_open_input and avformat_find_stream_info.
+   bool openInput(AVFormatContextWrapper &fmt, QString url);
++  /* Release what openInput() allocated. The wrapper is left empty so nothing can reach the freed
++   * context through it. Must be called by whoever owns the wrapper; nothing else did, which leaked
++   * the context and its file descriptor once per opened file.
++   */
++  void closeInput(AVFormatContextWrapper &fmt);
+   // Try to find a decoder for the given codecID
+   AVCodecWrapper findDecoder(AVCodecIDWrapper codecID);
+   // Allocate the decoder (avcodec_alloc_context3)
+diff --git a/YUViewLib/src/filesource/FileSourceFFmpegFile.cpp b/YUViewLib/src/filesource/FileSourceFFmpegFile.cpp
+index 9583cb48..14a47cc8 100644
+--- a/YUViewLib/src/filesource/FileSourceFFmpegFile.cpp
++++ b/YUViewLib/src/filesource/FileSourceFFmpegFile.cpp
+@@ -188,7 +188,8 @@ QByteArray FileSourceFFmpegFile::getNextUnit(bool getLastDataAgain)
+ 
+       if (header.obu_has_size_field)
+       {
+-        auto completeSize     = header.obu_size + reader.nrBytesRead();
++        auto completeSize                    = header.obu_size + reader.nrBytesRead();
++        this->posOfLastReturnArrayInPacket   = this->posInData;
+         this->lastReturnArray = currentPacketData.mid(posInData, completeSize);
+         this->posInData += completeSize;
+         if (this->posInData >= currentPacketData.size())
+@@ -197,6 +198,7 @@ QByteArray FileSourceFFmpegFile::getNextUnit(bool getLastDataAgain)
+       else
+       {
+         // The OBU is the remainder of the input
++        this->posOfLastReturnArrayInPacket = this->posInData;
+         this->lastReturnArray = currentPacketData.mid(posInData);
+         this->posInData       = currentPacketData.size();
+         this->currentPacketData.clear();
+@@ -398,6 +400,18 @@ FileSourceFFmpegFile::~FileSourceFFmpegFile()
+ {
+   if (this->currentPacket)
+     this->ff.freePacket(this->currentPacket);
++
++  /* openInput() says the wrapper takes ownership of the AVFormatContext, but nothing ever released
++   * it: avformat_close_input was resolved from the library and never called. Every opened file
++   * leaked the context and its file descriptor. It went unnoticed while these objects lived as long
++   * as their playlist item; ParserAVFormat::runParsingOfFile() creates one per run, and the
++   * bitstream analysis re-parses whenever the playlist selection is re-emitted - which playback does
++   * at the end of every pass - so playing a file walked towards the fd limit.
++   *
++   * Safe to do here: the stream wrappers that point into the context are members of this object, and
++   * decoders only read codec parameters while being constructed (configureDecoder copies them).
++   */
++  this->ff.closeInput(this->formatCtx);
+ }
+ 
+ bool FileSourceFFmpegFile::openFile(const QString        &filePath,
+diff --git a/YUViewLib/src/filesource/FileSourceFFmpegFile.h b/YUViewLib/src/filesource/FileSourceFFmpegFile.h
+index acc51d4c..f6fb9c03 100644
+--- a/YUViewLib/src/filesource/FileSourceFFmpegFile.h
++++ b/YUViewLib/src/filesource/FileSourceFFmpegFile.h
+@@ -79,6 +79,8 @@ public:
+    */
+   // Get the next NAL unit (everything excluding the start code) or the next packet.
+   QByteArray getNextUnit(bool getLastDataAgain = false);
++  // Byte offset of the unit last returned by getNextUnit() within its demuxed packet.
++  int getPosOfLastUnitInPacket() const { return this->posOfLastReturnArrayInPacket; }
+   // Return the next packet (unless getLastPackage is set in which case we return the current
+   // packet)
+   FFmpeg::AVPacketWrapper getNextPacket(bool getLastPackage = false, bool videoPacket = true);
+@@ -204,4 +206,9 @@ protected:
+   int        posInData;
+   // We will keep the last buffer in case the reader wants to get it again
+   QByteArray lastReturnArray;
++  // Where lastReturnArray started inside currentPacketData. Whoever pushes the unit into a decoder
++  // needs this to translate a position the decoder reports back into a position in the packet that
++  // the frame bitstream view shows. Kept in step with lastReturnArray, so asking for the last unit
++  // again reports the same offset.
++  int posOfLastReturnArrayInPacket{0};
+ };
+diff --git a/YUViewLib/src/parser/ParserAnnexB.cpp b/YUViewLib/src/parser/ParserAnnexB.cpp
+index 21f669b2..ab6f5973 100644
+--- a/YUViewLib/src/parser/ParserAnnexB.cpp
++++ b/YUViewLib/src/parser/ParserAnnexB.cpp
+@@ -149,6 +149,14 @@ std::optional<pairUint64> ParserAnnexB::getFrameStartEndPos(FrameIndexCodingOrde
+   return this->frameListCodingOrder[idx].fileStartEndPos;
+ }
+ 
++std::optional<pairUint64> ParserAnnexB::getFrameStartEndPosDisplayOrder(FrameIndexDisplayOrder idx)
++{
++  this->updateFrameListDisplayOrder();
++  if (idx >= this->frameListDisplayOder.size())
++    return {};
++  return this->frameListDisplayOder[idx].fileStartEndPos;
++}
++
+ bool ParserAnnexB::parseAnnexBFile(std::unique_ptr<FileSourceAnnexBFile> &file, QWidget *mainWindow)
+ {
+   DEBUG_ANNEXB("ParserAnnexB::parseAnnexBFile");
+diff --git a/YUViewLib/src/parser/ParserAnnexB.h b/YUViewLib/src/parser/ParserAnnexB.h
+index 1104403c..632a186d 100644
+--- a/YUViewLib/src/parser/ParserAnnexB.h
++++ b/YUViewLib/src/parser/ParserAnnexB.h
+@@ -127,6 +127,13 @@ public:
+   virtual Ratio   getSampleAspectRatio() = 0;
+ 
+   std::optional<pairUint64> getFrameStartEndPos(FrameIndexCodingOrder idx);
++  /* The same lookup, but indexed the way the video view and the playback controls count frames.
++   * The decoding path can use the coding order variant because it walks the file front to back with
++   * its own counter; anything that starts from a frame the user picked has to use this one.
++   * Both index types are plain unsigned, so this cannot be an overload - the name has to say which
++   * order is meant.
++   */
++  std::optional<pairUint64> getFrameStartEndPosDisplayOrder(FrameIndexDisplayOrder idx);
+ 
+   bool parseAnnexBFile(std::unique_ptr<FileSourceAnnexBFile> &file, QWidget *mainWindow = nullptr);
+ 
+diff --git a/YUViewLib/src/playlistitem/playlistItem.h b/YUViewLib/src/playlistitem/playlistItem.h
+index 4b9e3b78..d881da16 100644
+--- a/YUViewLib/src/playlistitem/playlistItem.h
++++ b/YUViewLib/src/playlistitem/playlistItem.h
+@@ -40,11 +40,13 @@
+ #include <statistics/PixelStatistics.h>
+ #include <statistics/StatisticUIHandler.h>
+ 
++#include <QByteArray>
+ #include <QDir>
+ #include <QObject>
+ #include <QTreeWidgetItem>
+ 
+ #include <memory>
++#include <optional>
+ 
+ #include "ui_playlistItem.h"
+ 
+@@ -58,6 +60,34 @@ class playlistItem : public QObject, public QTreeWidgetItem
+   Q_OBJECT
+ 
+ public:
++  struct DataDump
++  {
++    enum class Kind
++    {
++      None,
++      Bitstream,
++      PixelSamples,
++    };
++
++    Kind    kind{Kind::None};
++    QString title;
++    QString description;
++    QByteArray bytes;
++    QString text;
++    std::optional<stats::BitstreamRange> highlightedRange;
++    /* Position of bytes[0] in whatever the dump is a part of - the demuxed packet, for a bitstream
++     * dump. The hex dump column shows this rather than counting from zero, so that a slice out of
++     * the middle of a packet can be lined up with the full packet view and with the bit positions in
++     * the description.
++     */
++    uint64_t baseOffset{0};
++
++    bool isValid() const
++    {
++      return kind != Kind::None && (!bytes.isEmpty() || !text.isEmpty() || !description.isEmpty());
++    }
++  };
++
+   /* Is this item indexed by a frame number or by a duration?
+    * There are some modes that the playlist item can have:
+    * Static: The item is shown for a specific amount of time. There is no concept of "frames" for
+@@ -232,6 +262,10 @@ public:
+   //!< 256 bin luma histogram of the given frame. Empty when unavailable.
+   virtual std::vector<uint32_t> getLumaHistogram(int) { return {}; }
+ 
++  // Data shown in the Item View dump panel. Compressed items normally return bitstream packet bytes;
++  // raw YUV items can return a 2D sample grid for the block containing the selected pixel.
++  virtual DataDump getItemDataDump(const QPoint &, int, const stats::BlockInfo &) { return {}; }
++
+   // If you want your item to be droppable onto a difference/resample object, return true here and
+   // return a valid video handler.
+   virtual bool                 canBeUsedInProcessing() const { return false; }
+diff --git a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+index 7ee1ac1f..55a00b10 100644
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+@@ -36,6 +36,7 @@
+ #include <QPlainTextEdit>
+ #include <QThread>
+ 
++#include <algorithm>
+ #include <inttypes.h>
+ 
+ #include <common/Formatting.h>
+@@ -85,6 +86,23 @@ bool isInputFormatTypeFFmpeg(InputFormat format)
+   return format == InputFormat::Libav;
+ }
+ 
++// How many bytes of the packet to show on either side of a block's own bytes.
++constexpr qsizetype BLOCK_DUMP_CONTEXT_BYTES = 32;
++
++QByteArray sliceBitRange(const QByteArray &data, const stats::BitstreamRange &range)
++{
++  if (!range.isValid())
++    return {};
++
++  const auto startByte = range.startBit / 8;
++  const auto endByte   = (range.endBit + 7) / 8;
++  if (startByte >= uint64_t(data.size()) || endByte <= startByte)
++    return {};
++
++  const auto clippedEndByte = std::min<uint64_t>(endByte, uint64_t(data.size()));
++  return data.mid(int(startByte), int(clippedEndByte - startByte));
++}
++
+ enum class Codec
+ {
+   AV1,
+@@ -825,8 +843,11 @@ void playlistItemCompressedVideo::loadRawData(int frameIdx, bool caching)
+                this->decoderEngine != DecoderEngine::FFMpeg)
+       {
+         // Get the next unit (NAL or OBU) form ffmepg and push it to the decoder
+-        auto data = caching ? this->inputFileFFmpegCaching->getNextUnit(repushData)
+-                            : this->inputFileFFmpegLoading->getNextUnit(repushData);
++        auto &reader = caching ? *this->inputFileFFmpegCaching : *this->inputFileFFmpegLoading;
++        auto  data   = reader.getNextUnit(repushData);
++        // Where this unit sits in its packet, so a decoder that reports per block bitstream
++        // positions can report them in the same coordinates the frame bitstream view uses.
++        dec->setNextDataOffsetInPacket(reader.getPosOfLastUnitInPacket());
+         DEBUG_COMPRESSED(
+           "playlistItemCompressedVideo::loadRawData retrieved nal unit from file - size "
+           << data.size());
+@@ -1243,6 +1264,181 @@ stats::BlockInfo playlistItemCompressedVideo::getBlockInfoAt(const QPoint &pixel
+   return info;
+ }
+ 
++playlistItem::DataDump
++playlistItemCompressedVideo::getItemDataDump(const QPoint          &pixelPos,
++                                             int                    frameIdx,
++                                             const stats::BlockInfo &blockInfo)
++{
++  DataDump dump;
++  dump.kind  = DataDump::Kind::Bitstream;
++  dump.title = "Frame Bitstream";
++
++  QByteArray frameData;
++  QString    frameDescription;
++
++  if (isInputFormatTypeAnnexB(this->inputFormat))
++  {
++    if (!this->inputFileAnnexBParser)
++    {
++      dump.description = "No AnnexB parser is available for this item.";
++      return dump;
++    }
++
++    /* frameIdx is what the video view and the playback controls handed out, so it counts frames in
++     * display order. getFrameStartEndPos() indexes the coding order list instead - that is why the
++     * decoding path in loadRawData() keeps its own readAnnexBFrameCounterCodingOrder rather than
++     * passing frameIdx. Using the coding order lookup here showed a different frame's bytes as soon
++     * as the two orders diverged.
++     */
++    const auto frameStartEndFilePos =
++        this->inputFileAnnexBParser->getFrameStartEndPosDisplayOrder(unsigned(frameIdx));
++    if (!frameStartEndFilePos)
++    {
++      dump.description = QString("No frame bitstream range is available for frame %1.").arg(frameIdx);
++      return dump;
++    }
++
++    if (!this->inputFileAnnexBDump)
++      this->inputFileAnnexBDump = std::make_unique<FileSourceAnnexBFile>(
++          std::filesystem::path(this->properties().name.toStdString()));
++    frameData = this->inputFileAnnexBDump->getFrameData(*frameStartEndFilePos);
++    frameDescription =
++        QString("Frame %1 · source bytes %2-%3 · %4 bytes")
++            .arg(frameIdx)
++            .arg(frameStartEndFilePos->first)
++            .arg(frameStartEndFilePos->second)
++            .arg(frameData.size());
++  }
++  else if (isInputFormatTypeFFmpeg(this->inputFormat))
++  {
++    if (!this->inputFileFFmpegDump)
++    {
++      this->inputFileFFmpegDump = std::make_unique<FileSourceFFmpegFile>();
++      // parseFile == false and the loading reader as "other": the frame count and the key frame
++      // list are copied from there instead of scanning the whole file again.
++      if (!this->inputFileFFmpegDump->openFile(
++              this->properties().name, nullptr, this->inputFileFFmpegLoading.get(), false))
++      {
++        this->inputFileFFmpegDump.reset();
++        dump.description = "Unable to open the input file for the packet dump.";
++        return dump;
++      }
++      this->dumpReaderPacketIdx = -1;
++    }
++
++    if (this->dumpReaderPacketCount && frameIdx >= *this->dumpReaderPacketCount)
++    {
++      dump.description =
++          QString("No video packet is available for frame %1 - the stream has %2 video packets.")
++              .arg(frameIdx)
++              .arg(*this->dumpReaderPacketCount);
++      return dump;
++    }
++
++    /* One video packet per frame, counted over the video stream only. That is the same definition
++     * the bitstream analysis tab annotates every AVPacket with ("YUView frame index"), so a frame
++     * picked from the OBU tree and the bytes shown here refer to the same packet.
++     *
++     * The reader keeps its position between calls: stepping to the next frame demuxes one packet,
++     * not frameIdx + 1 of them from the start of the file. Only a jump backwards has to rewind.
++     */
++    if (frameIdx < this->dumpReaderPacketIdx)
++    {
++      if (!this->inputFileFFmpegDump->seekFileToBeginning())
++      {
++        dump.description = "Unable to rewind the input file for the packet dump.";
++        return dump;
++      }
++      this->dumpReaderPacketIdx = -1;
++    }
++
++    FFmpeg::AVPacketWrapper packet;
++    if (frameIdx == this->dumpReaderPacketIdx)
++      // Already the packet the reader holds. Asking for the next one would step past it.
++      packet = this->inputFileFFmpegDump->getNextPacket(true, true);
++    else
++      while (this->dumpReaderPacketIdx < frameIdx)
++      {
++        packet = this->inputFileFFmpegDump->getNextPacket(false, true);
++        if (!packet)
++        {
++          // The file ended, so we now know how many video packets it has. Remember it: without this
++          // every later request for an out of range frame would walk the whole file again.
++          this->dumpReaderPacketCount = this->dumpReaderPacketIdx + 1;
++          break;
++        }
++        this->dumpReaderPacketIdx++;
++      }
++
++    if (!packet)
++    {
++      dump.description =
++          QString("No video packet is available for frame %1 - the stream has %2 video packets.")
++              .arg(frameIdx)
++              .arg(this->dumpReaderPacketIdx + 1);
++      return dump;
++    }
++
++    frameData =
++        QByteArray(reinterpret_cast<const char *>(packet.getData()), packet.getDataSize());
++    frameDescription = QString("Frame %1 · demuxed packet payload · %2 bytes")
++                           .arg(frameIdx)
++                           .arg(frameData.size());
++  }
++  else
++  {
++    dump.description = "No bitstream dump source is available for this input format.";
++    return dump;
++  }
++
++  if (frameData.isEmpty())
++  {
++    dump.description = frameDescription + " · empty";
++    return dump;
++  }
++
++  if (blockInfo.bitstreamRange && blockInfo.bitstreamRange->isValid())
++  {
++    const auto &range     = *blockInfo.bitstreamRange;
++    const auto  blockData = sliceBitRange(frameData, range);
++    if (!blockData.isEmpty())
++    {
++      /* AV1 codes block syntax with an arithmetic coder, so a block routinely occupies only a few
++       * bits and its slice can be a single byte. On its own that is unreadable, so some surrounding
++       * bytes are shown as well; the description says which bytes are the block's own.
++       */
++      const auto blockFirstByte = qsizetype(range.startBit / 8);
++      const auto blockLastByte  = blockFirstByte + blockData.size() - 1;
++      const auto from           = std::max(qsizetype(0), blockFirstByte - BLOCK_DUMP_CONTEXT_BYTES);
++      const auto to =
++          std::min(qsizetype(frameData.size()) - 1, blockLastByte + BLOCK_DUMP_CONTEXT_BYTES);
++
++      dump.title       = "Block Bitstream";
++      dump.description = QString("%1 · %2 bits %3-%4 · block bytes %5-%6 (%7), showing %8-%9 · the "
++                                 "range is the arithmetic coder's read positions, not a bit field")
++                             .arg(frameDescription)
++                             .arg(range.origin.isEmpty() ? "packet payload" : range.origin)
++                             .arg(range.startBit)
++                             .arg(range.endBit)
++                             .arg(blockFirstByte)
++                             .arg(blockLastByte)
++                             .arg(blockData.size() == 1 ? QString("1 byte")
++                                                        : QString("%1 bytes").arg(blockData.size()))
++                             .arg(from)
++                             .arg(to);
++      dump.bytes            = frameData.mid(int(from), int(to - from + 1));
++      dump.baseOffset       = uint64_t(from);
++      dump.highlightedRange = range;
++      return dump;
++    }
++  }
++
++  (void)pixelPos;
++  dump.description = frameDescription;
++  dump.bytes       = frameData;
++  return dump;
++}
++
+ void playlistItemCompressedVideo::setBlockInfoRequested(bool requested)
+ {
+   if (this->statisticsData.isBlockInfoRequested() == requested)
+@@ -1292,6 +1488,13 @@ void playlistItemCompressedVideo::getSupportedFileExtensions(QStringList &allExt
+       << "h26l"
+       << "cgi"
+       << "ivf"
++      /* Raw AV1 temporal units without a container. libavformat's "obu" demuxer reads these, and
++       * they decode and dump exactly like the same stream in IVF (verified byte for byte), but the
++       * extension was missing from this list - and this list is a hard gate in
++       * guessFileTypeFromFileAndCreatePlaylistItem(), so the file silently did not open at all.
++       */
++      << "av1"
++      << "obu"
+       << "ivr"
+       << "lvf"
+       << "m4v"
+diff --git a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
+index 66b25548..174a3c79 100644
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
+@@ -88,6 +88,7 @@ public:
+   unsigned         getMaxBlockSize() const override;
+   //!< The coding block grid: for AV1 the superblock size from the sequence header.
+   unsigned         getDefaultGridSize() const override { return this->getMaxBlockSize(); }
++  DataDump getItemDataDump(const QPoint &pixelPos, int frameIdx, const stats::BlockInfo &blockInfo) override;
+ 
+   virtual bool canBeUsedInProcessing() const override { return true; }
+ 
+@@ -166,6 +167,21 @@ protected:
+   std::unique_ptr<FileSourceFFmpegFile> inputFileFFmpegLoading;
+   std::unique_ptr<FileSourceFFmpegFile> inputFileFFmpegCaching;
+ 
++  /* A third reader, used only by getItemDataDump(). It cannot share the loading or the caching one:
++   * those hold a demux position that belongs to their decoder, and walking it to fetch the bytes of
++   * some other frame would break decoding. It is created on first use and then kept, because
++   * nothing in the ffmpeg wrappers ever calls avformat_close_input - opening one per request leaked
++   * an AVFormatContext and its file descriptor on every frame change and every block click.
++   */
++  std::unique_ptr<FileSourceAnnexBFile> inputFileAnnexBDump;
++  std::unique_ptr<FileSourceFFmpegFile> inputFileFFmpegDump;
++  // Index of the video packet the dump reader currently holds; -1 while it sits before the first
++  // one. Stepping forward from here is what keeps a frame change from re-demuxing the whole file.
++  int dumpReaderPacketIdx{-1};
++  // Number of video packets in the stream. Only known once the dump reader ran into the end of the
++  // file, which is also the only way to tell that a frame index has no packet behind it.
++  std::optional<int> dumpReaderPacketCount;
++
+   // Is the loadFrame function currently loading?
+   bool isFrameLoading{};
+   bool isFrameLoadingDoubleBuffer{};
+diff --git a/YUViewLib/src/playlistitem/playlistItemRawFile.cpp b/YUViewLib/src/playlistitem/playlistItemRawFile.cpp
+index a06d010e..d0896e1b 100644
+--- a/YUViewLib/src/playlistitem/playlistItemRawFile.cpp
++++ b/YUViewLib/src/playlistitem/playlistItemRawFile.cpp
+@@ -62,7 +62,10 @@ constexpr auto RGBA_EXTENSIONS = {"rgba", "gbra", "bgra", "brga", "argb", "agbr"
+ constexpr auto RAW_BAYER_EXTENSIONS = {"raw"};
+ constexpr auto CMYK_EXTENSIONS      = {"cmyk"};
+ 
+-bool isInExtensions(const QString &testValue, const std::initializer_list<const char *> &extensions)
++// The parameter type has to be exactly what the constexpr lists above deduce to. "auto" with a
++// braced list gives std::initializer_list<const char *>, and initializer_list of a const-qualified
++// pointer is a different, non-convertible type.
++bool isInExtensions(const QString &testValue, std::initializer_list<const char *> extensions)
+ {
+   const auto it =
+     std::find_if(extensions.begin(),
+diff --git a/YUViewLib/src/playlistitem/playlistItemWithVideo.cpp b/YUViewLib/src/playlistitem/playlistItemWithVideo.cpp
+index 32d2865d..c02c9e50 100644
+--- a/YUViewLib/src/playlistitem/playlistItemWithVideo.cpp
++++ b/YUViewLib/src/playlistitem/playlistItemWithVideo.cpp
+@@ -301,3 +301,27 @@ std::vector<uint32_t> playlistItemWithVideo::getLumaHistogram(int frameIdx)
+   this->lumaHistogramFrameIdx = this->lumaHistogram.empty() ? -1 : frameIdx;
+   return this->lumaHistogram;
+ }
++
++playlistItem::DataDump playlistItemWithVideo::getItemDataDump(const QPoint      &pixelPos,
++                                                              int                frameIdx,
++                                                              const stats::BlockInfo &)
++{
++  DataDump dump;
++  if (!this->supportsPixelStatistics())
++    return dump;
++
++  const auto handler   = this->getYUVVideo();
++  auto       blockSize = this->getPixelStatisticsBlockSize();
++  if (blockSize == 0)
++    blockSize = PIXEL_STATS_DEFAULT_BLOCK_SIZE;
++
++  QString description;
++  auto    text = handler->getLumaSampleBlockText(pixelPos, frameIdx, blockSize, &description);
++  dump.kind        = DataDump::Kind::PixelSamples;
++  dump.title       = "Current 64 SB Pixel Values";
++  dump.description = text.isEmpty()
++                       ? QString("Frame %1 is not loaded as raw YUV data yet.").arg(frameIdx)
++                       : description;
++  dump.text        = text;
++  return dump;
++}
+diff --git a/YUViewLib/src/playlistitem/playlistItemWithVideo.h b/YUViewLib/src/playlistitem/playlistItemWithVideo.h
+index 1ccc7ce1..42cc118a 100644
+--- a/YUViewLib/src/playlistitem/playlistItemWithVideo.h
++++ b/YUViewLib/src/playlistitem/playlistItemWithVideo.h
+@@ -78,6 +78,7 @@ public:
+   std::optional<stats::PixelBlockStats> getPixelBlockStats(const QPoint &pixelPos,
+                                                           int           frameIdx) override;
+   std::vector<uint32_t>                 getLumaHistogram(int frameIdx) override;
++  DataDump getItemDataDump(const QPoint &pixelPos, int frameIdx, const stats::BlockInfo &) override;
+ 
+   // -- Caching
+   // Cache the given frame
+diff --git a/YUViewLib/src/statistics/BlockInfo.h b/YUViewLib/src/statistics/BlockInfo.h
+index dc772309..cb8493d5 100644
+--- a/YUViewLib/src/statistics/BlockInfo.h
++++ b/YUViewLib/src/statistics/BlockInfo.h
+@@ -43,6 +43,15 @@
+ namespace stats
+ {
+ 
++struct BitstreamRange
++{
++  uint64_t startBit{};
++  uint64_t endBit{};
++  QString  origin; // For display: "packet payload", "source file", ...
++
++  bool isValid() const { return endBit > startBit; }
++};
++
+ // One statistic type's data for a clicked position, with the block it belongs to.
+ struct BlockInfoEntry
+ {
+@@ -77,6 +86,10 @@ struct BlockInfo
+   std::vector<QRect>   allRects;
+ 
+   std::vector<BlockInfoEntry> entries; // Deduplicated, ascending typeID.
++
++  // Optional exact bit range for the selected coding block. For AV1 this is expected to come from the
++  // decoder's block data, not from reparsing the syntax in YUView.
++  std::optional<BitstreamRange> bitstreamRange;
+ };
+ 
+ } // namespace stats
+diff --git a/YUViewLib/src/statistics/StatisticUIHandler.cpp b/YUViewLib/src/statistics/StatisticUIHandler.cpp
+index 25567f53..f2acd909 100644
+--- a/YUViewLib/src/statistics/StatisticUIHandler.cpp
++++ b/YUViewLib/src/statistics/StatisticUIHandler.cpp
+@@ -34,6 +34,7 @@
+ 
+ #include <QPainter>
+ #include <QtGlobal>
++#include <algorithm>
+ #include <cmath>
+ #if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
+ #include <QPainterPath>
+@@ -70,6 +71,34 @@ void StatisticUIHandler::setStatisticsData(StatisticsData *data)
+   this->statisticsData = data;
+ }
+ 
++void StatisticUIHandler::rebuildUiRows()
++{
++  this->uiRows.clear();
++  if (!this->statisticsData)
++    return;
++
++  const auto &statTypes = this->statisticsData->getStatisticsTypes();
++  for (unsigned i = 0; i < statTypes.size(); ++i)
++  {
++    const auto &statType = statTypes.at(i);
++    if (!statType.uiGroup.isEmpty())
++    {
++      const auto existing =
++          std::find_if(this->uiRows.begin(),
++                       this->uiRows.end(),
++                       [&statType](const UiRow &r) { return r.label == statType.uiGroup; });
++      if (existing != this->uiRows.end())
++      {
++        existing->typeIndices.push_back(i);
++        continue;
++      }
++      this->uiRows.push_back({statType.uiGroup, {i}});
++      continue;
++    }
++    this->uiRows.push_back({statType.typeName, {i}});
++  }
++}
++
+ QLayout *StatisticUIHandler::createStatisticsHandlerControls(bool recreateControlsOnly)
+ {
+   if (!recreateControlsOnly)
+@@ -86,14 +115,16 @@ QLayout *StatisticUIHandler::createStatisticsHandlerControls(bool recreateContro
+     return {};
+   }
+ 
+-  // Add the controls to the gridLayer
++  // Add the controls to the gridLayer, one row per group of types
++  this->rebuildUiRows();
+   auto &statTypes = this->statisticsData->getStatisticsTypes();
+-  for (unsigned row = 0; row < statTypes.size(); ++row)
++  for (unsigned row = 0; row < this->uiRows.size(); ++row)
+   {
+-    auto &statType = statTypes.at(row);
++    const auto &uiRow    = this->uiRows.at(row);
++    auto       &statType = statTypes.at(uiRow.typeIndices.front());
+ 
+     // Append the name (with the check box to enable/disable the statistics item)
+-    QCheckBox *itemNameCheck = new QCheckBox(statType.typeName, ui.scrollAreaWidgetContents);
++    QCheckBox *itemNameCheck = new QCheckBox(uiRow.label, ui.scrollAreaWidgetContents);
+     itemNameCheck->setChecked(statType.render);
+     itemNameCheck->setToolTip(statType.description);
+     ui.gridLayout->addWidget(itemNameCheck, int(row + 2), 0);
+@@ -122,7 +153,7 @@ QLayout *StatisticUIHandler::createStatisticsHandlerControls(bool recreateContro
+ 
+   // Add a spacer at the very bottom
+   QSpacerItem *verticalSpacer = new QSpacerItem(1, 1, QSizePolicy::Minimum, QSizePolicy::Expanding);
+-  ui.gridLayout->addItem(verticalSpacer, int(statTypes.size() + 2), 0, 1, 1);
++  ui.gridLayout->addItem(verticalSpacer, int(this->uiRows.size() + 2), 0, 1, 1);
+   spacerItems[0] = verticalSpacer;
+ 
+   // Update all controls
+@@ -149,14 +180,16 @@ QWidget *StatisticUIHandler::getSecondaryStatisticsHandlerControls(bool recreate
+       return {};
+     }
+ 
+-    // Add the controls to the gridLayer
++    // Add the controls to the gridLayer, one row per group of types (mirrors the primary controls)
++    this->rebuildUiRows();
+     auto &statTypes = this->statisticsData->getStatisticsTypes();
+-    for (unsigned row = 0; row < statTypes.size(); ++row)
++    for (unsigned row = 0; row < this->uiRows.size(); ++row)
+     {
+-      auto &statType = statTypes.at(row);
++      const auto &uiRow    = this->uiRows.at(row);
++      auto       &statType = statTypes.at(uiRow.typeIndices.front());
+ 
+       // Append the name (with the check box to enable/disable the statistics item)
+-      QCheckBox *itemNameCheck = new QCheckBox(statType.typeName, ui2.scrollAreaWidgetContents);
++      QCheckBox *itemNameCheck = new QCheckBox(uiRow.label, ui2.scrollAreaWidgetContents);
+       itemNameCheck->setChecked(statType.render);
+       ui2.gridLayout->addWidget(itemNameCheck, int(row + 2), 0);
+       connect(itemNameCheck,
+@@ -193,7 +226,7 @@ QWidget *StatisticUIHandler::getSecondaryStatisticsHandlerControls(bool recreate
+     {
+       QSpacerItem *verticalSpacer =
+         new QSpacerItem(1, 1, QSizePolicy::Minimum, QSizePolicy::Expanding);
+-      ui2.gridLayout->addItem(verticalSpacer, int(statTypes.size() + 2), 0, 1, 1);
++      ui2.gridLayout->addItem(verticalSpacer, int(this->uiRows.size() + 2), 0, 1, 1);
+       spacerItems[1] = verticalSpacer;
+     }
+ 
+@@ -215,13 +248,15 @@ void StatisticUIHandler::onStatisticsControlChanged()
+   }
+ 
+   auto &statTypes = this->statisticsData->getStatisticsTypes();
+-  for (unsigned row = 0; row < statTypes.size(); ++row)
++  for (unsigned row = 0; row < this->uiRows.size() && row < itemNameCheckBoxes[0].size(); ++row)
+   {
+-    auto &statType = statTypes.at(row);
+-
+-    // Get the values of the statistics type from the controls
+-    statType.render      = itemNameCheckBoxes[0][row]->isChecked();
+-    statType.alphaFactor = itemOpacitySliders[0][row]->value();
++    // One row can stand for several types; they all take its values.
++    for (const auto typeIndex : this->uiRows.at(row).typeIndices)
++    {
++      auto &statType       = statTypes.at(typeIndex);
++      statType.render      = itemNameCheckBoxes[0][row]->isChecked();
++      statType.alphaFactor = itemOpacitySliders[0][row]->value();
++    }
+ 
+     // Enable/disable the slider and grid check box depending on the item name check box
+     bool enable = itemNameCheckBoxes[0][row]->isChecked();
+@@ -261,13 +296,15 @@ void StatisticUIHandler::onSecondaryStatisticsControlChanged()
+   }
+ 
+   auto &statTypes = this->statisticsData->getStatisticsTypes();
+-  for (unsigned row = 0; row < statTypes.size(); ++row)
++  for (unsigned row = 0; row < this->uiRows.size() && row < itemNameCheckBoxes[1].size(); ++row)
+   {
+-    auto &statType = statTypes.at(row);
+-
+-    // Get the values of the statistics type from the controls
+-    statType.render      = itemNameCheckBoxes[1][row]->isChecked();
+-    statType.alphaFactor = itemOpacitySliders[1][row]->value();
++    // One row can stand for several types; they all take its values.
++    for (const auto typeIndex : this->uiRows.at(row).typeIndices)
++    {
++      auto &statType       = statTypes.at(typeIndex);
++      statType.render      = itemNameCheckBoxes[1][row]->isChecked();
++      statType.alphaFactor = itemOpacitySliders[1][row]->value();
++    }
+ 
+     // Enable/disable the slider and grid check box depending on the item name check box
+     bool enable = itemNameCheckBoxes[1][row]->isChecked();
+@@ -322,17 +359,20 @@ void StatisticUIHandler::updateStatisticsHandlerControls()
+     return;
+   }
+ 
+-  // First run a check if all statisticsTypes are identical
++  /* First run a check if all statisticsTypes are identical. Compared against the control rows rather
++   * than the types, because grouped types share a row (see rebuildUiRows).
++   */
+   bool  controlsStillValid = true;
+   auto &statTypes          = this->statisticsData->getStatisticsTypes();
+-  if (statTypes.size() != itemNameCheckBoxes[0].size())
++  this->rebuildUiRows();
++  if (this->uiRows.size() != itemNameCheckBoxes[0].size())
+     // There are more or less statistics types as before
+     controlsStillValid = false;
+   else
+   {
+-    for (unsigned row = 0; row < statTypes.size(); row++)
++    for (unsigned row = 0; row < this->uiRows.size(); row++)
+     {
+-      if (itemNameCheckBoxes[0][row]->text() != statTypes[row].typeName)
++      if (itemNameCheckBoxes[0][row]->text() != this->uiRows.at(row).label)
+       {
+         // One of the statistics types changed it's name or the order of statistics types changed.
+         // Either way, we will create new controls.
+@@ -452,8 +492,14 @@ void StatisticUIHandler::onStyleButtonClicked(unsigned id)
+     return;
+   }
+ 
++  if (id >= this->uiRows.size())
++    return;
++
++  /* id is a control row, not a type index. A row that stands for a group edits the style of its
++   * first type - the representative one, e.g. "Pred Mode" for the prediction group.
++   */
+   auto &statTypes = this->statisticsData->getStatisticsTypes();
+-  statisticsStyleUI.setStatsItem(&statTypes[id]);
++  statisticsStyleUI.setStatsItem(&statTypes[this->uiRows.at(id).typeIndices.front()]);
+   statisticsStyleUI.show();
+ }
+ 
+diff --git a/YUViewLib/src/statistics/StatisticUIHandler.h b/YUViewLib/src/statistics/StatisticUIHandler.h
+index 54791648..6c6d8229 100644
+--- a/YUViewLib/src/statistics/StatisticUIHandler.h
++++ b/YUViewLib/src/statistics/StatisticUIHandler.h
+@@ -107,6 +107,21 @@ private:
+   std::vector<QPushButton *> itemStyleButtons[2];
+   QSpacerItem *              spacerItems[2]{nullptr};
+ 
++  /* One row of controls per group of statistics types rather than per type, so that things which are
++   * one property of a block (the prediction modes, the per reference list pairs) do not take three
++   * rows each. See StatisticsType::uiGroup.
++   */
++  struct UiRow
++  {
++    QString               label;
++    //!< Indices into StatisticsData::getStatisticsTypes(). Never empty; the first one is the
++    //!< representative whose style the row's button edits.
++    std::vector<unsigned> typeIndices;
++  };
++  std::vector<UiRow> uiRows;
++  //!< Recompute uiRows from the current statistics types. Must run before the controls are built.
++  void rebuildUiRows();
++
+ private slots:
+ 
+   // This slot is toggled whenever one of the controls for the statistics is changed
+diff --git a/YUViewLib/src/statistics/StatisticsData.cpp b/YUViewLib/src/statistics/StatisticsData.cpp
+index c1ce1b8a..0cc6ae52 100644
+--- a/YUViewLib/src/statistics/StatisticsData.cpp
++++ b/YUViewLib/src/statistics/StatisticsData.cpp
+@@ -470,6 +470,61 @@ BlockInfo StatisticsData::getBlockInfoAt(const QPoint &pos) const
+     return a.width() * a.height() > b.width() * b.height();
+   });
+ 
++  for (const auto &range : this->blockBitstreamRanges)
++  {
++    if (range.rect == info.codingBlockRect && range.rect.contains(pos) && range.range.isValid())
++    {
++      info.bitstreamRange = range.range;
++      break;
++    }
++  }
++  if (!info.bitstreamRange)
++  {
++    std::optional<BlockBitstreamRange> best;
++    for (const auto &range : this->blockBitstreamRanges)
++    {
++      if (!range.rect.contains(pos) || !range.range.isValid())
++        continue;
++      if (!best ||
++          range.rect.width() * range.rect.height() < best->rect.width() * best->rect.height())
++        best = range;
++    }
++    if (best)
++      info.bitstreamRange = best->range;
++  }
++
++  /* A single statistics type can carry a value and a vector for the same block. The dav1d intra
++   * types do exactly that: the value is the prediction mode (with the angle delta folded in) and the
++   * vector is the resulting prediction direction, deliberately kept on one type so the overlay
++   * colours by mode while the arrow shows the direction. They describe one property of the block, so
++   * they belong on one row - listed separately the pane showed "intra pred mode (Y)" twice, once
++   * with the mode and once with a bare "(4,0)" that did not say what it was. The vector is only
++   * emitted for modes that have a direction (DC and CFL have none), which is why the duplicate row
++   * appeared for some blocks and not others.
++   */
++  for (auto it = info.entries.begin(); it != info.entries.end();)
++  {
++    if (it->hasRawValue)
++    {
++      ++it;
++      continue;
++    }
++    const auto scalar = std::find_if(info.entries.begin(),
++                                     info.entries.end(),
++                                     [&it](const BlockInfoEntry &e) {
++                                       return e.hasRawValue && e.typeID == it->typeID &&
++                                              e.rect == it->rect;
++                                     });
++    if (scalar == info.entries.end())
++    {
++      ++it;
++      continue;
++    }
++    // Modify before erasing: erase() shifts the tail but the text is already written.
++    scalar->valueText += "  " + QString(QChar(0x2192)) + " " + it->valueText;
++    it = info.entries.erase(it);
++  }
++
+   /* Pairs that describe one thing per reference list are folded into a single row, so the pane shows
+    * "L0 ...  L1 ..." instead of two rows that the reader has to line up. Only the presentation is
+    * merged: the two statistics types stay separate so their overlays keep their own colour (the
+@@ -496,10 +551,20 @@ BlockInfo StatisticsData::getBlockInfoAt(const QPoint &pos) const
+   mergeReferencePair(14, 15, "ref frame index");
+   mergeReferencePair(24, 25, "Motion Vector");
+ 
++  /* Ordered the way the types were declared, which is the order the properties panel lists them in,
++   * so the two read the same. Sorting by typeID instead would tie the order to the ID values and put
++   * a newly added type wherever its number happens to fall.
++   */
++  const auto declarationOrder = [this](int typeID) {
++    for (size_t i = 0; i < this->statsTypes.size(); ++i)
++      if (this->statsTypes[i].typeID == typeID)
++        return i;
++    return this->statsTypes.size();
++  };
+   std::stable_sort(info.entries.begin(),
+                    info.entries.end(),
+-                   [](const BlockInfoEntry &a, const BlockInfoEntry &b) {
+-                     return a.typeID < b.typeID;
++                   [&declarationOrder](const BlockInfoEntry &a, const BlockInfoEntry &b) {
++                     return declarationOrder(a.typeID) < declarationOrder(b.typeID);
+                    });
+ 
+   info.isValid = true;
+@@ -513,12 +578,25 @@ void StatisticsData::setBlockRectTypeIDs(std::optional<int> codingBlockTypeID,
+   this->transformBlockTypeID = transformBlockTypeID;
+ }
+ 
++void StatisticsData::addBlockBitstreamRange(unsigned short         x,
++                                            unsigned short         y,
++                                            unsigned short         w,
++                                            unsigned short         h,
++                                            const BitstreamRange &range)
++{
++  if (!range.isValid())
++    return;
++
++  this->blockBitstreamRanges.push_back({QRect(x, y, w, h), range});
++}
++
+ void StatisticsData::clear()
+ {
+   this->frameCache.clear();
+   this->frameIdx  = -1;
+   this->frameSize = {};
+   this->statsTypes.clear();
++  this->blockBitstreamRanges.clear();
+   // The type IDs are meaningless for the next decoder; it will designate them again.
+   this->codingBlockTypeID.reset();
+   this->transformBlockTypeID.reset();
+@@ -532,6 +610,7 @@ void StatisticsData::setFrameIndex(int frameIndex)
+     DEBUG_STATDATA("StatisticsData::getTypesThatNeedLoading New frame index set "
+                    << this->frameIdx << "->" << frameIndex);
+     this->frameCache.clear();
++    this->blockBitstreamRanges.clear();
+     this->frameIdx = frameIndex;
+   }
+ }
+diff --git a/YUViewLib/src/statistics/StatisticsData.h b/YUViewLib/src/statistics/StatisticsData.h
+index ac17f54d..b81cf55d 100644
+--- a/YUViewLib/src/statistics/StatisticsData.h
++++ b/YUViewLib/src/statistics/StatisticsData.h
+@@ -72,6 +72,11 @@ public:
+    */
+   void setBlockRectTypeIDs(std::optional<int> codingBlockTypeID,
+                            std::optional<int> transformBlockTypeID);
++  void addBlockBitstreamRange(unsigned short x,
++                              unsigned short y,
++                              unsigned short w,
++                              unsigned short h,
++                              const BitstreamRange &range);
+ 
+   /* Statistics are only collected for types the user switched on for rendering
+    * (see needsLoading/getTypesThatNeedLoading). Set this to have them collected anyway, which is
+@@ -105,6 +110,13 @@ private:
+   std::optional<int> codingBlockTypeID;
+   std::optional<int> transformBlockTypeID;
+   bool               blockInfoRequested{};
++
++  struct BlockBitstreamRange
++  {
++    QRect          rect;
++    BitstreamRange range;
++  };
++  std::vector<BlockBitstreamRange> blockBitstreamRanges;
+ };
+ 
+ } // namespace stats
+diff --git a/YUViewLib/src/statistics/StatisticsType.h b/YUViewLib/src/statistics/StatisticsType.h
+index abebd7cd..b197ee05 100644
+--- a/YUViewLib/src/statistics/StatisticsType.h
++++ b/YUViewLib/src/statistics/StatisticsType.h
+@@ -104,6 +104,16 @@ public:
+   bool showRawValueInText{true};
+   QString getMappedValue(int typeID) const;
+ 
++  /* Types that share a group get one row of controls in the properties panel instead of one each, so
++   * the list stays short enough to see at a glance. Empty means a row of its own.
++   *
++   * They stay separate types: the overlays keep their own colour maps (the motion vectors are red for
++   * L0 and blue for L1) and the block syntax table still lists every one of them. Only the check box,
++   * the opacity slider and the style button are shared - the style button edits the first type of the
++   * group, which is why the group's leading type should be the representative one.
++   */
++  QString uiGroup{};
++
+   // Is this statistics type rendered and what is the alpha value?
+   // These are corresponding to the controls in the properties panel
+   bool render{};
+diff --git a/YUViewLib/src/ui/Mainwindow.cpp b/YUViewLib/src/ui/Mainwindow.cpp
+index 8ee64696..f25b9f36 100644
+--- a/YUViewLib/src/ui/Mainwindow.cpp
++++ b/YUViewLib/src/ui/Mainwindow.cpp
+@@ -37,10 +37,12 @@
+ #include <QLocale>
+ #include <QImageWriter>
+ #include <QMessageBox>
++#include <QModelIndex>
+ #include <QShortcut>
+ #include <QStringList>
+ #include <QTextBrowser>
+ #include <QTextStream>
++#include <QTimer>
+ 
+ #include <common/BDCachePaths.h>
+ #include <common/Functions.h>
+@@ -50,6 +52,8 @@
+ #include <ui/SettingsDialog.h>
+ #include <ui/widgets/PlaylistTreeWidget.h>
+ 
++#include <algorithm>
++
+ MainWindow::MainWindow(bool useAlternativeSources, QWidget *parent) : QMainWindow(parent)
+ {
+   Q_INIT_RESOURCE(images);
+@@ -61,6 +65,9 @@ MainWindow::MainWindow(bool useAlternativeSources, QWidget *parent) : QMainWindo
+   qRegisterMetaType<indexRange>("indexRange");
+ 
+   ui.setupUi(this);
++  ui.itemViewSplitter->setStretchFactor(0, 2);
++  ui.itemViewSplitter->setStretchFactor(1, 1);
++  QTimer::singleShot(0, this, &MainWindow::clampInitialItemDumpPane);
+ 
+   // Create the update handler
+   updater.reset(new updateHandler(this, useAlternativeSources));
+@@ -120,6 +127,20 @@ MainWindow::MainWindow(bool useAlternativeSources, QWidget *parent) : QMainWindo
+           &FileInfoWidget::obuTreeIndexActivated,
+           ui.bitstreamAnalysis,
+           &BitstreamAnalysisWidget::seekToPacketTreeIndex);
++  connect(ui.fileInfoWidget,
++          &FileInfoWidget::obuTreeIndexClicked,
++          [this](const QModelIndex &index)
++          {
++            const auto frameIndex = ui.bitstreamAnalysis->frameIndexForPacketTreeIndex(index);
++            if (!frameIndex)
++              return;
++            auto items = ui.playlistTreeWidget->getSelectedItems();
++            if (items[0])
++            {
++              ui.hexdumpViewer->setFrameFromObu(items[0], *frameIndex);
++              this->revealItemDumpPane();
++            }
++          });
+   connect(ui.playlistTreeWidget,
+           &PlaylistTreeWidget::selectionRangeChanged,
+           ui.playbackController,
+@@ -214,6 +235,45 @@ MainWindow::MainWindow(bool useAlternativeSources, QWidget *parent) : QMainWindo
+           &splitViewWidget::viewFrameChanged,
+           ui.frameInfoWidget,
+           &FrameInfoWidget::setCurrentFrame);
++  /* The clicked block's pixel statistics belong next to its syntax, not under the frame histogram:
++   * both describe the block one just clicked. Only the placement moves - FrameInfoWidget still owns
++   * and fills the section, so all of the connections above keep working.
++   */
++  ui.cachingInfoWidget->addSectionBelowBlockInfo(ui.frameInfoWidget->getBlockStatisticsSection());
++  /* The histogram goes above the statistics overlay list, in the same panel one picks the overlays
++   * from. It has to hang off the properties container rather than off an item's properties widget,
++   * because those are created and destroyed with the playlist selection.
++   */
++  ui.propertiesWidget->addTopSection(ui.frameInfoWidget->getHistogramSection());
++
++  connect(ui.playlistTreeWidget,
++          &PlaylistTreeWidget::selectionRangeChanged,
++          ui.hexdumpViewer,
++          &HexdumpViewerWidget::currentSelectedItemsChanged);
++  connect(ui.playlistTreeWidget,
++          &PlaylistTreeWidget::selectedItemChanged,
++          ui.hexdumpViewer,
++          &HexdumpViewerWidget::refresh);
++  connect(ui.displaySplitView,
++          &splitViewWidget::blockSelected,
++          [this](playlistItem *item, QPoint pixelPos, int frameIdx)
++          {
++            ui.hexdumpViewer->setSelectedBlock(item, pixelPos, frameIdx);
++            if (item)
++              this->revealItemDumpPane();
++          });
++  connect(&separateViewWindow.splitView,
++          &splitViewWidget::blockSelected,
++          [this](playlistItem *item, QPoint pixelPos, int frameIdx)
++          {
++            ui.hexdumpViewer->setSelectedBlock(item, pixelPos, frameIdx);
++            if (item)
++              this->revealItemDumpPane();
++          });
++  connect(ui.displaySplitView,
++          &splitViewWidget::viewFrameChanged,
++          ui.hexdumpViewer,
++          &HexdumpViewerWidget::setCurrentFrame);
+   connect(ui.playlistTreeWidget,
+           &PlaylistTreeWidget::selectedItemChanged,
+           ui.playbackController,
+@@ -334,6 +394,29 @@ QWidget *MainWindow::getMainWindow()
+   return nullptr;
+ }
+ 
++void MainWindow::clampInitialItemDumpPane()
++{
++  const auto totalHeight = std::max(1, ui.itemViewSplitter->height());
++  const auto maxDump     = std::max(1, totalHeight / 3);
++  const auto dumpHeight  = std::min(maxDump, 220);
++  ui.itemViewSplitter->setSizes({std::max(1, totalHeight - dumpHeight), dumpHeight});
++}
++
++void MainWindow::revealItemDumpPane()
++{
++  const auto sizes = ui.itemViewSplitter->sizes();
++  if (sizes.size() < 2)
++    return;
++
++  const auto totalHeight = std::max(1, sizes[0] + sizes[1]);
++  const auto maxDump     = std::max(1, totalHeight / 3);
++  const auto minVisible  = std::min(maxDump, std::max(120, ui.hexdumpViewer->minimumSizeHint().height()));
++  if (sizes[1] >= minVisible)
++    return;
++
++  ui.itemViewSplitter->setSizes({std::max(1, totalHeight - minVisible), minVisible});
++}
++
+ void MainWindow::loadFiles(const QStringList &files)
+ {
+   ui.playlistTreeWidget->loadFiles(files);
+diff --git a/YUViewLib/src/ui/Mainwindow.h b/YUViewLib/src/ui/Mainwindow.h
+index dc7eba88..87578c39 100644
+--- a/YUViewLib/src/ui/Mainwindow.h
++++ b/YUViewLib/src/ui/Mainwindow.h
+@@ -154,6 +154,8 @@ private:
+ 
+   void showAboutHelp(bool about);
+   void updateSettings();
++  void clampInitialItemDumpPane();
++  void revealItemDumpPane();
+ 
+   void performanceTest();
+ 
+diff --git a/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.cpp b/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.cpp
+index d5c740b5..3fa9344b 100644
+--- a/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.cpp
++++ b/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.cpp
+@@ -220,19 +220,25 @@ void BitstreamAnalysisWidget::seekToPacketTreeIndex(const QModelIndex &index)
+   if (!this->playbackController || !index.isValid())
+     return;
+ 
++  const auto frameIndex = this->frameIndexForPacketTreeIndex(index);
++  if (!frameIndex)
++    return;
++
++  this->playbackController->setCurrentFrameAndUpdate(*frameIndex);
++}
++
++std::optional<int> BitstreamAnalysisWidget::frameIndexForPacketTreeIndex(
++    const QModelIndex &index) const
++{
+   const auto sourceIndex = this->mapToSourceModel(index);
+   if (!sourceIndex.isValid())
+-    return;
++    return {};
+ 
+   const auto item = static_cast<TreeItem *>(sourceIndex.internalPointer());
+   if (!item)
+-    return;
+-
+-  const auto frameIndex = getFrameIndexForObuTreeItem(item);
+-  if (!frameIndex)
+-    return;
++    return {};
+ 
+-  this->playbackController->setCurrentFrameAndUpdate(*frameIndex);
++  return getFrameIndexForObuTreeItem(item);
+ }
+ 
+ QModelIndex BitstreamAnalysisWidget::mapToSourceModel(const QModelIndex &index) const
+diff --git a/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.h b/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.h
+index 8e858a4d..29947dbb 100644
+--- a/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.h
++++ b/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.h
+@@ -41,6 +41,8 @@
+ #include <QWidget>
+ #include <QtConcurrent>
+ 
++#include <optional>
++
+ #include "ui_bitstreamAnalysisWidget.h"
+ class PlaybackController;
+ class BitstreamAnalysisWidget : public QWidget
+@@ -53,6 +55,7 @@ public:
+ 
+   MoveAndZoomableView *getCurrentActiveView();
+   void                 setPlaybackController(PlaybackController *playbackController);
++  std::optional<int>   frameIndexForPacketTreeIndex(const QModelIndex &index) const;
+ 
+ public slots:
+   void currentSelectedItemsChanged(playlistItem *item1, playlistItem *item2, bool chageByPlayback);
+diff --git a/YUViewLib/src/ui/widgets/FileInfoWidget.cpp b/YUViewLib/src/ui/widgets/FileInfoWidget.cpp
+index e0c3a3ff..2911c9e4 100644
+--- a/YUViewLib/src/ui/widgets/FileInfoWidget.cpp
++++ b/YUViewLib/src/ui/widgets/FileInfoWidget.cpp
+@@ -84,6 +84,10 @@ FileInfoWidget::FileInfoWidget(QWidget *parent) : QWidget(parent)
+   this->obuTreeView->setSelectionMode(QAbstractItemView::SingleSelection);
+   this->obuTabIndex = this->tabs->addTab(this->obuTreeView, "OBU");
+   this->tabs->setTabEnabled(this->obuTabIndex, false);
++  connect(this->obuTreeView,
++          &QTreeView::clicked,
++          this,
++          &FileInfoWidget::obuTreeIndexClicked);
+   connect(this->obuTreeView,
+           &QTreeView::doubleClicked,
+           this,
+diff --git a/YUViewLib/src/ui/widgets/FileInfoWidget.h b/YUViewLib/src/ui/widgets/FileInfoWidget.h
+index 58f32885..4f80e9a0 100644
+--- a/YUViewLib/src/ui/widgets/FileInfoWidget.h
++++ b/YUViewLib/src/ui/widgets/FileInfoWidget.h
+@@ -60,6 +60,7 @@ public:
+   // One at a given row of a given infoIndex (0 or 1) was clicked.
+   // infoIndex 0 refers to info1 above, infoIndex 1 refers to info2 above
+   Q_SIGNAL void infoButtonClicked(int infoIndex, int row);
++  Q_SIGNAL void obuTreeIndexClicked(const QModelIndex &index);
+   Q_SIGNAL void obuTreeIndexActivated(const QModelIndex &index);
+ 
+ private:
+diff --git a/YUViewLib/src/ui/widgets/FrameInfoWidget.cpp b/YUViewLib/src/ui/widgets/FrameInfoWidget.cpp
+index 27a825d1..55aff949 100644
+--- a/YUViewLib/src/ui/widgets/FrameInfoWidget.cpp
++++ b/YUViewLib/src/ui/widgets/FrameInfoWidget.cpp
+@@ -87,12 +87,28 @@ FrameInfoWidget::FrameInfoWidget(QWidget *parent) : QWidget(parent)
+   this->blockTree.setFocusPolicy(Qt::NoFocus);
+   this->blockTree.header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+ 
++  /* The block statistics go into their own widget. The main window re-parents it under the block
++   * syntax table, which is where one looks when inspecting a block; this pane keeps the frame level
++   * view (the grid toggle and the histogram). Nothing about the updating changes - the label and the
++   * tree are still members of this widget and are filled by updateBlockStatistics().
++   */
++  auto *blockLayout = new QVBoxLayout(&this->blockSection);
++  blockLayout->setContentsMargins(0, 0, 0, 0);
++  blockLayout->addWidget(&this->blockLabel);
++  blockLayout->addWidget(&this->blockTree, 1);
++
++  // The histogram is shown above the statistics overlay list in the properties panel.
++  auto *histogramLayout = new QVBoxLayout(&this->histogramSection);
++  histogramLayout->setContentsMargins(0, 0, 0, 0);
++  histogramLayout->addWidget(&this->histogramLabel);
++  histogramLayout->addWidget(&this->histogram);
++
+   this->layout.setContentsMargins(4, 4, 4, 4);
+   this->layout.addWidget(&this->gridCheckBox);
+-  this->layout.addWidget(&this->histogramLabel);
+-  this->layout.addWidget(&this->histogram);
+-  this->layout.addWidget(&this->blockLabel);
+-  this->layout.addWidget(&this->blockTree, 1);
++  /* Both display sections were moved elsewhere, so nothing here can take up the slack in a tall dock.
++   * Without an explicit stretch the spare height gets spread as gaps around the check box.
++   */
++  this->layout.addStretch(1);
+   this->setLayout(&this->layout);
+ 
+   this->showBlockMessage("Click in the video to analyze a block.");
+diff --git a/YUViewLib/src/ui/widgets/FrameInfoWidget.h b/YUViewLib/src/ui/widgets/FrameInfoWidget.h
+index 00819e23..7a4edde8 100644
+--- a/YUViewLib/src/ui/widgets/FrameInfoWidget.h
++++ b/YUViewLib/src/ui/widgets/FrameInfoWidget.h
+@@ -65,6 +65,19 @@ public:
+   //!< Whether the analysis grid should be drawn. Mirrors the view, see setGridSize().
+   bool isGridEnabled() const { return this->gridCheckBox.isChecked(); }
+ 
++  /* The clicked block's pixel statistics, as a widget of its own so the main window can put it next
++   * to the block syntax table instead of under the histogram - the two describe the same block and
++   * are read together. This widget keeps filling it either way; only where it is shown changes.
++   * Never null, and owned by this widget whether or not it was re-parented.
++   */
++  QWidget *getBlockStatisticsSection() { return &this->blockSection; }
++
++  /* The frame's luma histogram, likewise as a widget of its own so it can be shown above the
++   * statistics overlay list in the properties panel. Same deal as above: this widget keeps owning and
++   * filling it. Never null.
++   */
++  QWidget *getHistogramSection() { return &this->histogramSection; }
++
+ signals:
+   /* The user toggled the grid. size is the item's grid size when enabling and 0 when disabling, which
+    * is exactly what splitViewWidget::setRegularGridSize() takes.
+@@ -99,8 +112,14 @@ private:
+ 
+   QVBoxLayout     layout;
+   QCheckBox       gridCheckBox;
++  // histogramLabel and histogram live inside histogramSection; declared after it so they are
++  // destroyed first.
++  QWidget         histogramSection;
+   QLabel          histogramLabel;
+   HistogramWidget histogram;
++  // blockLabel and blockTree live inside blockSection, not in `layout`, so the section can be shown
++  // somewhere else in the window. Declared after it so they are destroyed first.
++  QWidget         blockSection;
+   QLabel          blockLabel;
+   QTreeWidget     blockTree;
+ 
+diff --git a/YUViewLib/src/ui/widgets/HexdumpViewerWidget.cpp b/YUViewLib/src/ui/widgets/HexdumpViewerWidget.cpp
+new file mode 100644
+index 00000000..63794458
+--- /dev/null
++++ b/YUViewLib/src/ui/widgets/HexdumpViewerWidget.cpp
+@@ -0,0 +1,250 @@
++/*  This file is part of YUView - The YUV player with advanced analytics toolset
++ *   <https://github.com/IENT/YUView>
++ */
++
++#include "HexdumpViewerWidget.h"
++
++#include <QFontDatabase>
++#include <QTextCharFormat>
++#include <QTextCursor>
++#include <QTextStream>
++
++#include <algorithm>
++
++namespace
++{
++
++constexpr int MAX_HEXDUMP_BYTES = 256 * 1024;
++
++QString printableAscii(unsigned char value)
++{
++  if (value >= 32 && value <= 126)
++    return QString(1, QLatin1Char(char(value)));
++  return ".";
++}
++
++} // namespace
++
++HexdumpViewerWidget::HexdumpViewerWidget(QWidget *parent) : QWidget(parent), layout(this)
++{
++  this->titleLabel.setTextInteractionFlags(Qt::TextSelectableByMouse);
++  this->descriptionLabel.setWordWrap(true);
++  this->descriptionLabel.setTextInteractionFlags(Qt::TextSelectableByMouse);
++
++  this->dumpText.setReadOnly(true);
++  this->dumpText.setLineWrapMode(QPlainTextEdit::NoWrap);
++  this->dumpText.setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
++  this->dumpText.setMinimumHeight(120);
++
++  this->layout.setContentsMargins(4, 4, 4, 4);
++  this->layout.addWidget(&this->titleLabel);
++  this->layout.addWidget(&this->descriptionLabel);
++  this->layout.addWidget(&this->dumpText, 1);
++
++  this->showMessage("Data Dump", "Select an item or click a block to show the current data.");
++}
++
++void HexdumpViewerWidget::currentSelectedItemsChanged(playlistItem *item1, playlistItem *item2)
++{
++  this->currentItem = item1;
++  if (this->selectedItem && this->selectedItem != item1 && this->selectedItem != item2)
++  {
++    this->selectedItem      = nullptr;
++    this->selectedFrameIdx  = -1;
++    this->hasSelectedPoint  = false;
++  }
++  this->refresh();
++}
++
++void HexdumpViewerWidget::setSelectedBlock(playlistItem *item, QPoint pixelPos, int frameIdx)
++{
++  this->selectedItem     = item;
++  this->selectedPos      = pixelPos;
++  this->selectedFrameIdx = frameIdx;
++  this->hasSelectedPoint = item != nullptr;
++  if (item)
++  {
++    this->currentItem     = item;
++    this->currentFrameIdx = frameIdx;
++  }
++  this->refresh();
++}
++
++void HexdumpViewerWidget::setCurrentFrame(playlistItem *item, int frameIdx)
++{
++  this->currentItem     = item;
++  this->currentFrameIdx = frameIdx;
++  if (!this->hasSelectedPoint || this->selectedItem == item)
++    this->selectedFrameIdx = frameIdx;
++  this->refresh();
++}
++
++void HexdumpViewerWidget::setFrameFromObu(playlistItem *item, int frameIdx)
++{
++  this->currentItem      = item;
++  this->currentFrameIdx  = frameIdx;
++  this->selectedItem     = item;
++  this->selectedFrameIdx = frameIdx;
++  this->hasSelectedPoint = false;
++  this->refresh();
++}
++
++void HexdumpViewerWidget::refresh()
++{
++  auto item     = this->selectedItem ? this->selectedItem : this->currentItem;
++  auto frameIdx = this->selectedFrameIdx >= 0 ? this->selectedFrameIdx : this->currentFrameIdx;
++  if (!item || frameIdx < 0)
++  {
++    this->showMessage("Data Dump", "Select an indexed item to show frame data.");
++    return;
++  }
++
++  stats::BlockInfo blockInfo;
++  if (this->hasSelectedPoint)
++    blockInfo = item->getBlockInfoAt(this->selectedPos, frameIdx);
++
++  const auto dump = item->getItemDataDump(this->hasSelectedPoint ? this->selectedPos : QPoint(0, 0),
++                                          frameIdx,
++                                          blockInfo);
++  if (!dump.isValid())
++  {
++    this->showMessage("Data Dump", "No dump data is available for the current item.");
++    return;
++  }
++
++  this->showDump(dump);
++}
++
++void HexdumpViewerWidget::showMessage(const QString &title, const QString &message)
++{
++  this->titleLabel.setText(title);
++  this->descriptionLabel.setText(message);
++  this->dumpText.clear();
++}
++
++void HexdumpViewerWidget::showDump(const playlistItem::DataDump &dump)
++{
++  this->titleLabel.setText(dump.title);
++
++  if (!dump.text.isEmpty())
++  {
++    this->descriptionLabel.setText(dump.description);
++    this->dumpText.setPlainText(dump.text);
++    return;
++  }
++
++  /* Which bytes of the shown window are the block's own. The window is deliberately wider than the
++   * block (a block can be a single byte, see playlistItemCompressedVideo::getItemDataDump), so
++   * without marking them the reader cannot tell block from context.
++   */
++  std::optional<std::pair<int, int>> highlightBytes;
++  if (dump.highlightedRange && dump.highlightedRange->isValid())
++  {
++    const auto first = qint64(dump.highlightedRange->startBit / 8) - qint64(dump.baseOffset);
++    const auto last  = qint64((dump.highlightedRange->endBit + 7) / 8 - 1) - qint64(dump.baseOffset);
++    const auto from  = std::max<qint64>(0, first);
++    const auto to    = std::min<qint64>(dump.bytes.size() - 1, last);
++    if (to >= from && from < dump.bytes.size())
++      highlightBytes = std::make_pair(int(from), int(to));
++  }
++
++  bool                             truncated = false;
++  std::vector<std::pair<int, int>> spans;
++  auto text = this->formatHexDump(dump.bytes, dump.baseOffset, highlightBytes, truncated, spans);
++  auto desc = dump.description;
++  if (truncated)
++    desc += QString(" · showing first %1 bytes").arg(MAX_HEXDUMP_BYTES);
++  this->descriptionLabel.setText(desc);
++  this->dumpText.setPlainText(text);
++
++  if (spans.empty())
++    return;
++
++  // Colour the block's own hex pairs and ascii characters. Character positions rather than rich text
++  // so the dump stays plain text for copy and paste.
++  QTextCharFormat blockFormat;
++  blockFormat.setForeground(QBrush(QColor(200, 0, 0)));
++  blockFormat.setFontWeight(QFont::Bold);
++  auto cursor = QTextCursor(this->dumpText.document());
++  cursor.beginEditBlock();
++  for (const auto &span : spans)
++  {
++    cursor.setPosition(span.first);
++    cursor.setPosition(span.first + span.second, QTextCursor::KeepAnchor);
++    cursor.mergeCharFormat(blockFormat);
++  }
++  cursor.endEditBlock();
++
++  // Bring the marked bytes into view; a block near the end of a long window would be off screen.
++  auto show = QTextCursor(this->dumpText.document());
++  show.setPosition(spans.front().first);
++  this->dumpText.setTextCursor(show);
++  this->dumpText.ensureCursorVisible();
++}
++
++QString HexdumpViewerWidget::formatHexDump(const QByteArray                        &data,
++                                           uint64_t                                 baseOffset,
++                                           const std::optional<std::pair<int, int>> &highlightBytes,
++                                           bool                                    &truncated,
++                                           std::vector<std::pair<int, int>>        &spans) const
++{
++  const auto maxBytes = qsizetype(MAX_HEXDUMP_BYTES);
++  truncated           = data.size() > maxBytes;
++  const int bytes     = int(std::min(data.size(), maxBytes));
++
++  QString     text;
++  QTextStream stream(&text);
++  /* The character positions of the highlighted bytes are collected while writing rather than derived
++   * from the column layout afterwards, so the two can never drift apart. One span per line for the
++   * hex column and one for the ascii column, which keeps the count small even for a long block.
++   */
++  for (int offset = 0; offset < bytes; offset += 16)
++  {
++    const int lineBytes = std::min(16, bytes - offset);
++    // The address column counts in the containing packet, not from the start of this slice.
++    stream << QString("%1  ").arg(baseOffset + uint64_t(offset), 8, 16, QLatin1Char('0')).toUpper();
++    stream.flush();
++    const int hexColumnStart = int(text.size());
++
++    QString ascii;
++    int     firstMarked = -1, lastMarked = -1;
++    for (int i = 0; i < 16; ++i)
++    {
++      if (i < lineBytes)
++      {
++        const auto value = static_cast<unsigned char>(data.at(offset + i));
++        stream << QString("%1 ").arg(value, 2, 16, QLatin1Char('0')).toUpper();
++        ascii += printableAscii(value);
++        if (highlightBytes && offset + i >= highlightBytes->first &&
++            offset + i <= highlightBytes->second)
++        {
++          if (firstMarked < 0)
++            firstMarked = i;
++          lastMarked = i;
++        }
++      }
++      else
++      {
++        stream << "   ";
++        ascii += ' ';
++      }
++      if (i == 7)
++        stream << ' ';
++    }
++    stream << " |" << ascii << "|\n";
++    stream.flush();
++
++    if (firstMarked >= 0)
++    {
++      // Byte i occupies 3 characters, with one extra separator inserted after byte 7.
++      const auto hexPos = [hexColumnStart](int i) {
++        return hexColumnStart + i * 3 + (i >= 8 ? 1 : 0);
++      };
++      spans.emplace_back(hexPos(firstMarked), hexPos(lastMarked) + 2 - hexPos(firstMarked));
++      // The ascii column starts after the hex column, the extra separator, a space and a '|'.
++      const int asciiStart = hexColumnStart + 16 * 3 + 1 + 2;
++      spans.emplace_back(asciiStart + firstMarked, lastMarked - firstMarked + 1);
++    }
++  }
++  return text;
++}
+diff --git a/YUViewLib/src/ui/widgets/HexdumpViewerWidget.h b/YUViewLib/src/ui/widgets/HexdumpViewerWidget.h
+new file mode 100644
+index 00000000..53f0f080
+--- /dev/null
++++ b/YUViewLib/src/ui/widgets/HexdumpViewerWidget.h
+@@ -0,0 +1,58 @@
++/*  This file is part of YUView - The YUV player with advanced analytics toolset
++ *   <https://github.com/IENT/YUView>
++ */
++
++#pragma once
++
++#include <playlistitem/playlistItem.h>
++
++#include <QLabel>
++#include <QPlainTextEdit>
++#include <QPointer>
++#include <QVBoxLayout>
++#include <QWidget>
++
++#include <optional>
++#include <utility>
++#include <vector>
++
++class HexdumpViewerWidget : public QWidget
++{
++  Q_OBJECT
++
++public:
++  explicit HexdumpViewerWidget(QWidget *parent = nullptr);
++
++public slots:
++  void currentSelectedItemsChanged(playlistItem *item1, playlistItem *item2);
++  void setSelectedBlock(playlistItem *item, QPoint pixelPos, int frameIdx);
++  void setCurrentFrame(playlistItem *item, int frameIdx);
++  void setFrameFromObu(playlistItem *item, int frameIdx);
++  void refresh();
++
++private:
++  void    showMessage(const QString &title, const QString &message);
++  void    showDump(const playlistItem::DataDump &dump);
++  /* Formats the dump and, for the bytes in highlightBytes (indices into data), reports the character
++   * ranges in the returned text that cover them - hex column and ascii column separately - so the
++   * caller can colour exactly those.
++   */
++  QString formatHexDump(const QByteArray                        &data,
++                        uint64_t                                 baseOffset,
++                        const std::optional<std::pair<int, int>> &highlightBytes,
++                        bool                                    &truncated,
++                        std::vector<std::pair<int, int>>        &spans) const;
++
++  QVBoxLayout    layout;
++  QLabel         titleLabel;
++  QLabel         descriptionLabel;
++  QPlainTextEdit dumpText;
++
++  QPointer<playlistItem> currentItem;
++  int                    currentFrameIdx{-1};
++
++  QPointer<playlistItem> selectedItem;
++  QPoint                 selectedPos;
++  int                    selectedFrameIdx{-1};
++  bool                   hasSelectedPoint{};
++};
+diff --git a/YUViewLib/src/ui/widgets/PropertiesWidget.cpp b/YUViewLib/src/ui/widgets/PropertiesWidget.cpp
+index bea51697..544bcfc6 100644
+--- a/YUViewLib/src/ui/widgets/PropertiesWidget.cpp
++++ b/YUViewLib/src/ui/widgets/PropertiesWidget.cpp
+@@ -48,6 +48,16 @@ PropertiesWidget::PropertiesWidget(QWidget *parent) : QWidget(parent), topLayout
+   stack.setCurrentWidget(&emptyWidget);
+ }
+ 
++void PropertiesWidget::addTopSection(QWidget *section)
++{
++  if (!section)
++    return;
++
++  section->setParent(this);
++  // Above the stack, so it stays put while the item's properties are swapped in and out below it.
++  topLayout.insertWidget(0, section);
++}
++
+ void PropertiesWidget::currentSelectedItemsChanged(playlistItem *item1, playlistItem *)
+ {
+   // The properties are always just shown for the first item
+diff --git a/YUViewLib/src/ui/widgets/PropertiesWidget.h b/YUViewLib/src/ui/widgets/PropertiesWidget.h
+index f4dc9472..26c17213 100644
+--- a/YUViewLib/src/ui/widgets/PropertiesWidget.h
++++ b/YUViewLib/src/ui/widgets/PropertiesWidget.h
+@@ -47,6 +47,15 @@ class PropertiesWidget : public QWidget
+ public:
+   PropertiesWidget(QWidget *parent = 0);
+ 
++public:
++  /* Show a widget above the item's properties, and so above the statistics overlay list. The list
++   * itself lives in the item's own properties widget, which is created and destroyed as the playlist
++   * selection changes - putting a shared widget in there would tie its lifetime to an item. This
++   * container is part of the main window and outlives every item, which is why the histogram goes
++   * here instead.
++   */
++  void addTopSection(QWidget *section);
++
+ public slots:
+   // Accept the signal from the playlisttreewidget that signals if a new (or two) item was selected.
+   // This function will get and show the properties from the given item1.
+diff --git a/YUViewLib/src/ui/widgets/VideoCacheInfoWidget.cpp b/YUViewLib/src/ui/widgets/VideoCacheInfoWidget.cpp
+index 6fe9621c..33a340c3 100644
+--- a/YUViewLib/src/ui/widgets/VideoCacheInfoWidget.cpp
++++ b/YUViewLib/src/ui/widgets/VideoCacheInfoWidget.cpp
+@@ -160,15 +160,27 @@ VideoCacheInfoWidget::VideoCacheInfoWidget(QWidget *parent) : QWidget(parent)
+   groupBox->setLayout(vbox);
+ 
+   // Add everything to a vertical layout
+-  QVBoxLayout *mainLayout = new QVBoxLayout(this);
+-  mainLayout->addWidget(statusWidget);
+-  mainLayout->addWidget(groupBox, 1);
++  this->mainLayout = new QVBoxLayout(this);
++  this->mainLayout->addWidget(statusWidget);
++  /* Weighted 3:1 against a section added later (the block's pixel statistics): the syntax table has
++   * a dozen rows and grows with the codec, the statistics table always has five.
++   */
++  this->mainLayout->addWidget(groupBox, 3);
+ 
+-  setLayout(mainLayout);
++  setLayout(this->mainLayout);
+ 
+   connect(groupBox, &QGroupBox::toggled, this, &VideoCacheInfoWidget::onGroupBoxToggled);
+ }
+ 
++void VideoCacheInfoWidget::addSectionBelowBlockInfo(QWidget *section)
++{
++  if (!section || !this->mainLayout)
++    return;
++
++  section->setParent(this);
++  this->mainLayout->addWidget(section, 1);
++}
++
+ void VideoCacheInfoWidget::onGroupBoxToggled(bool on)
+ {
+   if (blockInfoWidget == nullptr)
+diff --git a/YUViewLib/src/ui/widgets/VideoCacheInfoWidget.h b/YUViewLib/src/ui/widgets/VideoCacheInfoWidget.h
+index 516f3b5f..cd9c102f 100644
+--- a/YUViewLib/src/ui/widgets/VideoCacheInfoWidget.h
++++ b/YUViewLib/src/ui/widgets/VideoCacheInfoWidget.h
+@@ -32,6 +32,7 @@
+ 
+ #pragma once
+ 
++#include <QVBoxLayout>
+ #include <QWidget>
+ 
+ #include "PlaylistTreeWidget.h"
+@@ -78,6 +79,13 @@ public:
+   //!< The block syntax table hosted in this pane. Never null after construction.
+   class BlockInfoWidget *getBlockInfoWidget() const { return this->blockInfoWidget; }
+ 
++  /* Show a widget directly below the block syntax table. Used for the clicked block's pixel
++   * statistics (see FrameInfoWidget::getBlockStatisticsSection), so that what the bitstream says
++   * about a block and what its pixels are sit next to each other. Deliberately outside the "Block
++   * Syntax" group box: that group's checkbox only hides the syntax table.
++   */
++  void addSectionBelowBlockInfo(QWidget *section);
++
+ public slots:
+   void onUpdateCacheStatus();
+ 
+@@ -91,6 +99,8 @@ private:
+    * main window wires it to the same signals as the Block Info dock.
+    */
+   class BlockInfoWidget *                                   blockInfoWidget{nullptr};
++  //!< Kept so sections can still be appended after construction.
++  QVBoxLayout *                                             mainLayout{nullptr};
+ 
+   PlaylistTreeWidget *playlist{nullptr};
+   video::VideoCache * cache{nullptr};
+diff --git a/YUViewLib/src/video/yuv/videoHandlerYUV.cpp b/YUViewLib/src/video/yuv/videoHandlerYUV.cpp
+index f9539a20..04d95c8c 100644
+--- a/YUViewLib/src/video/yuv/videoHandlerYUV.cpp
++++ b/YUViewLib/src/video/yuv/videoHandlerYUV.cpp
+@@ -43,6 +43,7 @@
+ 
+ #include <QDir>
+ #include <QPainter>
++#include <QTextStream>
+ 
+ #include <common/Formatting.h>
+ #include <common/Functions.h>
+@@ -3438,6 +3439,53 @@ yuv_t videoHandlerYUV::getPixelValue(const QPoint &pixelPos) const
+   return value;
+ }
+ 
++QString videoHandlerYUV::getLumaSampleBlockText(const QPoint &pixelPos,
++                                                int           frameIndex,
++                                                unsigned      blockSize,
++                                                QString      *description) const
++{
++  if (blockSize == 0)
++    return {};
++  if (this->currentFrameRawData_frameIndex != frameIndex || this->currentFrameRawData.isEmpty())
++    return {};
++
++  const auto frameWidth  = this->frameSize.width;
++  const auto frameHeight = this->frameSize.height;
++  if (frameWidth <= 0 || frameHeight <= 0 || pixelPos.x() < 0 || pixelPos.y() < 0 ||
++      pixelPos.x() >= frameWidth || pixelPos.y() >= frameHeight)
++    return {};
++
++  const auto originX = (pixelPos.x() / int(blockSize)) * int(blockSize);
++  const auto originY = (pixelPos.y() / int(blockSize)) * int(blockSize);
++  const auto width   = std::min<int>(int(blockSize), frameWidth - originX);
++  const auto height  = std::min<int>(int(blockSize), frameHeight - originY);
++
++  if (description)
++    *description = QString("Frame %1 · Y plane %2x%3 block @ (%4, %5)")
++                     .arg(frameIndex)
++                     .arg(width)
++                     .arg(height)
++                     .arg(originX)
++                     .arg(originY);
++
++  QString     text;
++  QTextStream stream(&text);
++  stream << "      ";
++  for (int x = 0; x < width; ++x)
++    stream << QString("%1").arg(originX + x, 4);
++  stream << '\n';
++
++  for (int y = 0; y < height; ++y)
++  {
++    stream << QString("%1:").arg(originY + y, 5);
++    for (int x = 0; x < width; ++x)
++      stream << QString("%1").arg(this->getPixelValue(QPoint(originX + x, originY + y)).Y, 4);
++    stream << '\n';
++  }
++
++  return text;
++}
++
+ bool videoHandlerYUV::markDifferencesYUVPlanarToRGB(const QByteArray     &sourceBuffer,
+                                                     unsigned char        *targetBuffer,
+                                                     const Size            curFrameSize,
+diff --git a/YUViewLib/src/video/yuv/videoHandlerYUV.h b/YUViewLib/src/video/yuv/videoHandlerYUV.h
+index 870cac11..e352681c 100644
+--- a/YUViewLib/src/video/yuv/videoHandlerYUV.h
++++ b/YUViewLib/src/video/yuv/videoHandlerYUV.h
+@@ -216,6 +216,10 @@ public:
+     frameIndex = this->currentFrameRawData_frameIndex;
+     return this->currentFrameRawData;
+   }
++  QString getLumaSampleBlockText(const QPoint &pixelPos,
++                                 int           frameIndex,
++                                 unsigned      blockSize,
++                                 QString      *description = nullptr) const;
+   PixelFormatYUV getDiffYUVFormat() const { return this->diffYUVFormat; }
+ 
+   bool isDiffReady() const { return this->diffReady; }
+diff --git a/YUViewLib/ui/mainwindow.ui b/YUViewLib/ui/mainwindow.ui
+index a05f2f77..9567191a 100644
+--- a/YUViewLib/ui/mainwindow.ui
++++ b/YUViewLib/ui/mainwindow.ui
+@@ -56,10 +56,33 @@
+       <property name="currentIndex">
+        <number>0</number>
+       </property>
+-      <widget class="splitViewWidget" name="displaySplitView">
++      <widget class="QWidget" name="itemViewPage">
+        <attribute name="title">
+         <string>Item View</string>
+        </attribute>
++       <layout class="QVBoxLayout" name="itemViewLayout">
++        <property name="leftMargin">
++         <number>0</number>
++        </property>
++        <property name="topMargin">
++         <number>0</number>
++        </property>
++        <property name="rightMargin">
++         <number>0</number>
++        </property>
++        <property name="bottomMargin">
++         <number>0</number>
++        </property>
++        <item>
++         <widget class="QSplitter" name="itemViewSplitter">
++          <property name="orientation">
++           <enum>Qt::Vertical</enum>
++          </property>
++          <widget class="splitViewWidget" name="displaySplitView"/>
++          <widget class="HexdumpViewerWidget" name="hexdumpViewer"/>
++         </widget>
++        </item>
++       </layout>
+       </widget>
+       <widget class="BitstreamAnalysisWidget" name="bitstreamAnalysis">
+        <attribute name="title">
+@@ -356,6 +379,12 @@
+    <header>ui/widgets/BitstreamAnalysisWidget.h</header>
+    <container>1</container>
+   </customwidget>
++  <customwidget>
++   <class>HexdumpViewerWidget</class>
++   <extends>QWidget</extends>
++   <header>ui/widgets/HexdumpViewerWidget.h</header>
++   <container>1</container>
++  </customwidget>
+  </customwidgets>
+  <tabstops>
+   <tabstop>playlistTreeWidget</tabstop>
