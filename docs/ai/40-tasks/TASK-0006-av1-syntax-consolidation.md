@@ -1,10 +1,10 @@
 ---
 title: TASK-0006 AV1 syntax 항목 통합 + OBU info 탭
-status: todo
+status: in-progress
 created: 2026-08-07
-updated: 2026-08-07
+updated: 2026-08-08
 author: claude-opus-5
-verified: no
+verified: B 는 실측 확인, D/E 는 미구현
 upstream: IENT/YUView @ a72eb3488097313511e60ed70db4af6071cbe9fe
 ---
 
@@ -29,58 +29,59 @@ OBU 탐색 기능을 요청했다. 제거(A)와 레이아웃(C)은 이미 끝났
 
 정의 위치: `decoder/decoderDav1d.cpp` `fillStatisticList()` / emit 은 `parseBlockPartition()`.
 
-## B. 항목 통합 — 확정 사양
+## B. 항목 통합 — **완료** (커밋 `1258d86`, 패치 `0019`)
 
-핵심 원칙: **오버레이의 색상·의미는 건드리지 않고, syntax 표에서만 행을 합친다.**
-예외는 intra 계열의 오버레이 텍스트다 (아래 B-2).
+문서에 적어둔 두 "확인 지점" 의 결론:
 
-### B-1. motion vector 0 + 1 → 표에서만 통합
+1. **angle delta 를 숨기는 별도 장치는 필요 없었다.** `getValueTxt()` 가 값→이름 매핑이라
+   **mode 와 delta 를 한 값으로 인코딩**하면 타입 자체가 하나가 된다.
+   값 = `mode * 8 + (delta + 4)`, 이름 = `CFL_PRED (13) d+2`.
+   컬러맵은 같은 mode 면 delta 가 달라도 같은 색 → blending 은 mode 만 반영.
+2. **블록 내부 값 텍스트 경로는 존재한다** (`StatisticsDataPainting.cpp:426-498`,
+   `drawStatTexts` 가 지점별로 모아 `\n` 으로 합쳐 그림). 인코딩 방식이면 이 경로가
+   그대로 mode+delta 를 출력하므로 그리기 코드는 건드리지 않았다.
 
-- 오버레이 체크박스는 **2개 그대로**. 색 구분(L0 빨강 / L1 파랑, 두께 2)을 유지해야 하므로
-  타입을 합칠 수 없다 — `StatisticsType` 은 `vectorStyle` 을 하나만 갖는다.
-- `getBlockInfoAt()` (또는 `BlockInfoWidget`) 에서 24/25 를 한 행으로 조립.
-  예: `Motion Vector | L0 (-1.25,0.5)  L1 (2.0,-0.75)`. compound 가 아니면 L0 만.
+부수 발견: `getValueTxt()` 가 이름 뒤에 raw 값을 붙여서 인코딩 값(110)이 새어 나왔다.
+`StatisticsType::showRawValueInText` 를 추가해 이 타입에서만 껐다.
 
-### B-2. intra pred mode + angle delta + direction
+delta 인코딩 범위는 시그널 범위(-3..3) 보다 넓은 **-4..3** 이다. 실제 스트림이 범위를 벗어난
+값을 낸 적이 있어서(`calculateIntraPredDirection` 의 bounds check 가 그 때문에 있다) 넘으면 clamp 한다.
 
-- **오버레이 블록 blending 은 `intra pred mode` (4/5) 만 사용한다.**
-  `intra angle delta` (8/9) 는 오버레이 목록에서 뺀다 — 단, **값은 계속 emit 해야 한다**
-  (아래 텍스트와 syntax 표에서 쓰인다). 즉 타입을 지우지 말고 오버레이에서만 감춘다.
-  → `StatisticsType` 에 "목록에 노출하지 않음" 개념이 없으므로, 가장 단순한 방법은
-     8/9 를 `statisticsData` 에 등록은 하되 UI 목록에서 제외하는 것. 등록 자체를 빼면
-     `at(8)/at(9)` emit 이 갈 곳이 없어진다. **구현 시 여기가 첫 번째 확인 지점.**
-- `intra direction` (10/11, 벡터) 은 `intra pred mode` (4/5) 타입에 **실제로 병합**한다.
-  `StatisticsType` 은 값+벡터를 동시에 가질 수 있다 (`hasValueData` + `hasVectorData`).
-  → 체크박스가 2개 줄어든다.
-- **`intra pred mode` 가 체크되면 블록 내부 텍스트에 mode 와 angle delta 를 함께 표시**한다.
-  예: `DC_PRED (0)  Δ+2`. 그리기 위치는 `statistics/StatisticsDataPainting.cpp` 의
-  값 텍스트 렌더링 경로. **구현 전에 그 경로가 실제로 존재하는지 확인할 것** (미확인).
+ref frame index / motion vector 는 **표에서만** 병합했다 (`StatisticsData::getBlockInfoAt` 의
+`mergeReferencePair`). 오버레이를 합치면 `vectorStyle` 이 하나뿐이라 빨강 L0 / 파랑 L1 구분이
+사라지기 때문이다.
 
-### B-3. ref frame index 0 + 1 → 표에서만 통합
+실측 결과: 체크박스 13개, `intra pred mode (Y) = CFL_PRED (13) d+2`,
+compound 블록 `ref frame index = L0 0  L1 4` / `Motion Vector = L0 (0,0)  L1 (0,0)`,
+MV 오버레이는 변경 전과 동일(빨강 3046px / 파랑 789px).
 
-- 오버레이 체크박스는 2개 그대로 (compound 면 두 값이 서로 다른 블록 집합을 덮는다).
-- 표에서 한 행: `ref frame | L0 LAST(0)  L1 ALTREF(6)`.
-- 이름 매핑이 없으므로 숫자만 나온다. 0-based 인덱스의 의미는
-  `0 LAST, 1 LAST2, 2 LAST3, 3 GOLDEN, 4 BWDREF, 5 ALTREF2, 6 ALTREF` (커밋 `c294c7d` 에서 실측 확인).
-  이름을 붙이려면 `setMappingValues()` 를 추가하면 된다.
-
-### 통합 후 예상 오버레이 목록
-
-```
-Pred Mode / Segment ID / skip / skip_mode
-intra pred mode (Y)  ← 방향 벡터 포함, 블록 텍스트에 delta 병기
-intra pred mode (UV) ← 동일
-chroma from luma alpha U / V
-ref frame index 0 / 1
-Motion Vector 0 (빨강) / Motion Vector 1 (파랑)
-Transform Size
-```
+**남은 미검증 1건**: 블록 내부 텍스트는 `zoomFactor >= STATISTICS_DRAW_VALUES_ZOOM` 일 때만
+그려진다. 높은 배율에서 실제로 화면에 찍히는지는 GUI 로 확인하지 않았다.
 
 ## D. 좌측 Info listbox 에 OBU info 탭
 
-- 현재 Info pane 은 `playlistItem::getInfo()` 의 key/value 목록 (`FileInfoWidget`).
-- OBU 목록은 `parser::ParserAV1OBU` 의 파스 트리에서 가져온다. Bitstream Analysis 탭이
-  이미 같은 파서를 쓰므로, 데이터 소스는 있다. 새로 만들 것은 탭 UI 와 목록 채우기.
+- 현재 Info pane 은 `playlistItem::getInfo()` 의 key/value 목록 (`ui/widgets/FileInfoWidget.*`).
+- OBU 트리의 실제 소유자는 **`BitstreamAnalysisWidget`** 이다:
+  `parser::Parser` 를 만들고 `runParsingOfFile()` 을 백그라운드로 돌린 뒤
+  `parser->getPacketItemModel()` 을 `ui.dataTreeView` 에 붙인다
+  (`ui/widgets/BitstreamAnalysisWidget.cpp:245,256`).
+
+### 조사에서 나온 제약 (중요)
+
+1. **파싱은 Bitstream Analysis 탭이 보일 때만 돈다.**
+   `restartParsingOfCurrentItem()` 이 `if (!this->isVisible()) return;` 로 시작한다
+   (`BitstreamAnalysisWidget.cpp:223`). 좌측 Info 탭에서 OBU 목록을 보여주려면
+   **파싱을 그 탭과 무관하게 시작시킬 방법**이 필요하다. 선택지:
+   - ⓐ Info 탭이 열릴 때 같은 파서를 별도로 돌린다 (파일을 두 번 파싱 → 느리고 메모리 2배)
+   - ⓑ `BitstreamAnalysisWidget` 의 파서를 공용으로 끌어올려 두 뷰가 같은 모델을 공유한다
+     (권장. 다만 소유권/수명 정리가 필요)
+   - ⓒ Info 탭을 열면 Bitstream Analysis 파싱을 트리거하고 결과를 공유한다
+2. **`TreeItem` 에는 프레임 번호도 파일 위치도 없다** (`parser/common/TreeItem.h`:
+   name / value / coding / code / meaning / streamIndex / error 뿐).
+   → **E 의 "프레임으로 seek" 은 이 트리만으로는 불가능하다.** POC 나 프레임 인덱스를
+   어디서 얻을지 먼저 정해야 한다. 후보: `ParserAnnexB` 계열이 들고 있는 프레임 목록
+   (`getFrameIdxRange` / POC 리스트) 또는 OBU 파싱 시 프레임 경계를 별도로 기록.
+   **D 를 시작하기 전에 이것부터 확인할 것.**
 
 ## E. OBU double-click → 이동 (둘 다)
 
