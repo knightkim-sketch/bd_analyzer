@@ -130,3 +130,135 @@ B 는 끝났다. 남은 것을 크기 순으로 자르면:
   `tests/regression/12-*` 와 세션 중 쓴 `probe-mvdraw.cpp` 참고).
 - 오버레이 렌더는 오버레이를 끈 렌더와 **차분**해서 확인한다. 테스트 패턴 자체에 순수
   빨강/파랑이 있어 색 픽셀을 그냥 세면 아무것도 증명하지 못한다 (커밋 `953ebeb` 참고).
+
+---
+
+# 인수인계 (다른 에이전트가 이어받을 때)
+
+이 절은 이 리포지토리를 처음 보는 사람이 위 작업을 이어받는 데 필요한 것만 모았다.
+위 본문은 "무엇을/왜", 이 절은 "어떻게".
+
+## 이 프로젝트의 구조 — 먼저 이해할 것
+
+**소스를 직접 고치고 커밋하는 리포지토리가 아니다.**
+
+- 실제 코드는 git submodule `third_party/yuview/upstream` 에 있다 (upstream YUView,
+  **`a72eb348` 에 고정**).
+- 우리 변경은 전부 `third_party/yuview/patches/NNNN-*.patch` 로 보관한다 (현재 **19개**).
+- `scripts/build.sh` 가 빌드 전에 이 패치들을 순서대로 `git apply` 한다 (이미 적용돼 있으면 건너뜀).
+- 따라서 **submodule 포인터는 절대 커밋하지 않는다.** `git status` 에 항상 뜨는
+  `m third_party/yuview/upstream` 은 정상이다 (빌드가 패치를 적용해 놓은 상태).
+
+작업 흐름은 이렇다:
+
+1. `third_party/yuview/upstream/...` 안의 소스를 직접 수정한다
+2. 빌드/검증한다
+3. **수정분을 새 패치로 뽑는다** (아래 레시피)
+4. 패치 파일만 커밋한다
+
+## 빌드 / 테스트 / 배포 — 전부 리포지토리 루트에서
+
+```bash
+./scripts/build.sh            # 패치 적용 + qmake -r + make. gcc-toolset-13, Qt 6.5.3
+./tests/run-regression.sh     # 회귀 12개. 테스트 데이터는 없으면 ffmpeg 로 생성
+./scripts/make-bin-bundle.sh  # bin/ 배포 번들 재생성 (Qt/FFmpeg/X11 동봉, 약 89MB)
+```
+
+`cd` 로 하위 디렉터리에 들어간 뒤 `./scripts/...` 를 부르면 조용히 실패한다. 항상 루트에서.
+
+## 패치 뽑는 레시피 (그대로 복붙 가능)
+
+깨끗한 worktree 에 기존 패치를 전부 적용한 뒤, 수정한 파일만 덮어쓰고 diff 를 뜬다.
+
+```bash
+set -e
+cd /home/knight2/project/bd_analyzer
+SUB=$PWD/third_party/yuview/upstream
+BASE=/tmp/patchbase
+rm -rf "$BASE"; git -C "$SUB" worktree prune
+git -C "$SUB" worktree add --detach "$BASE" HEAD >/dev/null 2>&1
+for p in third_party/yuview/patches/00*.patch; do git -C "$BASE" apply "$(realpath $p)"; done
+git -C "$BASE" add -A >/dev/null
+git -C "$BASE" -c user.email=t@t -c user.name=t commit -qm base
+
+FILES="YUViewLib/src/... (수정한 파일들)"
+for f in $FILES; do mkdir -p "$BASE/$(dirname $f)"; cp "$SUB/$f" "$BASE/$f"; done
+# 새 파일을 추가했다면: git -C "$BASE" add -A -N
+git -C "$BASE" diff > third_party/yuview/patches/00NN-<이름>.patch
+
+# 검증 3종 — 반드시 통과시킬 것
+git -C "$BASE" checkout -- .
+git -C "$BASE" apply --check third_party/yuview/patches/00NN-<이름>.patch   # 깨끗이 적용되는가
+git -C "$BASE" apply       third_party/yuview/patches/00NN-<이름>.patch
+for f in $FILES; do cmp -s "$SUB/$f" "$BASE/$f" || echo "DIFFERS $f"; done  # 바이트 동일 재현
+git -C "$BASE" apply --check third_party/yuview/patches/00NN-<이름>.patch 2>/dev/null \
+  && echo "IDEMPOTENCY-BROKEN" || echo IDEMPOTENT                          # 재적용은 거부돼야 함
+git -C "$SUB" worktree remove --force "$BASE"; git -C "$SUB" worktree prune
+```
+
+**함정**: 새 파일을 `git add -A -N` 로 넣었으면 `git checkout -- .` 이 그 파일을 지우지 못한다.
+검증은 반드시 **새 worktree** 에서 하거나 `git clean` 까지 해야 한다 (이 실수를 한 번 했다).
+
+## 헤드리스 검증 패턴 — GUI 자동화보다 이쪽을 쓸 것
+
+작은 `.cpp` 를 `libYUViewLib.a` 에 링크해 프로덕션 클래스를 직접 구동한다.
+`tests/regression/*.cpp` 가 전부 이 방식이다.
+
+```bash
+QT=$HOME/Qt/6.5.3/gcc_64
+SRC=$PWD/third_party/yuview/upstream/YUViewLib/src
+LIB=$PWD/build/YUViewLib
+scl enable gcc-toolset-13 -- bash -c "
+g++ -std=gnu++2a -O1 -fPIC -I'$SRC' -I'$LIB' \
+  -I'$QT/include' -I'$QT/include/QtCore' -I'$QT/include/QtGui' -I'$QT/include/QtWidgets' \
+  -I'$QT/include/QtXml' -I'$QT/include/QtConcurrent' -I'$QT/include/QtNetwork' \
+  -I'$QT/include/QtOpenGL' probe.cpp -o /tmp/probe -L'$LIB' -lYUViewLib \
+  '$QT/lib/libQt6Widgets.so' '$QT/lib/libQt6OpenGL.so' '$QT/lib/libQt6Gui.so' \
+  '$QT/lib/libQt6Xml.so' '$QT/lib/libQt6Concurrent.so' '$QT/lib/libQt6Network.so' \
+  '$QT/lib/libQt6Core.so' -lpthread -lGL -static-libstdc++ -static-libgcc"
+
+# 반드시 build/YUViewApp 에서 실행한다: ffmpeg/dav1d 를 applicationDirPath() 기준으로 dlopen 한다
+cd build/YUViewApp && QT_QPA_PLATFORM=offscreen LD_LIBRARY_PATH=$QT/lib /tmp/probe test.ivf
+```
+
+**함정 (이 세션에서 실제로 당한 것들)**
+
+- 프로브는 **정적 라이브러리를 링크**한다. `./scripts/build.sh` 를 다시 돌렸으면
+  **프로브도 다시 컴파일해야 한다.** 안 그러면 예전 코드로 측정하고 "변경이 반영 안 됐다" 고
+  오판한다. 한 번 이것 때문에 잘못된 결론을 냈다.
+- 통계 타입은 `_exit()` 로 끝내라. dlopen 한 라이브러리 때문에 전역 소멸자에서 깨진다
+  (기존 테스트들이 전부 `_exit` 를 쓰는 이유).
+- 테스트용 스트림: `build/YUViewApp/test.ivf` (176x144 AV1),
+  `test_176x144_yuv420p.yuv`, `big.ivf`(640x360), `sb128.ivf`(128 superblock).
+
+## 오버레이 렌더 검증은 반드시 "차분" 으로
+
+테스트 패턴(testsrc2)에 **순수 빨강·파랑 막대가 들어 있다.** 색 픽셀을 그냥 세면
+아무것도 증명하지 못한다. 오버레이를 끈 렌더를 baseline 으로 두고 **달라진 픽셀만** 세라.
+(커밋 `953ebeb` 에서 이 방식으로 MV 색을 확정했다.)
+
+## GUI 로 확인해야 할 때
+
+- 먼저 `~/.config/Institut*/YUView.conf` 에서 `Autosaveplaylist` 줄을 지운다.
+  안 지우면 "Restore Playlist" 모달이 떠서 자동화가 막힌다 (`pkill` 로 죽이면 크래시로 인식됨).
+- `xdotool` 클릭은 **창 상대 좌표**를 써라: `xdotool mousemove --window $W x y click 1`.
+  화면 절대 좌표는 창 장식 오프셋 때문에 빗나간다.
+- Qt 는 `xdotool key --window` 로 보낸 **합성 키 이벤트를 무시한다.** 키 입력은 신뢰하지 말 것.
+- 창 찾기: 이름이 `YUView - <파일>` 이고, 크기가 `3x3`/`1x1`/`10x10` 인 것들은 더미다.
+
+## 지금 남은 작업
+
+본문 "작업 순서 권장 (갱신)" 과 "다음 세션 착수 지점" 참조. 요약하면:
+
+1. **결정 먼저**: OBU 노드에서 프레임 인덱스를 어떻게 구할지 (본문 제약 3 의 ⓐ/ⓑ/ⓒ).
+   추측하면 엉뚱한 프레임으로 seek 하는 기능이 된다.
+2. **E-1** (double-click → seek) 을 `BitstreamAnalysisWidget` 안에서 구현.
+   그 탭엔 이미 파서와 트리가 있어 배선이 필요 없다.
+3. **D + E-2** (Info 탭의 OBU 목록 + 노드 선택) — 파서를 공용으로 끌어올려야 해서 가장 크다.
+
+## 코드 규약 (이 리포지토리)
+
+- 코드 주석과 커밋 메시지는 **영어**로 쓴다 (사용자 지시). 문서/대화는 한국어.
+- 요청받은 것만 고친다. 주변 코드 정리·리팩터링을 끼워 넣지 않는다 (패치가 커지면
+  재적용과 리뷰가 어려워진다).
+- 수치나 결론을 보고하기 전에 실제 도구 출력과 대조한다. 확인 못 한 것은 **미검증**이라고 밝힌다.
