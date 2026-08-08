@@ -1,0 +1,252 @@
+diff --git a/YUViewLib/src/decoder/decoderDav1d.cpp b/YUViewLib/src/decoder/decoderDav1d.cpp
+index d138dd93..0d2a302c 100644
+--- a/YUViewLib/src/decoder/decoderDav1d.cpp
++++ b/YUViewLib/src/decoder/decoderDav1d.cpp
+@@ -47,6 +47,21 @@ namespace decoder
+ 
+ using Subsampling = video::yuv::Subsampling;
+ 
++/* The intra angle delta is folded into the intra prediction mode value so that one statistics type
++ * covers both. AV1 signals the delta in -3..3, but real streams have been seen outside that (see the
++ * bounds check in calculateIntraPredDirection), so the encoded range is one wider on each side and
++ * anything beyond is clamped rather than producing an out of range value.
++ */
++constexpr int INTRA_ANGLE_DELTA_MIN   = -4;
++constexpr int INTRA_ANGLE_DELTA_MAX   = 3;
++constexpr int INTRA_ANGLE_DELTA_COUNT = INTRA_ANGLE_DELTA_MAX - INTRA_ANGLE_DELTA_MIN + 1;
++
++int intraModeAndDeltaToValue(int mode, int angleDelta)
++{
++  const auto clamped = std::clamp(angleDelta, INTRA_ANGLE_DELTA_MIN, INTRA_ANGLE_DELTA_MAX);
++  return mode * INTRA_ANGLE_DELTA_COUNT + (clamped - INTRA_ANGLE_DELTA_MIN);
++}
++
+ // Debug the decoder (0:off 1:interactive decoder only 2:caching decoder only 3:both)
+ #define DECODERDAV1D_DEBUG_OUTPUT 0
+ #if DECODERDAV1D_DEBUG_OUTPUT && !NDEBUG
+@@ -624,66 +639,69 @@ void decoderDav1d::fillStatisticList(stats::StatisticsData &statisticsData) cons
+ 
+   // Intra specific values
+ 
+-  stats::StatisticsType intraPredModeLuma(
+-      4, "intra pred mode (Y)", ColorMapper({0, 13}, PredefinedType::Jet));
+-  intraPredModeLuma.description = "Intra prediction mode Luma (Y)";
+-  intraPredModeLuma.setMappingValues({"DC_PRED",
+-                                      "VERT_PRED",
+-                                      "HOR_PRED",
+-                                      "DIAG_DOWN_LEFT_PRED",
+-                                      "DIAG_DOWN_RIGHT_PRED",
+-                                      "VERT_RIGHT_PRED",
+-                                      "HOR_DOWN_PRED",
+-                                      "HOR_UP_PRED",
+-                                      "VERT_LEFT_PRED",
+-                                      "SMOOTH_PRED",
+-                                      "SMOOTH_V_PRED",
+-                                      "SMOOTH_H_PRED",
+-                                      "PAETH_PRED",
+-                                      "CFL_PRED"});
++  /* Intra prediction: mode, angle delta and direction are one thing to look at, so they are one
++   * statistics type instead of three. The value encodes both mode and delta as
++   * mode * INTRA_ANGLE_DELTA_COUNT + (delta - INTRA_ANGLE_DELTA_MIN), which lets getValueTxt() name
++   * them together ("DIAG_DOWN_LEFT_PRED d+2"). The colour map gives every delta of one mode the same
++   * colour, so the block shading still means "prediction mode" and nothing else. The prediction
++   * direction rides along as vector data on the same type.
++   */
++  const auto intraModeColor = [](size_t nrModes, size_t mode) {
++    // The colour this mode had when the mode was the whole value.
++    return ColorMapper({0, int(nrModes) - 1}, PredefinedType::Jet).getColor(int(mode));
++  };
++  const auto buildIntraType =
++      [&intraModeColor](int typeID, const QString &name, const std::vector<QString> &modeNames) {
++        ColorMap              colorMap;
++        std::vector<QString>  mappingValues;
++        for (size_t mode = 0; mode < modeNames.size(); mode++)
++          for (int delta = INTRA_ANGLE_DELTA_MIN; delta <= INTRA_ANGLE_DELTA_MAX; delta++)
++          {
++            const auto value  = intraModeAndDeltaToValue(int(mode), delta);
++            colorMap[value]   = intraModeColor(modeNames.size(), mode);
++            // Same shape as the other types ("NAME (index)"), with the delta appended when there is
++            // one. The encoded value itself is meaningless, so it is not printed - see
++            // showRawValueInText below.
++            auto text = QString("%1 (%2)").arg(modeNames[mode]).arg(mode);
++            if (delta != 0)
++              text += QString(" d%1%2").arg(delta > 0 ? "+" : "").arg(delta);
++            mappingValues.push_back(text);
++          }
++        stats::StatisticsType type(
++            typeID, name, ColorMapper(colorMap, Color(128, 128, 128)), true /* vector data */);
++        type.vectorScale       = 4; // as the separate direction types used
++        type.showRawValueInText = false;
++        type.setMappingValues(mappingValues);
++        type.setInitialState();
++        return type;
++      };
++
++  const std::vector<QString> INTRA_MODE_NAMES_LUMA = {"DC_PRED",
++                                                      "VERT_PRED",
++                                                      "HOR_PRED",
++                                                      "DIAG_DOWN_LEFT_PRED",
++                                                      "DIAG_DOWN_RIGHT_PRED",
++                                                      "VERT_RIGHT_PRED",
++                                                      "HOR_DOWN_PRED",
++                                                      "HOR_UP_PRED",
++                                                      "VERT_LEFT_PRED",
++                                                      "SMOOTH_PRED",
++                                                      "SMOOTH_V_PRED",
++                                                      "SMOOTH_H_PRED",
++                                                      "PAETH_PRED",
++                                                      "CFL_PRED"};
++  auto intraPredModeLuma = buildIntraType(4, "intra pred mode (Y)", INTRA_MODE_NAMES_LUMA);
++  intraPredModeLuma.description =
++      "Intra prediction mode Luma (Y), with the angle delta and the prediction direction";
+   statisticsData.addStatType(intraPredModeLuma);
+ 
+-  stats::StatisticsType intraPredModeChroma(
+-      5, "intra pred mode (UV)", ColorMapper({0, 12}, PredefinedType::Jet));
+-  intraPredModeChroma.description = "Intra prediction mode Chroma (UV)";
+-  intraPredModeChroma.setMappingValues({"DC_PRED",
+-                                        "VERT_PRED",
+-                                        "HOR_PRED",
+-                                        "DIAG_DOWN_LEFT_PRED",
+-                                        "DIAG_DOWN_RIGHT_PRED",
+-                                        "VERT_RIGHT_PRED",
+-                                        "HOR_DOWN_PRED",
+-                                        "HOR_UP_PRED",
+-                                        "VERT_LEFT_PRED",
+-                                        "SMOOTH_PRED",
+-                                        "SMOOTH_V_PRED",
+-                                        "SMOOTH_H_PRED",
+-                                        "PAETH_PRED"});
+-
++  auto intraModeNamesChroma = INTRA_MODE_NAMES_LUMA;
++  intraModeNamesChroma.pop_back(); // no CFL_PRED for chroma
++  auto intraPredModeChroma = buildIntraType(5, "intra pred mode (UV)", intraModeNamesChroma);
++  intraPredModeChroma.description =
++      "Intra prediction mode Chroma (UV), with the angle delta and the prediction direction";
+   statisticsData.addStatType(intraPredModeChroma);
+ 
+-
+-
+-  stats::StatisticsType intraAngleDeltaLuma(
+-      8, "intra angle delta (Y)", ColorMapper({-3, 4}, PredefinedType::Col3_bblg));
+-  intraAngleDeltaLuma.description =
+-      "Offset to be applied to the intra prediction angle specified by the prediction mode";
+-  statisticsData.addStatType(intraAngleDeltaLuma);
+-
+-  stats::StatisticsType intraAngleDeltaChroma(
+-      9, "intra angle delta (UV)", ColorMapper({-3, 4}, PredefinedType::Col3_bblg));
+-  intraAngleDeltaChroma.description =
+-      "Offset to be applied to the intra prediction angle specified by the prediction mode";
+-  statisticsData.addStatType(intraAngleDeltaChroma);
+-
+-  stats::StatisticsType intraDirLuma(10, "Intra direction luma", 4);
+-  intraDirLuma.description = "Intra prediction direction luma";
+-  statisticsData.addStatType(intraDirLuma);
+-
+-  stats::StatisticsType intraDirChroma(11, "Intra direction chroma", 4);
+-  intraDirChroma.description = "Intra prediction direction chroma";
+-  statisticsData.addStatType(intraDirChroma);
+-
+   stats::StatisticsType chromaFromLumaAlphaU(
+       12, "chroma from luma alpha (U)", ColorMapper({-128, 128}, PredefinedType::Col3_bblg));
+   chromaFromLumaAlphaU.description =
+@@ -959,16 +977,13 @@ void decoderDav1d::parseBlockPartition(Av1Block       *blockData,
+ 
+   if (isIntra)
+   {
+-    // Set the intra pred mode luma/chrmoa (ID 4, 5)
+-    this->statisticsData->at(4).addBlockValue(cbPosX, cbPosY, cbWidth, cbHeight, b.y_mode);
+-    this->statisticsData->at(5).addBlockValue(cbPosX, cbPosY, cbWidth, cbHeight, b.uv_mode);
+-
+-
+-    // Set the intra angle delta luma/chroma (ID 8, 9)
+-    this->statisticsData->at(8).addBlockValue(cbPosX, cbPosY, cbWidth, cbHeight, b.y_angle);
+-    this->statisticsData->at(9).addBlockValue(cbPosX, cbPosY, cbWidth, cbHeight, b.uv_angle);
++    // Set the intra pred mode incl. the angle delta luma/chroma (ID 4, 5)
++    this->statisticsData->at(4).addBlockValue(
++        cbPosX, cbPosY, cbWidth, cbHeight, intraModeAndDeltaToValue(b.y_mode, b.y_angle));
++    this->statisticsData->at(5).addBlockValue(
++        cbPosX, cbPosY, cbWidth, cbHeight, intraModeAndDeltaToValue(b.uv_mode, b.uv_angle));
+ 
+-    // Calculate and set the intra prediction direction luma/chroma (ID 10, 11)
++    // The prediction direction is vector data of those same types (ID 4, 5)
+     for (int yc = 0; yc < 2; yc++)
+     {
+       int           angleDelta = (yc == 0) ? b.y_angle : b.uv_angle;
+@@ -981,7 +996,7 @@ void decoderDav1d::parseBlockPartition(Av1Block       *blockData,
+       int vecX       = (float)vec.first * blockScale / 4;
+       int vecY       = (float)vec.second * blockScale / 4;
+ 
+-      this->statisticsData->at(10 + yc).addBlockVector(
++      this->statisticsData->at(4 + yc).addBlockVector(
+           cbPosX, cbPosY, cbWidth, cbHeight, vecX, vecY);
+     }
+ 
+diff --git a/YUViewLib/src/statistics/StatisticsData.cpp b/YUViewLib/src/statistics/StatisticsData.cpp
+index fa2b369a..c1ce1b8a 100644
+--- a/YUViewLib/src/statistics/StatisticsData.cpp
++++ b/YUViewLib/src/statistics/StatisticsData.cpp
+@@ -470,6 +470,32 @@ BlockInfo StatisticsData::getBlockInfoAt(const QPoint &pos) const
+     return a.width() * a.height() > b.width() * b.height();
+   });
+ 
++  /* Pairs that describe one thing per reference list are folded into a single row, so the pane shows
++   * "L0 ...  L1 ..." instead of two rows that the reader has to line up. Only the presentation is
++   * merged: the two statistics types stay separate so their overlays keep their own colour (the
++   * motion vectors are drawn red for L0 and blue for L1, which one shared type could not do).
++   */
++  const auto mergeReferencePair =
++      [&info](int typeIDL0, int typeIDL1, const QString &mergedName) {
++        const auto find = [&info](int typeID) {
++          return std::find_if(info.entries.begin(),
++                              info.entries.end(),
++                              [typeID](const BlockInfoEntry &e) { return e.typeID == typeID; });
++        };
++        auto l0 = find(typeIDL0);
++        if (l0 == info.entries.end())
++          return;
++        l0->typeName  = mergedName;
++        l0->valueText = "L0 " + l0->valueText;
++        if (auto l1 = find(typeIDL1); l1 != info.entries.end())
++        {
++          l0->valueText += "  L1 " + l1->valueText;
++          info.entries.erase(l1);
++        }
++      };
++  mergeReferencePair(14, 15, "ref frame index");
++  mergeReferencePair(24, 25, "Motion Vector");
++
+   std::stable_sort(info.entries.begin(),
+                    info.entries.end(),
+                    [](const BlockInfoEntry &a, const BlockInfoEntry &b) {
+diff --git a/YUViewLib/src/statistics/StatisticsType.cpp b/YUViewLib/src/statistics/StatisticsType.cpp
+index bc68925f..4649e08a 100644
+--- a/YUViewLib/src/statistics/StatisticsType.cpp
++++ b/YUViewLib/src/statistics/StatisticsType.cpp
+@@ -236,6 +236,8 @@ QString StatisticsType::getValueTxt(int val) const
+   if (valMap.count(val) > 0)
+   {
+     // A text for this value van be shown.
++    if (!this->showRawValueInText)
++      return valMap.at(val);
+     return QString("%1 (%2)").arg(valMap.at(val)).arg(val);
+   }
+   return QString("%1").arg(val);
+diff --git a/YUViewLib/src/statistics/StatisticsType.h b/YUViewLib/src/statistics/StatisticsType.h
+index 252f2a58..abebd7cd 100644
+--- a/YUViewLib/src/statistics/StatisticsType.h
++++ b/YUViewLib/src/statistics/StatisticsType.h
+@@ -95,6 +95,13 @@ public:
+   QString getValueTxt(int val) const;
+ 
+   void    setMappingValues(std::vector<QString> values);
++
++  /* getValueTxt() normally appends the raw value, which is what one wants when the value is the thing
++   * being reported. Set this false when the value is an internal encoding that carries no meaning on
++   * its own - the merged intra prediction type packs the mode and the angle delta into one number, so
++   * printing it would only mislead.
++   */
++  bool showRawValueInText{true};
+   QString getMappedValue(int typeID) const;
+ 
+   // Is this statistics type rendered and what is the alpha value?
