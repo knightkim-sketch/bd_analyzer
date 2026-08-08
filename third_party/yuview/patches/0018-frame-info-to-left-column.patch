@@ -1,0 +1,36 @@
+diff --git a/YUViewLib/src/ui/Mainwindow.cpp b/YUViewLib/src/ui/Mainwindow.cpp
+index cc2bd326..9f7075f0 100644
+--- a/YUViewLib/src/ui/Mainwindow.cpp
++++ b/YUViewLib/src/ui/Mainwindow.cpp
+@@ -258,6 +258,18 @@ MainWindow::MainWindow(bool useAlternativeSources, QWidget *parent) : QMainWindo
+                                     QT_VERSION);
+   }
+ 
++  /* Frame Info started out on the right and was moved to the left, directly above the pane that shows
++   * the block syntax, so the pixel analysis and the syntax of the same block sit together. A saved
++   * window state still places it on the right, so move it once and remember that we did - after that
++   * the user's own arrangement is left alone.
++   */
++  if (!settings.value("mainWindow/frameInfoMovedLeft", false).toBool())
++  {
++    this->addDockWidget(Qt::LeftDockWidgetArea, ui.frameInfoDock);
++    this->splitDockWidget(ui.frameInfoDock, ui.cachingInfoDock, Qt::Vertical);
++    settings.setValue("mainWindow/frameInfoMovedLeft", true);
++  }
++
+   connect(ui.openButton, &QPushButton::clicked, this, &MainWindow::showFileOpenDialog);
+ 
+   // Connect signals from the separate window
+diff --git a/YUViewLib/ui/mainwindow.ui b/YUViewLib/ui/mainwindow.ui
+index 6fa74f8f..a05f2f77 100644
+--- a/YUViewLib/ui/mainwindow.ui
++++ b/YUViewLib/ui/mainwindow.ui
+@@ -291,7 +291,7 @@
+     <string>Frame Info</string>
+    </property>
+    <attribute name="dockWidgetArea">
+-    <number>2</number>
++    <number>1</number>
+    </attribute>
+    <widget class="FrameInfoWidget" name="frameInfoWidget"/>
+   </widget>
