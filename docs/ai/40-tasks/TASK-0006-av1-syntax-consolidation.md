@@ -76,12 +76,28 @@ MV 오버레이는 변경 전과 동일(빨강 3046px / 파랑 789px).
    - ⓑ `BitstreamAnalysisWidget` 의 파서를 공용으로 끌어올려 두 뷰가 같은 모델을 공유한다
      (권장. 다만 소유권/수명 정리가 필요)
    - ⓒ Info 탭을 열면 Bitstream Analysis 파싱을 트리거하고 결과를 공유한다
-2. **`TreeItem` 에는 프레임 번호도 파일 위치도 없다** (`parser/common/TreeItem.h`:
+2. **`TreeItem` 자체에는 프레임 번호도 파일 위치도 없다** (`parser/common/TreeItem.h`:
    name / value / coding / code / meaning / streamIndex / error 뿐).
-   → **E 의 "프레임으로 seek" 은 이 트리만으로는 불가능하다.** POC 나 프레임 인덱스를
-   어디서 얻을지 먼저 정해야 한다. 후보: `ParserAnnexB` 계열이 들고 있는 프레임 목록
-   (`getFrameIdxRange` / POC 리스트) 또는 OBU 파싱 시 프레임 경계를 별도로 기록.
-   **D 를 시작하기 전에 이것부터 확인할 것.**
+   → **해결됨(구조로):** OBU 는 독립적으로 있는 게 아니라 **패킷 트리 아이템의 자식**이다.
+   `ParserAVFormat::parseAVPacket()` 이 패킷마다 `itemTree` 를 만들고
+   그 아래에서 `obuParser->parseAndAddOBU(obuID, data, itemTree, ...)` 를 돈다
+   (`ParserAVFormat.cpp:419-432`). 패킷 아이템은 자식으로
+   `Global AVPacket Count`(= packetID), `pts`, `dts`, `flag_keyframe` 등을 갖는다
+   (`ParserAVFormat.cpp:384-395`).
+   → OBU 노드에서 **부모를 타고 올라가 패킷 아이템**을 찾고 그 자식에서 값을 읽으면 된다.
+
+3. **하지만 패킷 인덱스 ≠ 프레임 인덱스다.** `Global AVPacket Count` 는 디코드 순서이고
+   모든 스트림을 통틀어 센다. YUView 의 프레임 인덱스는 비디오 스트림의 표시 순서다.
+   기존 매핑은 **없다** — `FileSourceFFmpegFile` 에는 `nrFrames` 와 DTS 기반 seek 경로만 있고
+   packet→frame 표는 없다 (`FileSourceFFmpegFile.h:183`).
+   E-1 을 정확히 하려면 셋 중 하나를 정해야 한다:
+   - ⓐ 파싱 중 **비디오 스트림 패킷만 세는 카운터**를 따로 두고 그 값을 패킷 아이템에 넣는다.
+     재정렬(B-frame 등)이 없으면 프레임 인덱스와 일치한다. AV1 은 show_existing_frame 때문에
+     완전히 일치한다는 보장은 없다.
+   - ⓑ 패킷의 **pts 를 프레임 인덱스로 환산**한다 (timeBase + framerate). 표시 순서라 더 정확.
+   - ⓒ `show_frame` / `show_existing_frame` 을 OBU 파싱에서 읽어 표시 프레임을 직접 센다.
+     가장 정확하지만 파서 수정이 필요하다.
+   **추측으로 구현하면 엉뚱한 프레임으로 점프한다. 반드시 먼저 결정할 것.**
 
 ## E. OBU double-click → 이동 (둘 다)
 
@@ -89,10 +105,24 @@ MV 오버레이는 변경 전과 동일(빨강 3046px / 파랑 789px).
 1. 해당 OBU 가 속한 **프레임으로 seek** (`PlaybackController::setCurrentFrame` 계열)
 2. **Bitstream Analysis 탭의 파스 트리**에서 해당 노드로 스크롤 + 선택
 
-## 작업 순서 권장
+## 작업 순서 권장 (갱신)
 
-1. **B** (한 세션) — B-2 의 두 "확인 지점" 을 먼저 코드로 확인하고 시작할 것
-2. **D + E** (한 세션) — 파서 트리 연동이라 분량이 크다
+B 는 끝났다. 남은 것을 크기 순으로 자르면:
+
+1. **E-1 먼저** — double-click seek 는 **Bitstream Analysis 탭 안에서** 구현할 수 있다.
+   거기엔 이미 OBU 트리와 파서가 있으므로 **파서 배선이 전혀 필요 없다** (제약 1 을 우회).
+   `ui.dataTreeView` 에 `doubleClicked` 를 연결하고, 노드에서 부모 패킷을 찾아 프레임을 구해
+   `PlaybackController` 로 seek 한다. 위 3번 결정만 하면 바로 착수 가능.
+2. **E-2** — 같은 탭 안이면 "노드로 스크롤+선택" 은 자기 자신이라 의미가 없다.
+   D(Info 탭) 가 생긴 뒤에 의미가 생기므로 D 와 함께 한다.
+3. **D** — Info 탭에 OBU 목록. 제약 1(파서가 Bitstream Analysis 가 보일 때만 돈다) 때문에
+   가장 크다. ⓑ(파서를 공용으로 끌어올림) 를 권장.
+
+## 다음 세션 착수 지점
+
+- 결정 필요: 위 "제약 3" 의 ⓐ/ⓑ/ⓒ 중 하나 (프레임 인덱스를 어떻게 구할지)
+- 그 다음 파일: `ui/widgets/BitstreamAnalysisWidget.cpp` (트리 뷰 + 파서 소유)
+  / `parser/AVFormat/ParserAVFormat.cpp:384-432` (패킷·OBU 아이템 생성)
 
 ## 검증
 
