@@ -1257,7 +1257,7 @@ index abebd7cd..b197ee05 100644
    // These are corresponding to the controls in the properties panel
    bool render{};
 diff --git a/YUViewLib/src/ui/Mainwindow.cpp b/YUViewLib/src/ui/Mainwindow.cpp
-index 8ee64696..a16a7bed 100644
+index 8ee64696..fcac1e03 100644
 --- a/YUViewLib/src/ui/Mainwindow.cpp
 +++ b/YUViewLib/src/ui/Mainwindow.cpp
 @@ -37,10 +37,12 @@
@@ -1318,7 +1318,7 @@ index 8ee64696..a16a7bed 100644
    connect(ui.playlistTreeWidget,
            &PlaylistTreeWidget::selectionRangeChanged,
            ui.playbackController,
-@@ -214,6 +240,56 @@ MainWindow::MainWindow(bool useAlternativeSources, QWidget *parent) : QMainWindo
+@@ -214,6 +240,55 @@ MainWindow::MainWindow(bool useAlternativeSources, QWidget *parent) : QMainWindo
            &splitViewWidget::viewFrameChanged,
            ui.frameInfoWidget,
            &FrameInfoWidget::setCurrentFrame);
@@ -1331,7 +1331,6 @@ index 8ee64696..a16a7bed 100644
 +   * from. It has to hang off the properties container rather than off an item's properties widget,
 +   * because those are created and destroyed with the playlist selection.
 +   */
-+  ui.propertiesWidget->addTopSection(ui.frameInfoWidget->getHistogramSection());
 +  /* The pixel analysis reads the decoded samples of the displayed frame, which the view only loads
 +   * when it is drawing them - at a high zoom factor. So follow the Frame Info dock: while it is open
 +   * the samples are loaded for every frame, and when it is closed nothing is paid for.
@@ -1375,6 +1374,32 @@ index 8ee64696..a16a7bed 100644
    connect(ui.playlistTreeWidget,
            &PlaylistTreeWidget::selectedItemChanged,
            ui.playbackController,
+@@ -267,16 +342,17 @@ MainWindow::MainWindow(bool useAlternativeSources, QWidget *parent) : QMainWindo
+                                     QT_VERSION);
+   }
+ 
+-  /* Frame Info started out on the right and was moved to the left, directly above the pane that shows
+-   * the block syntax, so the pixel analysis and the syntax of the same block sit together. A saved
+-   * window state still places it on the right, so move it once and remember that we did - after that
+-   * the user's own arrangement is left alone.
++  /* Frame Info holds the frame's luma histogram and belongs at the bottom right, under the item
++   * properties. Its block statistics table was moved to the left column earlier, next to the block
++   * syntax; that is a section of its own and stays there. Done once and remembered, so an
++   * arrangement the user makes afterwards is left alone - and keyed separately from the older
++   * "moved left" migration, which would otherwise have to be undone.
+    */
+-  if (!settings.value("mainWindow/frameInfoMovedLeft", false).toBool())
++  if (!settings.value("mainWindow/frameInfoMovedBottomRight", false).toBool())
+   {
+-    this->addDockWidget(Qt::LeftDockWidgetArea, ui.frameInfoDock);
+-    this->splitDockWidget(ui.frameInfoDock, ui.cachingInfoDock, Qt::Vertical);
+-    settings.setValue("mainWindow/frameInfoMovedLeft", true);
++    this->addDockWidget(Qt::RightDockWidgetArea, ui.frameInfoDock);
++    this->splitDockWidget(ui.propertiesDock, ui.frameInfoDock, Qt::Vertical);
++    settings.setValue("mainWindow/frameInfoMovedBottomRight", true);
+   }
+ 
+   connect(ui.openButton, &QPushButton::clicked, this, &MainWindow::showFileOpenDialog);
 @@ -334,6 +410,76 @@ QWidget *MainWindow::getMainWindow()
    return nullptr;
  }
@@ -1588,10 +1613,10 @@ index 58f32885..4f80e9a0 100644
  
  private:
 diff --git a/YUViewLib/src/ui/widgets/FrameInfoWidget.cpp b/YUViewLib/src/ui/widgets/FrameInfoWidget.cpp
-index 27a825d1..41b7f284 100644
+index 27a825d1..adae9a2d 100644
 --- a/YUViewLib/src/ui/widgets/FrameInfoWidget.cpp
 +++ b/YUViewLib/src/ui/widgets/FrameInfoWidget.cpp
-@@ -87,12 +87,28 @@ FrameInfoWidget::FrameInfoWidget(QWidget *parent) : QWidget(parent)
+@@ -87,12 +87,32 @@ FrameInfoWidget::FrameInfoWidget(QWidget *parent) : QWidget(parent)
    this->blockTree.setFocusPolicy(Qt::NoFocus);
    this->blockTree.header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
  
@@ -1605,7 +1630,9 @@ index 27a825d1..41b7f284 100644
 +  blockLayout->addWidget(&this->blockLabel);
 +  blockLayout->addWidget(&this->blockTree, 1);
 +
-+  // The histogram is shown above the statistics overlay list in the properties panel.
++  /* The histogram stays in this pane, which sits at the bottom right. Kept in a section widget of
++   * its own anyway, so it can be placed elsewhere without touching how it is filled.
++   */
 +  auto *histogramLayout = new QVBoxLayout(&this->histogramSection);
 +  histogramLayout->setContentsMargins(0, 0, 0, 0);
 +  histogramLayout->addWidget(&this->histogramLabel);
@@ -1617,14 +1644,16 @@ index 27a825d1..41b7f284 100644
 -  this->layout.addWidget(&this->histogram);
 -  this->layout.addWidget(&this->blockLabel);
 -  this->layout.addWidget(&this->blockTree, 1);
-+  /* Both display sections were moved elsewhere, so nothing here can take up the slack in a tall dock.
-+   * Without an explicit stretch the spare height gets spread as gaps around the check box.
++  this->layout.addWidget(&this->histogramSection);
++  /* The histogram is vertically Fixed at its sizeHint and the block statistics moved out, so nothing
++   * here can take up the slack in a tall dock. Without an explicit stretch the spare height gets
++   * spread as gaps between the rows instead of collecting at the bottom.
 +   */
 +  this->layout.addStretch(1);
    this->setLayout(&this->layout);
  
    this->showBlockMessage("Click in the video to analyze a block.");
-@@ -137,7 +153,14 @@ void FrameInfoWidget::setCurrentFrame(playlistItem *item, int frameIdx)
+@@ -137,7 +157,14 @@ void FrameInfoWidget::setCurrentFrame(playlistItem *item, int frameIdx)
    if (this->selectedItem != item)
      // A different item: the position that was clicked in the old one means nothing here.
      this->selectedPos.reset();
@@ -1640,7 +1669,7 @@ index 27a825d1..41b7f284 100644
      return;
    this->setItem(item);
    this->selectedFrameIdx = frameIdx;
-@@ -148,8 +171,9 @@ void FrameInfoWidget::currentSelectedItemsChanged(playlistItem *item1, playlistI
+@@ -148,8 +175,9 @@ void FrameInfoWidget::currentSelectedItemsChanged(playlistItem *item1, playlistI
  {
    if (this->selectedItem && this->selectedItem != item1 && this->selectedItem != item2)
    {
@@ -1652,7 +1681,7 @@ index 27a825d1..41b7f284 100644
    }
    // The grid size is a property of the newly selected item.
    if (item1)
-@@ -180,6 +204,9 @@ void FrameInfoWidget::updateHistogram()
+@@ -180,6 +208,9 @@ void FrameInfoWidget::updateHistogram()
      return;
    }
    const auto bins = item->getLumaHistogram(this->selectedFrameIdx);
@@ -2028,47 +2057,6 @@ index 00000000..53f0f080
 +  int                    selectedFrameIdx{-1};
 +  bool                   hasSelectedPoint{};
 +};
-diff --git a/YUViewLib/src/ui/widgets/PropertiesWidget.cpp b/YUViewLib/src/ui/widgets/PropertiesWidget.cpp
-index bea51697..544bcfc6 100644
---- a/YUViewLib/src/ui/widgets/PropertiesWidget.cpp
-+++ b/YUViewLib/src/ui/widgets/PropertiesWidget.cpp
-@@ -48,6 +48,16 @@ PropertiesWidget::PropertiesWidget(QWidget *parent) : QWidget(parent), topLayout
-   stack.setCurrentWidget(&emptyWidget);
- }
- 
-+void PropertiesWidget::addTopSection(QWidget *section)
-+{
-+  if (!section)
-+    return;
-+
-+  section->setParent(this);
-+  // Above the stack, so it stays put while the item's properties are swapped in and out below it.
-+  topLayout.insertWidget(0, section);
-+}
-+
- void PropertiesWidget::currentSelectedItemsChanged(playlistItem *item1, playlistItem *)
- {
-   // The properties are always just shown for the first item
-diff --git a/YUViewLib/src/ui/widgets/PropertiesWidget.h b/YUViewLib/src/ui/widgets/PropertiesWidget.h
-index f4dc9472..26c17213 100644
---- a/YUViewLib/src/ui/widgets/PropertiesWidget.h
-+++ b/YUViewLib/src/ui/widgets/PropertiesWidget.h
-@@ -47,6 +47,15 @@ class PropertiesWidget : public QWidget
- public:
-   PropertiesWidget(QWidget *parent = 0);
- 
-+public:
-+  /* Show a widget above the item's properties, and so above the statistics overlay list. The list
-+   * itself lives in the item's own properties widget, which is created and destroyed as the playlist
-+   * selection changes - putting a shared widget in there would tie its lifetime to an item. This
-+   * container is part of the main window and outlives every item, which is why the histogram goes
-+   * here instead.
-+   */
-+  void addTopSection(QWidget *section);
-+
- public slots:
-   // Accept the signal from the playlisttreewidget that signals if a new (or two) item was selected.
-   // This function will get and show the properties from the given item1.
 diff --git a/YUViewLib/src/ui/widgets/VideoCacheInfoWidget.cpp b/YUViewLib/src/ui/widgets/VideoCacheInfoWidget.cpp
 index 6fe9621c..33a340c3 100644
 --- a/YUViewLib/src/ui/widgets/VideoCacheInfoWidget.cpp
