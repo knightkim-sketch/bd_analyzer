@@ -142,6 +142,8 @@ else
     echo "  SKIP  12-raw-yuv-pixel-analysis (raw YUV 생성 실패)"
     ((skip_count++))
 fi
+# 히스토그램/블록 통계가 표시 중인 프레임을 따라가는지 (전체 창을 띄워서 검사한다).
+run_test "$ROOT/tests/regression/17-frame-info-follows-frame.cpp"      "$STREAM"
 
 echo
 echo "== 프레임 비트스트림 덤프 (hexdump 패널) =="

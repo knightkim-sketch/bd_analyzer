@@ -1257,7 +1257,7 @@ index abebd7cd..b197ee05 100644
    // These are corresponding to the controls in the properties panel
    bool render{};
 diff --git a/YUViewLib/src/ui/Mainwindow.cpp b/YUViewLib/src/ui/Mainwindow.cpp
-index 8ee64696..f25b9f36 100644
+index 8ee64696..a16a7bed 100644
 --- a/YUViewLib/src/ui/Mainwindow.cpp
 +++ b/YUViewLib/src/ui/Mainwindow.cpp
 @@ -37,10 +37,12 @@
@@ -1282,17 +1282,22 @@ index 8ee64696..f25b9f36 100644
  MainWindow::MainWindow(bool useAlternativeSources, QWidget *parent) : QMainWindow(parent)
  {
    Q_INIT_RESOURCE(images);
-@@ -61,6 +65,9 @@ MainWindow::MainWindow(bool useAlternativeSources, QWidget *parent) : QMainWindo
+@@ -61,6 +65,14 @@ MainWindow::MainWindow(bool useAlternativeSources, QWidget *parent) : QMainWindo
    qRegisterMetaType<indexRange>("indexRange");
  
    ui.setupUi(this);
 +  ui.itemViewSplitter->setStretchFactor(0, 2);
 +  ui.itemViewSplitter->setStretchFactor(1, 1);
++  /* Both run once the window has been shown and laid out - before that the heights they measure are
++   * meaningless. The dock layout is restored further down in this constructor, which has happened by
++   * the time these fire.
++   */
 +  QTimer::singleShot(0, this, &MainWindow::clampInitialItemDumpPane);
++  QTimer::singleShot(0, this, &MainWindow::clampInitialLeftDocks);
  
    // Create the update handler
    updater.reset(new updateHandler(this, useAlternativeSources));
-@@ -120,6 +127,20 @@ MainWindow::MainWindow(bool useAlternativeSources, QWidget *parent) : QMainWindo
+@@ -120,6 +132,20 @@ MainWindow::MainWindow(bool useAlternativeSources, QWidget *parent) : QMainWindo
            &FileInfoWidget::obuTreeIndexActivated,
            ui.bitstreamAnalysis,
            &BitstreamAnalysisWidget::seekToPacketTreeIndex);
@@ -1313,7 +1318,7 @@ index 8ee64696..f25b9f36 100644
    connect(ui.playlistTreeWidget,
            &PlaylistTreeWidget::selectionRangeChanged,
            ui.playbackController,
-@@ -214,6 +235,45 @@ MainWindow::MainWindow(bool useAlternativeSources, QWidget *parent) : QMainWindo
+@@ -214,6 +240,56 @@ MainWindow::MainWindow(bool useAlternativeSources, QWidget *parent) : QMainWindo
            &splitViewWidget::viewFrameChanged,
            ui.frameInfoWidget,
            &FrameInfoWidget::setCurrentFrame);
@@ -1327,6 +1332,17 @@ index 8ee64696..f25b9f36 100644
 +   * because those are created and destroyed with the playlist selection.
 +   */
 +  ui.propertiesWidget->addTopSection(ui.frameInfoWidget->getHistogramSection());
++  /* The pixel analysis reads the decoded samples of the displayed frame, which the view only loads
++   * when it is drawing them - at a high zoom factor. So follow the Frame Info dock: while it is open
++   * the samples are loaded for every frame, and when it is closed nothing is paid for.
++   */
++  const auto followFrameInfoDock = [this] {
++    const auto wanted = ui.frameInfoDock->isVisible();
++    ui.displaySplitView->setRawValuesRequested(wanted);
++    separateViewWindow.splitView.setRawValuesRequested(wanted);
++  };
++  connect(ui.frameInfoDock, &QDockWidget::visibilityChanged, this, followFrameInfoDock);
++  followFrameInfoDock();
 +
 +  connect(ui.playlistTreeWidget,
 +          &PlaylistTreeWidget::selectionRangeChanged,
@@ -1359,7 +1375,7 @@ index 8ee64696..f25b9f36 100644
    connect(ui.playlistTreeWidget,
            &PlaylistTreeWidget::selectedItemChanged,
            ui.playbackController,
-@@ -334,6 +394,29 @@ QWidget *MainWindow::getMainWindow()
+@@ -334,6 +410,76 @@ QWidget *MainWindow::getMainWindow()
    return nullptr;
  }
  
@@ -1369,6 +1385,53 @@ index 8ee64696..f25b9f36 100644
 +  const auto maxDump     = std::max(1, totalHeight / 3);
 +  const auto dumpHeight  = std::min(maxDump, 220);
 +  ui.itemViewSplitter->setSizes({std::max(1, totalHeight - dumpHeight), dumpHeight});
++}
++
++void MainWindow::clampInitialLeftDocks()
++{
++  const auto inLeftColumn = [this](QDockWidget *dock) {
++    return dock && dock->isVisible() && !dock->isFloating() &&
++           this->dockWidgetArea(dock) == Qt::LeftDockWidgetArea;
++  };
++
++  // The pane that must keep its room. Nothing to balance against if it is not there.
++  auto *below = ui.cachingInfoDock;
++  if (!inLeftColumn(below) || !inLeftColumn(ui.fileInfoDock))
++    return;
++
++  QList<QDockWidget *> above;
++  for (auto *dock : {ui.playlistDockWidget, ui.fileInfoDock})
++    if (inLeftColumn(dock))
++      above.push_back(dock);
++
++  auto aboveHeight = 0;
++  for (auto *dock : above)
++    aboveHeight += dock->height();
++
++  /* Measured rather than assumed: what sits between the top of the window and the bottom of the file
++   * info pane also includes the menu bar and the dock separators.
++   */
++  const auto infoBottom =
++      ui.fileInfoDock->mapTo(this, QPoint(0, ui.fileInfoDock->height())).y();
++  const auto chrome = infoBottom - aboveHeight;
++  const auto target = this->height() / 2 - chrome;
++  if (aboveHeight <= target || target <= 0)
++    return;
++
++  // Shrink the panes above proportionally and hand what they give up to the pane below.
++  constexpr auto MIN_DOCK_HEIGHT = 60;
++  QList<int>     sizes;
++  auto           freed = 0;
++  for (auto *dock : above)
++  {
++    const auto height = std::max(MIN_DOCK_HEIGHT, dock->height() * target / aboveHeight);
++    freed += dock->height() - height;
++    sizes.push_back(height);
++  }
++  above.push_back(below);
++  sizes.push_back(below->height() + freed);
++
++  this->resizeDocks(above, sizes, Qt::Vertical);
 +}
 +
 +void MainWindow::revealItemDumpPane()
@@ -1390,18 +1453,55 @@ index 8ee64696..f25b9f36 100644
  {
    ui.playlistTreeWidget->loadFiles(files);
 diff --git a/YUViewLib/src/ui/Mainwindow.h b/YUViewLib/src/ui/Mainwindow.h
-index dc7eba88..87578c39 100644
+index dc7eba88..bff55acb 100644
 --- a/YUViewLib/src/ui/Mainwindow.h
 +++ b/YUViewLib/src/ui/Mainwindow.h
-@@ -154,6 +154,8 @@ private:
+@@ -154,6 +154,14 @@ private:
  
    void showAboutHelp(bool about);
    void updateSettings();
 +  void clampInitialItemDumpPane();
++  /* Keep the file info pane in the left column from reaching below the middle of the window. The
++   * panes under it hold the block syntax and the block statistics, which is what one reads while
++   * analyzing, and a restored window state could leave them a sliver. Only ever shrinks, so an
++   * arrangement that already fits is left alone.
++   */
++  void clampInitialLeftDocks();
 +  void revealItemDumpPane();
  
    void performanceTest();
  
+diff --git a/YUViewLib/src/ui/views/SplitViewWidget.h b/YUViewLib/src/ui/views/SplitViewWidget.h
+index 7c1df297..c6175110 100644
+--- a/YUViewLib/src/ui/views/SplitViewWidget.h
++++ b/YUViewLib/src/ui/views/SplitViewWidget.h
+@@ -111,9 +111,17 @@ public:
+   // Raw values are shown if the zoom factor is high enough or if the zoom box is shown.
+   bool showRawData()
+   {
+-    return this->zoomFactor >= SPLITVIEW_DRAW_VALUES_ZOOMFACTOR || this->drawZoomBox;
++    return this->zoomFactor >= SPLITVIEW_DRAW_VALUES_ZOOMFACTOR || this->drawZoomBox ||
++           this->rawValuesRequested;
+   }
+ 
++  /* Ask for the displayed frame's raw samples to be loaded even when they are not being drawn.
++   * They are what the pixel analysis reads (the luma histogram and the per block statistics), and
++   * without this they are only ever loaded for a frame that happened to be shown zoomed in - which
++   * left the histogram stuck on whichever frame was loaded first.
++   */
++  void setRawValuesRequested(bool requested) { this->rawValuesRequested = requested; }
++
+   // Test the drawing speed with the currently selected item
+   void testDrawingSpeed();
+ 
+@@ -259,6 +267,7 @@ protected:
+ 
+   // The zoom box(es)
+   bool   drawZoomBox{false};     //!< If set to true, the paint event will draw the zoom box(es)
++  bool   rawValuesRequested{false}; //!< See setRawValuesRequested()
+   QPoint zoomBoxMousePosition;   //!< If we are drawing the zoom box(es) we have to know where the
+                                  //!< mouse currently is.
+   QColor zoomBoxBackgroundColor; //!< The color of the zoom box background (read from settings)
 diff --git a/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.cpp b/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.cpp
 index d5c740b5..3fa9344b 100644
 --- a/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.cpp
@@ -1488,7 +1588,7 @@ index 58f32885..4f80e9a0 100644
  
  private:
 diff --git a/YUViewLib/src/ui/widgets/FrameInfoWidget.cpp b/YUViewLib/src/ui/widgets/FrameInfoWidget.cpp
-index 27a825d1..55aff949 100644
+index 27a825d1..41b7f284 100644
 --- a/YUViewLib/src/ui/widgets/FrameInfoWidget.cpp
 +++ b/YUViewLib/src/ui/widgets/FrameInfoWidget.cpp
 @@ -87,12 +87,28 @@ FrameInfoWidget::FrameInfoWidget(QWidget *parent) : QWidget(parent)
@@ -1524,8 +1624,46 @@ index 27a825d1..55aff949 100644
    this->setLayout(&this->layout);
  
    this->showBlockMessage("Click in the video to analyze a block.");
+@@ -137,7 +153,14 @@ void FrameInfoWidget::setCurrentFrame(playlistItem *item, int frameIdx)
+   if (this->selectedItem != item)
+     // A different item: the position that was clicked in the old one means nothing here.
+     this->selectedPos.reset();
+-  if (this->selectedItem == item && this->selectedFrameIdx == frameIdx)
++  /* The view announces a frame change before the frame has been decoded, so the histogram usually
++   * comes up empty on the first notification. It announces the same frame again once the data is
++   * there (PlaybackController redraws the view after loading), and that repeat is the only chance to
++   * fill it - so it must not be dismissed as "nothing changed" while the histogram is still stale.
++   * Only frame 0 worked before this, because it is already decoded when the pane first refreshes.
++   */
++  if (this->selectedItem == item && this->selectedFrameIdx == frameIdx &&
++      this->histogramFrameIdx == frameIdx)
+     return;
+   this->setItem(item);
+   this->selectedFrameIdx = frameIdx;
+@@ -148,8 +171,9 @@ void FrameInfoWidget::currentSelectedItemsChanged(playlistItem *item1, playlistI
+ {
+   if (this->selectedItem && this->selectedItem != item1 && this->selectedItem != item2)
+   {
+-    this->selectedItem     = nullptr;
+-    this->selectedFrameIdx = -1;
++    this->selectedItem      = nullptr;
++    this->selectedFrameIdx  = -1;
++    this->histogramFrameIdx = -1;
+   }
+   // The grid size is a property of the newly selected item.
+   if (item1)
+@@ -180,6 +204,9 @@ void FrameInfoWidget::updateHistogram()
+     return;
+   }
+   const auto bins = item->getLumaHistogram(this->selectedFrameIdx);
++  // Remember what is actually on screen, so setCurrentFrame() knows whether a repeat notification
++  // for the same frame still has work to do.
++  this->histogramFrameIdx = bins.empty() ? -1 : this->selectedFrameIdx;
+   this->histogram.setHistogram(bins);
+   if (bins.empty())
+     this->histogram.setPlaceholderText(item->supportsPixelStatistics()
 diff --git a/YUViewLib/src/ui/widgets/FrameInfoWidget.h b/YUViewLib/src/ui/widgets/FrameInfoWidget.h
-index 00819e23..7a4edde8 100644
+index 00819e23..b7f6bc51 100644
 --- a/YUViewLib/src/ui/widgets/FrameInfoWidget.h
 +++ b/YUViewLib/src/ui/widgets/FrameInfoWidget.h
 @@ -65,6 +65,19 @@ public:
@@ -1548,7 +1686,7 @@ index 00819e23..7a4edde8 100644
  signals:
    /* The user toggled the grid. size is the item's grid size when enabling and 0 when disabling, which
     * is exactly what splitViewWidget::setRegularGridSize() takes.
-@@ -99,8 +112,14 @@ private:
+@@ -99,13 +112,21 @@ private:
  
    QVBoxLayout     layout;
    QCheckBox       gridCheckBox;
@@ -1563,6 +1701,13 @@ index 00819e23..7a4edde8 100644
    QLabel          blockLabel;
    QTreeWidget     blockTree;
  
+   QPointer<playlistItem>  selectedItem;
+   int                     selectedFrameIdx{-1};
++  //!< The frame the histogram currently shows, or -1 while it is empty. See setCurrentFrame().
++  int                     histogramFrameIdx{-1};
+   //!< Nothing until the user clicks in the view.
+   std::optional<QPoint>   selectedPos;
+   //!< The grid size the item wants, remembered so the checkbox can ask for it again.
 diff --git a/YUViewLib/src/ui/widgets/HexdumpViewerWidget.cpp b/YUViewLib/src/ui/widgets/HexdumpViewerWidget.cpp
 new file mode 100644
 index 00000000..63794458
@@ -2077,7 +2222,7 @@ index 870cac11..e352681c 100644
  
    bool isDiffReady() const { return this->diffReady; }
 diff --git a/YUViewLib/ui/mainwindow.ui b/YUViewLib/ui/mainwindow.ui
-index a05f2f77..9567191a 100644
+index a05f2f77..9a3293d4 100644
 --- a/YUViewLib/ui/mainwindow.ui
 +++ b/YUViewLib/ui/mainwindow.ui
 @@ -56,10 +56,33 @@
@@ -2115,7 +2260,21 @@ index a05f2f77..9567191a 100644
        </widget>
        <widget class="BitstreamAnalysisWidget" name="bitstreamAnalysis">
         <attribute name="title">
-@@ -356,6 +379,12 @@
+@@ -235,8 +258,12 @@
+     <property name="horizontalScrollBarPolicy">
+      <enum>Qt::ScrollBarAlwaysOff</enum>
+     </property>
++    <!-- AdjustIgnored, not AdjustToContents: with AdjustToContents the scroll area demands its whole
++         content height, so the Info pane grew whenever its content did (the OBU tree arriving after
++         the background parse) and Qt then refused to shrink it back. Scrolling is what this area is
++         for, and the vertical scroll bar is already allowed. -->
+     <property name="sizeAdjustPolicy">
+-     <enum>QAbstractScrollArea::AdjustToContents</enum>
++     <enum>QAbstractScrollArea::AdjustIgnored</enum>
+     </property>
+     <property name="widgetResizable">
+      <bool>true</bool>
+@@ -356,6 +383,12 @@
     <header>ui/widgets/BitstreamAnalysisWidget.h</header>
     <container>1</container>
    </customwidget>
