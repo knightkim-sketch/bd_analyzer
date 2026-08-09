@@ -31,5 +31,9 @@ tests/data/*.av1
 # dav1d analyzer 소스 (submodule 이 아니라 shallow clone, README.md 참조) 와 그 빌드 산출물
 third_party/dav1d/upstream/
 
-# 배포 번들 (scripts/make-bin-bundle.sh 로 생성, ~86MB의 Qt/FFmpeg 사본)
-bin/
+# 배포 번들 (scripts/make-bin-bundle.sh 로 생성) 은 커밋한다. clone 만으로 바로 실행할 수 있도록.
+# 위쪽 *.so / *.so.* 규칙이 번들의 Qt/FFmpeg/dav1d 라이브러리까지 잡아버리므로 여기서 되살린다.
+!bin/**/*.so
+!bin/**/*.so.*
+# 다만 실행 중 만들어지는 디코딩 캐시는 사용자별 런타임 상태이므로 제외한다 (BDCachePaths).
+bin/.YUViewBD/
