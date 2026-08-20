@@ -54,11 +54,12 @@ bd_analyzer/
 ```bash
 ./scripts/setup-toolchain.sh     # gcc-toolset-13 + Qt 6.5.3 (aqtinstall)
 ./scripts/build.sh               # out-of-tree 빌드
-./scripts/package.sh appimage    # 배포 아티팩트
+./scripts/package.sh             # 배포 아티팩트 (rpm + tar.gz)
 ```
 
 전체 절차와 제약은 [docs/ai/00-context/constraints.md](docs/ai/00-context/constraints.md) 및
 [ADR-0002](docs/ai/20-decisions/ADR-0002-build-and-deploy.md) 참조.
+다른 머신에 설치하는 방법은 [docs/deploy/package-README.md](docs/deploy/package-README.md).
 
 ## 라이선스
 

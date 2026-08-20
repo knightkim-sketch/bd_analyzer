@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=bd_analyzer
+GenericName=Video Bitstream and YUV Analyzer
+Comment=AV1/H.264/HEVC bitstream inspection, YUV analysis and test pattern generation
+Exec=bd-analyzer %F
+Icon=bd-analyzer
+Terminal=false
+Categories=AudioVideo;Video;
+StartupNotify=true

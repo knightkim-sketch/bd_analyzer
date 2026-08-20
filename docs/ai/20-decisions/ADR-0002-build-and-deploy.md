@@ -114,6 +114,14 @@ make INSTALL_ROOT=appdir install
 
 **podman의 역할**: 로컬 빌드 대체가 아니라 **(a) Flatpak 굽기, (b) Ubuntu 22.04로 CI 재현** 용도. ubuntu 컨테이너 산출물은 glibc≥2.35라 우리 RHEL8 머신에서 못 돈다.
 
+> **구현 결과 (2026-08-20, TASK-0008)** — 1차 산출물을 **RPM 으로 변경**했다. 실제로 다른
+> 머신에서 깨진 원인은 바이너리 이식성이 아니라 대상 머신의 시스템 패키지 부재
+> (`libglvnd-*`, `xkeyboard-config`, 폰트, GL 드라이버)였고, 그것을 자동으로 해결하는 것은
+> dnf 뿐이다. AppImage 는 파일 하나로 줄여 주지만 이 문제는 그대로 남는다.
+> tar.gz 를 보조로 함께 뽑고, AppImage/Flatpak 은 필요해질 때까지 보류한다.
+> 대상은 Rocky 8 만 — CentOS 7.9 는 번들 Qt 가 `GLIBC_2.28` 을 요구해 배제했다.
+> 생성: `scripts/package.sh`, 설치 안내: `docs/deploy/package-README.md`.
+
 **배포 시 동봉**: `LICENSE.GPL3` (GPLv3 §6 대비, upstream CI도 그렇게 함), libde265 번들 시 `libde265License.txt`.
 
 ## 결과

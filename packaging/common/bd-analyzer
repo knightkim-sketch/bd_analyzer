@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# bd_analyzer launcher.
+#
+# The YUView binary is not relocatable on its own: its DT_RUNPATH still records the
+# build machine's Qt path, and Qt looks for its platform plugin under the Qt build
+# prefix. This wrapper points both at the bundle instead. LD_LIBRARY_PATH is searched
+# before DT_RUNPATH, so the bundled libraries always win.
+#
+# Works for both layouts without substitution:
+#   tar.gz - the launcher sits next to YUView, so BDA_HOME is its own directory.
+#   rpm    - /usr/bin/bd-analyzer is a symlink into the install prefix; readlink -f
+#            resolves it, so BDA_HOME becomes that prefix.
+set -u
+
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+BDA_HOME="$(dirname "$SELF")"
+
+if [[ ! -x "$BDA_HOME/YUView" ]]; then
+    echo "bd-analyzer: bundle not found next to $SELF (expected $BDA_HOME/YUView)" >&2
+    exit 1
+fi
+
+# syslib holds the X11/xcb protocol helpers. It is searched ahead of /lib64 so the
+# bundle works whether or not the target machine has the xcb-util-* packages.
+export LD_LIBRARY_PATH="$BDA_HOME/lib:$BDA_HOME/ffmpeg:$BDA_HOME/syslib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export QT_PLUGIN_PATH="$BDA_HOME/plugins"
+
+exec "$BDA_HOME/YUView" "$@"
