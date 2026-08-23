@@ -3,6 +3,11 @@
 같은 Rocky 8 머신에 이 폴더째 복사해서 실행하기 위한 파일 모음이다.
 `scripts/make-bin-bundle.sh` 로 생성한다.
 
+> **다른 머신에 배포할 때는 이 폴더를 복사하는 대신 설치형 패키지를 쓰는 것이 낫다.**
+> `scripts/package.sh` 가 이 번들을 RPM / tar.gz 로 감싸고, RPM 은 아래 "대상 머신에 필요한
+> 것" 목록을 dnf 가 자동으로 채운다 — 손으로 맞출 필요가 없어진다.
+> 설치 방법은 `docs/deploy/package-README.md`.
+
 ## 실행
 
 ```bash

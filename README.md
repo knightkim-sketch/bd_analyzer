@@ -37,7 +37,8 @@ bd_analyzer/
 ├── tools/cli/                 헤드리스 CLI (배치 분석, 리그레션)
 ├── tests/{unit,data,golden}/
 ├── cmake/                     toolchain, upstream 빌드 정의, deploy 헬퍼
-├── packaging/{appimage,flatpak,rpm,windows}/
+├── packaging/{common,rpm}/          런처·desktop 파일, RPM spec
+│   └── {appimage,flatpak,windows}/  (미사용)
 ├── scripts/                   setup-toolchain.sh, build.sh, package.sh
 └── assets/icons/
 ```
@@ -59,7 +60,44 @@ bd_analyzer/
 
 전체 절차와 제약은 [docs/ai/00-context/constraints.md](docs/ai/00-context/constraints.md) 및
 [ADR-0002](docs/ai/20-decisions/ADR-0002-build-and-deploy.md) 참조.
-다른 머신에 설치하는 방법은 [docs/deploy/package-README.md](docs/deploy/package-README.md).
+
+## 다른 머신에 설치
+
+`scripts/package.sh`가 `build/dist/`에 두 가지 산출물을 만든다. Qt·FFmpeg·dav1d 디코더가
+모두 번들되어 있어 대상 머신에 Qt를 설치하지 않아도 된다.
+
+### RPM (권장)
+
+```bash
+sudo dnf install ./bd-analyzer-<version>.el8.x86_64.rpm
+bd-analyzer                  # 빈 상태로 시작
+bd-analyzer stream.ivf       # 파일 열기
+```
+
+`dnf`가 대상 머신에 없는 시스템 라이브러리(`libglvnd-glx`, `mesa-dri-drivers`,
+`xkeyboard-config`, 폰트 등)를 함께 설치한다. 폴더 복사 방식에서 자주 났던
+"Could not load the Qt platform plugin xcb" 류의 실패가 이 단계에서 사라진다.
+`/opt/bd-analyzer/`에 설치되고 애플리케이션 메뉴에도 등록된다. 제거는 `sudo dnf remove bd-analyzer`.
+
+### tar.gz (root 권한이 없는 머신)
+
+```bash
+tar xzf bd-analyzer-<version>-linux-x86_64.tar.gz
+cd bd-analyzer-<version>
+./check-deps.sh              # 부족한 것이 있는지 먼저 확인
+./bd-analyzer stream.ivf
+```
+
+의존성을 자동으로 채워 주지 못하므로 `check-deps.sh`가 무언가를 보고하면 관리자에게
+패키지를 요청해야 한다.
+
+**대상은 Rocky/RHEL 8 (x86_64) 뿐이다.** 번들된 `libQt6Core`가 `GLIBC_2.28`을 요구하므로
+CentOS 7.x 에서는 RPM 설치가 자동으로 거부된다.
+
+자세한 안내(문제 해결, 캐시 위치, `YUView`를 직접 실행하면 안 되는 이유)는
+[docs/deploy/package-README.md](docs/deploy/package-README.md) — 이 파일이 패키지 안에
+`README.md`로 동봉된다. 패키징 구현 기록은
+[TASK-0008](docs/ai/40-tasks/TASK-0008-installable-package.md).
 
 ## 라이선스
 
