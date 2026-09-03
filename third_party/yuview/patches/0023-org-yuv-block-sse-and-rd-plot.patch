@@ -1,0 +1,1373 @@
+diff --git a/YUViewLib/src/decoder/decoderDav1d.cpp b/YUViewLib/src/decoder/decoderDav1d.cpp
+index 9c2ab5fb..94e1b71d 100644
+--- a/YUViewLib/src/decoder/decoderDav1d.cpp
++++ b/YUViewLib/src/decoder/decoderDav1d.cpp
+@@ -630,23 +630,42 @@ void decoderDav1d::fillStatisticList(stats::StatisticsData &statisticsData) cons
+ 
+   /* Superblock level values come first: they are what one looks at to see where the bitrate went,
+    * before drilling into the per block modes. The properties panel lists the types in this order.
++   *
++   * Both are drawn as an intensity ramp of one hue rather than with a rainbow map: the value is a
++   * magnitude, so "stronger means more" can be read off the picture without a legend, and a low value
++   * stays transparent so the video underneath is still visible where nothing much happens.
++   *
++   * The ramp is in the alpha channel only, which the gradient interpolates like any other component
++   * (see ColorMapper::getColor), with the colour held at full brightness. Ramping brightness *and*
++   * alpha would multiply the two and make the response quadratic - at an eighth of full scale that
++   * leaves about 1% of the intensity, which is invisible, and most values of both types sit in the
++   * lower part of their range. This way the intensity is linear in the value. The per type opacity
++   * slider in the properties panel still scales the whole thing.
+    */
+-  stats::StatisticsType sbQIndex(12, "sb_qindex", ColorMapper({0, 255}, PredefinedType::Jet));
++  stats::StatisticsType sbQIndex(
++      SB_QINDEX_TYPE_ID, "sb_qindex", ColorMapper({0, 255}, Color(255, 220, 0, 0), Color(255, 220, 0, 255)));
+   sbQIndex.description =
+       "CurrentQIndex: the quantizer index in effect for the superblock, that is the frame's base y "
+       "AC qindex plus the superblock's delta_q. Segmentation can shift the qindex further per block, "
+-      "which this does not include.";
++      "which this does not include. Drawn as amber intensity over the qindex range 0..255, so a "
++      "coarsely quantized superblock is the bright one.";
+   statisticsData.addStatType(sbQIndex);
+ 
+   /* An exact figure, unlike the per block bit ranges: a superblock's symbols are contiguous in the
+    * tile data, so the arithmetic coder's position before and after it bounds exactly its cost - the
+-   * partition tree included. The upper bound of the colour range is a display choice, not a limit;
+-   * 4096 bits per superblock is already a very expensive one.
++   * partition tree included.
++   *
++   * The upper bound is a display choice, not a limit - values above it clip to full intensity. 8192
++   * bits is 2 bits per pixel of a 64x64 superblock: measured streams keep inter frame superblocks
++   * well below that (a few hundred to ~3500 bits) while an intra frame's most expensive ones reach
++   * ~10000, so the interesting variation gets the whole ramp and only the extremes saturate.
+    */
+-  stats::StatisticsType sbBitCount(13, "sb_bitcount", ColorMapper({0, 4096}, PredefinedType::Jet));
++  stats::StatisticsType sbBitCount(
++      SB_BITCOUNT_TYPE_ID, "sb_bitcount", ColorMapper({0, 8192}, Color(0, 200, 255, 0), Color(0, 200, 255, 255)));
+   sbBitCount.description =
+       "Bits the arithmetic decoder consumed for the whole superblock, mode info and residual "
+-      "together. Every block of a superblock reports the same number.";
++      "together. Every block of a superblock reports the same number. Drawn as cyan intensity over "
++      "0..8192 bits, so an expensive superblock is the bright one; more than that clips.";
+   statisticsData.addStatType(sbBitCount);
+ 
+   /* One fixed colour per prediction class instead of a gradient, so the overlay can be read without
+@@ -1029,10 +1048,11 @@ void decoderDav1d::parseBlockPartition(Av1Block       *blockData,
+   this->statisticsData->at(3).addBlockValue(cbPosX, cbPosY, cbWidth, cbHeight, b.skip_mode);
+ 
+ #if defined(YUVIEW_DAV1D_AV1BLOCK_HAS_BITSTREAM_RANGE)
+-  // Superblock level values (ID 12, 13). Apply to intra and inter blocks alike.
+-  this->statisticsData->at(12).addBlockValue(cbPosX, cbPosY, cbWidth, cbHeight, b.sb_qindex);
+-  this->statisticsData->at(13).addBlockValue(
+-      cbPosX, cbPosY, cbWidth, cbHeight, int(b.sb_bit_count));
++  // Superblock level values. Apply to intra and inter blocks alike.
++  this->statisticsData->at(SB_QINDEX_TYPE_ID)
++      .addBlockValue(cbPosX, cbPosY, cbWidth, cbHeight, b.sb_qindex);
++  this->statisticsData->at(SB_BITCOUNT_TYPE_ID)
++      .addBlockValue(cbPosX, cbPosY, cbWidth, cbHeight, int(b.sb_bit_count));
+ #endif
+ 
+   if (isIntra)
+diff --git a/YUViewLib/src/decoder/decoderDav1d.h b/YUViewLib/src/decoder/decoderDav1d.h
+index 8746431c..eb965211 100644
+--- a/YUViewLib/src/decoder/decoderDav1d.h
++++ b/YUViewLib/src/decoder/decoderDav1d.h
+@@ -121,6 +121,12 @@ public:
+   decoderDav1d(int signalID, bool cachingDecoder = false);
+   ~decoderDav1d();
+ 
++  /* The two superblock level statistic types, named because other code has to look them up in the
++   * collected statistics - the rate/distortion plot reads the bit count. See fillStatisticList().
++   */
++  static constexpr int SB_QINDEX_TYPE_ID   = 12;
++  static constexpr int SB_BITCOUNT_TYPE_ID = 13;
++
+   void resetDecoder() override;
+ 
+   int         nrSignalsSupported() const override { return nrSignals; }
+diff --git a/YUViewLib/src/playlistitem/playlistItem.h b/YUViewLib/src/playlistitem/playlistItem.h
+index d881da16..cff36eb2 100644
+--- a/YUViewLib/src/playlistitem/playlistItem.h
++++ b/YUViewLib/src/playlistitem/playlistItem.h
+@@ -262,10 +262,57 @@ public:
+   //!< 256 bin luma histogram of the given frame. Empty when unavailable.
+   virtual std::vector<uint32_t> getLumaHistogram(int) { return {}; }
+ 
++  /* Attach a raw original (source) YUV file to this item, so that the per block statistics also report
++   * the SSE of this item's pixels against it. The file is read with this item's frame size and pixel
++   * format - it is the sequence the item was coded from, so those match. An empty path detaches.
++   *
++   * Returns false and fills error (when given) if the file cannot be used. Everything computed so far
++   * is discarded on a change, because the SSE is part of every block's record.
++   */
++  virtual bool setOriginalYUVSource(const QString &, QString *error = nullptr)
++  {
++    if (error)
++      *error = "This item has no raw YUV pixels to compare.";
++    return false;
++  }
++
++  //!< The attached original YUV file, or empty when there is none.
++  virtual QString getOriginalYUVSource() const { return {}; }
++
++  /* Which pixels the view draws for this item. Deliberately display only: the statistics, the
++   * histogram and the per block SSE keep describing the item's own pixels either way, so switching
++   * the picture to the original for a look cannot change the numbers next to it.
++   */
++  enum class DisplaySource
++  {
++    Reconstruction, //!< The item's own pixels: the decoded stream, or the raw file.
++    Original        //!< The file attached with setOriginalYUVSource().
++  };
++
++  //!< Returns false when the source cannot be shown, which is the case with no original attached.
++  virtual bool          setDisplaySource(DisplaySource) { return false; }
++  virtual DisplaySource getDisplaySource() const { return DisplaySource::Reconstruction; }
++
+   // Data shown in the Item View dump panel. Compressed items normally return bitstream packet bytes;
+   // raw YUV items can return a 2D sample grid for the block containing the selected pixel.
+   virtual DataDump getItemDataDump(const QPoint &, int, const stats::BlockInfo &) { return {}; }
+ 
++  //!< One superblock's cost in the bitstream. See getSuperblockBits().
++  struct SuperblockBits
++  {
++    QRect    rect{};
++    unsigned bits{};
++  };
++
++  /* What the bitstream spent on each superblock of the frame, one entry per superblock. Empty for an
++   * item with no bitstream, and while the statistics of that frame have not been collected - they are
++   * only collected when something asks for them (an overlay, or the block info pane).
++   *
++   * Together with the per block SSE from getPixelBlockStats() this is the rate and the distortion of
++   * the same superblock, which is what the rate/distortion plot draws.
++   */
++  virtual std::vector<SuperblockBits> getSuperblockBits(int) { return {}; }
++
+   // If you want your item to be droppable onto a difference/resample object, return true here and
+   // return a valid video handler.
+   virtual bool                 canBeUsedInProcessing() const { return false; }
+diff --git a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+index 55a00b10..0b6a6038 100644
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+@@ -641,7 +641,9 @@ void playlistItemCompressedVideo::drawItem(QPainter *painter,
+   }
+   else if (frameIdx >= range.first && frameIdx <= range.second)
+   {
+-    this->video->drawFrame(painter, frameIdx, zoomFactor, drawRawData);
++    // The original instead of the decoded picture when the user asked for it; the statistics overlay
++    // describes the bitstream either way and stays on top.
++    this->videoToDisplay(frameIdx)->drawFrame(painter, frameIdx, zoomFactor, drawRawData);
+     stats::paintStatisticsData(painter, this->statisticsData, frameIdx, zoomFactor);
+   }
+ }
+@@ -1264,6 +1266,48 @@ stats::BlockInfo playlistItemCompressedVideo::getBlockInfoAt(const QPoint &pixel
+   return info;
+ }
+ 
++std::vector<playlistItem::SuperblockBits>
++playlistItemCompressedVideo::getSuperblockBits(int frameIdx)
++{
++  if (!this->loadingDecoder || !this->loadingDecoder->statisticsSupported() ||
++      !this->loadingDecoder->statisticsEnabled())
++    return {};
++
++  const auto superblockSize = int(this->getDefaultGridSize());
++  if (superblockSize <= 0)
++    return {};
++
++  /* sb_bitcount is reported per coding block - every block of a superblock carries the superblock's
++   * total - so collapse the blocks onto the superblock grid. One entry per cell, keyed on the cell so
++   * a block reported more than once cannot add a second point.
++   */
++  std::map<std::pair<int, int>, SuperblockBits> perSuperblock;
++  {
++    std::unique_lock<std::mutex> lock(this->statisticsData.accessMutex);
++    // As in getBlockInfoAt(): the statistics can lag the displayed frame, and values from another
++    // frame would be plotted against this frame's SSE.
++    if (this->statisticsData.getFrameIndex() != frameIdx)
++      return {};
++    if (!this->statisticsData.hasDataForTypeID(decoder::decoderDav1d::SB_BITCOUNT_TYPE_ID))
++      return {};
++    for (const auto &block :
++         this->statisticsData.getFrameTypeData(decoder::decoderDav1d::SB_BITCOUNT_TYPE_ID).valueData)
++    {
++      const auto cellX = block.pos[0] / superblockSize;
++      const auto cellY = block.pos[1] / superblockSize;
++      perSuperblock[{cellX, cellY}] = SuperblockBits{
++          QRect(cellX * superblockSize, cellY * superblockSize, superblockSize, superblockSize),
++          unsigned(std::max(0, block.value))};
++    }
++  }
++
++  std::vector<SuperblockBits> result;
++  result.reserve(perSuperblock.size());
++  for (const auto &[cell, entry] : perSuperblock)
++    result.push_back(entry);
++  return result;
++}
++
+ playlistItem::DataDump
+ playlistItemCompressedVideo::getItemDataDump(const QPoint          &pixelPos,
+                                              int                    frameIdx,
+diff --git a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
+index 174a3c79..419ea293 100644
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
+@@ -89,6 +89,7 @@ public:
+   //!< The coding block grid: for AV1 the superblock size from the sequence header.
+   unsigned         getDefaultGridSize() const override { return this->getMaxBlockSize(); }
+   DataDump getItemDataDump(const QPoint &pixelPos, int frameIdx, const stats::BlockInfo &blockInfo) override;
++  std::vector<SuperblockBits> getSuperblockBits(int frameIdx) override;
+ 
+   virtual bool canBeUsedInProcessing() const override { return true; }
+ 
+diff --git a/YUViewLib/src/playlistitem/playlistItemWithVideo.cpp b/YUViewLib/src/playlistitem/playlistItemWithVideo.cpp
+index c02c9e50..09ab128d 100644
+--- a/YUViewLib/src/playlistitem/playlistItemWithVideo.cpp
++++ b/YUViewLib/src/playlistitem/playlistItemWithVideo.cpp
+@@ -33,6 +33,7 @@
+ #include "playlistItemWithVideo.h"
+ 
+ #include <QCryptographicHash>
++#include <QFileInfo>
+ #include <QtConcurrent>
+ 
+ #include <cstring>
+@@ -94,7 +95,56 @@ void playlistItemWithVideo::drawItem(QPainter *painter,
+ 
+   auto range = properties().startEndRange;
+   if (frameIdx >= range.first && frameIdx <= range.second)
+-    video->drawFrame(painter, frameIdx, zoomFactor, drawRawValues);
++    this->videoToDisplay(frameIdx)->drawFrame(painter, frameIdx, zoomFactor, drawRawValues);
++}
++
++video::videoHandler *playlistItemWithVideo::videoToDisplay(int frameIdx)
++{
++  if (this->displaySource != DisplaySource::Original || !this->originalVideo)
++    return this->video.get();
++
++  /* Keep the original's handler in step with the item's own: the pixel format and the size can be
++   * changed in the properties panel after the original was attached, and the original is read with
++   * exactly those.
++   */
++  const auto handler = this->getYUVVideo();
++  if (this->originalVideo->getFrameSize() != handler->getFrameSize() ||
++      this->originalVideo->getPixelFormatYUV() != handler->getPixelFormatYUV())
++  {
++    this->originalVideo->setFrameSize(handler->getFrameSize());
++    this->originalVideo->setPixelFormatYUV(handler->getPixelFormatYUV());
++    this->originalVideo->invalidateAllBuffers();
++  }
++
++  /* Nothing loads for this handler in the background - the loading thread serves the item's own video
++   * - so fetch the frame here. It is one sequential read plus one conversion, on a file the user
++   * pointed at for exactly this purpose.
++   */
++  if (this->originalVideo->needsLoading(frameIdx, false) == ItemLoadingState::LoadingNeeded)
++    this->originalVideo->loadFrame(frameIdx);
++  return this->originalVideo.get();
++}
++
++bool playlistItemWithVideo::setDisplaySource(DisplaySource source)
++{
++  if (source == this->displaySource)
++    return true;
++  if (source == DisplaySource::Original && !this->originalVideo)
++    // Nothing attached to show.
++    return false;
++
++  this->displaySource = source;
++  // Only the picture changes, so nothing needs to be decoded or measured again.
++  emit SignalItemChanged(true, RECACHE_NONE);
++  return true;
++}
++
++void playlistItemWithVideo::loadOriginalRawData(int frameIdx)
++{
++  if (!this->originalVideo)
++    return;
++  this->originalVideo->rawData            = this->readOriginalYUVFrame(frameIdx);
++  this->originalVideo->rawData_frameIndex = this->originalVideo->rawData.isEmpty() ? -1 : frameIdx;
+ }
+ 
+ void playlistItemWithVideo::loadFrame(int  frameIdx,
+@@ -189,6 +239,17 @@ uint64_t playlistItemWithVideo::pixelStatsParamHash() const
+   key += QByteArray::fromStdString(handler->getPixelFormatYUV().getName());
+   key += handler->convolutionFilterKey();
+   key += QByteArrayLiteral(";blk=") + QByteArray::number(this->getPixelStatisticsBlockSize());
++  if (!this->originalYUVPath.isEmpty())
++  {
++    /* The original is part of the key because the SSE lives in every block's record: statistics
++     * computed without it - or against another file, or against an edited one - do not describe what
++     * we would compute now. Size and modification time catch a file that was overwritten in place.
++     */
++    const QFileInfo info(this->originalYUVPath);
++    key += QByteArrayLiteral(";org=") + this->originalYUVPath.toUtf8();
++    key += QByteArrayLiteral(",") + QByteArray::number(info.size());
++    key += QByteArrayLiteral(",") + QByteArray::number(info.lastModified().toSecsSinceEpoch());
++  }
+   const auto digest = QCryptographicHash::hash(key, QCryptographicHash::Sha1);
+   uint64_t   hash{};
+   std::memcpy(&hash, digest.constData(), sizeof(hash));
+@@ -253,11 +314,125 @@ void playlistItemWithVideo::requestPixelStatistics(int frameIdx)
+   const auto format    = handler->getPixelFormatYUV();
+   const auto frameSize = handler->getFrameSize();
+   const auto blockSize = this->getPixelStatisticsBlockSize();
++  /* Read here rather than in the worker: FileSource is used from the GUI thread and from the item's
++   * own loading thread already, and one frame off a local file is a plain sequential read.
++   */
++  const auto original = this->readOriginalYUVFrame(frameIdx);
+ 
+   this->pixelStatsFrameInFlight = frameIdx;
+   this->pixelStatsWatcher.setFuture(QtConcurrent::run(
+-      [rawData, format, frameSize, blockSize]
+-      { return stats::computeLumaBlockStats(rawData, format, frameSize, blockSize); }));
++      [rawData, format, frameSize, blockSize, original]
++      { return stats::computeLumaBlockStats(rawData, format, frameSize, blockSize, original); }));
++}
++
++bool playlistItemWithVideo::setOriginalYUVSource(const QString &filePath, QString *error)
++{
++  const auto setError = [error](const QString &text)
++  {
++    if (error)
++      *error = text;
++    return false;
++  };
++
++  const auto wasAttached = !this->originalYUVPath.isEmpty();
++  /* Any outcome other than "the new file is usable" leaves nothing attached. Keeping the previous one
++   * is not an option: openFile() has already closed it, and a path that no longer matches the open
++   * file would be hashed into the cache key while the SSE is computed against something else.
++   */
++  this->originalYUVPath.clear();
++
++  const auto forget = [this, wasAttached]
++  {
++    /* Nothing to show any more, so the view has to go back to the reconstruction - otherwise it would
++     * keep drawing the frame of a file that is no longer attached.
++     */
++    this->originalVideo.reset();
++    if (this->displaySource != DisplaySource::Reconstruction)
++    {
++      this->displaySource = DisplaySource::Reconstruction;
++      emit SignalItemChanged(true, RECACHE_NONE);
++    }
++
++    // Every block record carries an SSE, so the values computed under the previous setting describe a
++    // comparison that is no longer configured. The next request recomputes them, under a new
++    // parameter hash - see pixelStatsParamHash().
++    if (!wasAttached)
++      return;
++    this->pixelStatsCache.reset();
++    this->pixelStatsCacheParamHash = 0;
++  };
++
++  if (filePath.isEmpty())
++  {
++    forget();
++    return true;
++  }
++
++  if (!this->supportsPixelStatistics())
++  {
++    forget();
++    return setError("This item has no raw YUV pixels to compare.");
++  }
++
++  const auto bytesPerFrame = this->getYUVVideo()->getBytesPerFrame();
++  if (bytesPerFrame <= 0)
++  {
++    forget();
++    return setError("The pixel format of this item is not known yet.");
++  }
++
++  if (!this->originalYUVFile.openFile(filePath.toStdString()))
++  {
++    forget();
++    return setError(QString("Cannot open %1.").arg(filePath));
++  }
++
++  const auto fileSize = this->originalYUVFile.getFileSize().value_or(0);
++  if (fileSize < bytesPerFrame)
++  {
++    forget();
++    return setError(QString("%1 is smaller than one %2x%3 frame (%4 bytes) of this item.")
++                        .arg(filePath)
++                        .arg(this->getYUVVideo()->getFrameSize().width)
++                        .arg(this->getYUVVideo()->getFrameSize().height)
++                        .arg(bytesPerFrame));
++  }
++
++  this->originalYUVPath = filePath;
++
++  /* A handler of its own so the original can be shown in the view without touching the item's own
++   * buffer. It is read with this item's size and format - it is the source this item was coded from.
++   */
++  this->originalVideo = std::make_unique<video::yuv::videoHandlerYUV>();
++  this->originalVideo->setFrameSize(this->getYUVVideo()->getFrameSize());
++  this->originalVideo->setPixelFormatYUV(this->getYUVVideo()->getPixelFormatYUV());
++  connect(this->originalVideo.get(),
++          &video::videoHandler::signalRequestRawData,
++          this,
++          [this](int frameIdx, bool) { this->loadOriginalRawData(frameIdx); },
++          Qt::DirectConnection);
++
++  // As in forget(): what was computed before carries the wrong SSE, or none at all.
++  this->pixelStatsCache.reset();
++  this->pixelStatsCacheParamHash = 0;
++  return true;
++}
++
++QByteArray playlistItemWithVideo::readOriginalYUVFrame(int frameIdx)
++{
++  if (this->originalYUVPath.isEmpty() || frameIdx < 0 || !this->originalYUVFile.isOk() ||
++      !this->supportsPixelStatistics())
++    return {};
++  const auto bytesPerFrame = this->getYUVVideo()->getBytesPerFrame();
++  if (bytesPerFrame <= 0)
++    return {};
++
++  QByteArray frame;
++  if (this->originalYUVFile.readBytes(frame, int64_t(frameIdx) * bytesPerFrame, bytesPerFrame) <
++      bytesPerFrame)
++    // The original is shorter than this item, so this frame has nothing to compare against.
++    return {};
++  return frame;
+ }
+ 
+ void playlistItemWithVideo::takeComputedPixelStatistics()
+diff --git a/YUViewLib/src/playlistitem/playlistItemWithVideo.h b/YUViewLib/src/playlistitem/playlistItemWithVideo.h
+index 42cc118a..52cd08ac 100644
+--- a/YUViewLib/src/playlistitem/playlistItemWithVideo.h
++++ b/YUViewLib/src/playlistitem/playlistItemWithVideo.h
+@@ -32,6 +32,7 @@
+ 
+ #pragma once
+ 
++#include <filesource/FileSource.h>
+ #include <playlistitem/playlistItem.h>
+ #include <video/rgb/videoHandlerRGB.h>
+ #include <video/yuv/videoHandlerYUV.h>
+@@ -78,6 +79,10 @@ public:
+   std::optional<stats::PixelBlockStats> getPixelBlockStats(const QPoint &pixelPos,
+                                                           int           frameIdx) override;
+   std::vector<uint32_t>                 getLumaHistogram(int frameIdx) override;
++  bool          setOriginalYUVSource(const QString &filePath, QString *error = nullptr) override;
++  QString       getOriginalYUVSource() const override { return this->originalYUVPath; }
++  bool          setDisplaySource(DisplaySource source) override;
++  DisplaySource getDisplaySource() const override { return this->displaySource; }
+   DataDump getItemDataDump(const QPoint &pixelPos, int frameIdx, const stats::BlockInfo &) override;
+ 
+   // -- Caching
+@@ -140,6 +145,12 @@ protected:
+   //!< Used when the item does not report a grid size of its own (yet).
+   static constexpr unsigned PIXEL_STATS_DEFAULT_BLOCK_SIZE = 64;
+ 
++  /* The handler drawItem() should draw: the original's when the user asked to see it and it can show
++   * the frame, the item's own otherwise. Also brings the original's frame into its buffer, since no
++   * loading thread does that for it.
++   */
++  video::videoHandler *videoToDisplay(int frameIdx);
++
+   // The videoHandler can be a videoHandlerRGB or a videoHandlerYUV
+   video::RawFormat rawFormat{video::RawFormat::Invalid};
+   // Get a raw pointer to either version of the videoHandler
+@@ -170,6 +181,22 @@ private:
+   void     openPixelStatsCacheIfNeeded();
+   //!< Runs on the GUI thread, the only thread that touches the cache.
+   void     takeComputedPixelStatistics();
++  //!< One frame of the attached original YUV, or empty when there is none / it is not that long.
++  QByteArray readOriginalYUVFrame(int frameIdx);
++
++  //!< The original (source) sequence this item's pixels are compared against. See the SSE in
++  //!< stats::PixelBlockStats.
++  QString    originalYUVPath;
++  FileSource originalYUVFile;
++
++  /* A handler of its own for the original, so that showing it changes nothing about the item's own
++   * buffer: the statistics, the histogram and the SSE all read that one and must keep describing the
++   * reconstruction while the view shows the source. Built when an original is attached.
++   */
++  std::unique_ptr<video::yuv::videoHandlerYUV> originalVideo;
++  DisplaySource                                displaySource{DisplaySource::Reconstruction};
++  //!< Fills originalVideo->rawData on its request. Connected to its signalRequestRawData.
++  void loadOriginalRawData(int frameIdx);
+ 
+   stats::PixelStatisticsCache                         pixelStatsCache;
+   QFutureWatcher<std::vector<stats::PixelBlockStats>> pixelStatsWatcher;
+diff --git a/YUViewLib/src/statistics/PixelStatistics.cpp b/YUViewLib/src/statistics/PixelStatistics.cpp
+index 3a467138..cbab201d 100644
+--- a/YUViewLib/src/statistics/PixelStatistics.cpp
++++ b/YUViewLib/src/statistics/PixelStatistics.cpp
+@@ -109,13 +109,20 @@ std::optional<LumaPlaneReader> makeLumaReader(const QByteArray                 &
+ std::vector<PixelBlockStats> computeLumaBlockStats(const QByteArray                 &rawYUV,
+                                                    const video::yuv::PixelFormatYUV &format,
+                                                    const Size                       &frameSize,
+-                                                   unsigned                          blockSize)
++                                                   unsigned                          blockSize,
++                                                   const QByteArray                 &originalYUV)
+ {
+   if (blockSize == 0)
+     return {};
+   const auto reader = makeLumaReader(rawYUV, format, frameSize);
+   if (!reader)
+     return {};
++  /* The original is expected in the same format and size - it is the source the item was coded from.
++   * A frame that is truncated (or in a format that cannot be read) yields no reader, and then the SSE
++   * is simply not reported instead of failing the whole computation.
++   */
++  const auto originalReader =
++      originalYUV.isEmpty() ? std::nullopt : makeLumaReader(originalYUV, format, frameSize);
+ 
+   const unsigned blocksPerRow    = (frameSize.width + blockSize - 1) / blockSize;
+   const unsigned blocksPerColumn = (frameSize.height + blockSize - 1) / blockSize;
+@@ -138,6 +145,9 @@ std::vector<PixelBlockStats> computeLumaBlockStats(const QByteArray
+       unsigned minimum  = std::numeric_limits<unsigned>::max();
+       unsigned maximum  = 0;
+       uint64_t nrPixels = 0;
++      // Against the original, when there is one. A 16 bit difference squared over 128x128 samples is
++      // far from overflowing uint64.
++      uint64_t sse      = 0;
+       for (unsigned y = yStart; y < yEnd; y++)
+         for (unsigned x = xStart; x < xEnd; x++)
+         {
+@@ -147,11 +157,18 @@ std::vector<PixelBlockStats> computeLumaBlockStats(const QByteArray
+           minimum = std::min(minimum, value);
+           maximum = std::max(maximum, value);
+           ++nrPixels;
++          if (originalReader)
++          {
++            const int64_t delta = int64_t(value) - int64_t(originalReader->at(x, y));
++            sse += uint64_t(delta * delta);
++          }
+         }
+ 
+       auto &stats = result[size_t(blockY) * blocksPerRow + blockX];
+       if (nrPixels == 0)
+         continue;
++      if (originalReader)
++        stats.sse = double(sse);
+       const double mean = double(sum) / double(nrPixels);
+       // E[x^2] - E[x]^2. Clamped because rounding can push it a hair below zero on a flat block.
+       const double variance = std::max(0.0, double(sumSq) / double(nrPixels) - mean * mean);
+@@ -255,7 +272,7 @@ void PixelStatisticsCache::writeHeaderAndBitmap()
+                            uint32_t(this->nrFrames)};
+   std::memcpy(p + 8, u32, sizeof(u32));
+   std::memcpy(p + 8 + sizeof(u32), &this->paramHash, sizeof(this->paramHash));
+-  const uint32_t fieldsPerBlock = 4;
++  const uint32_t fieldsPerBlock = 5;
+   std::memcpy(p + 8 + sizeof(u32) + sizeof(this->paramHash), &fieldsPerBlock, sizeof(uint32_t));
+ 
+   file.write(header);
+diff --git a/YUViewLib/src/statistics/PixelStatistics.h b/YUViewLib/src/statistics/PixelStatistics.h
+index 1b268548..41fb1299 100644
+--- a/YUViewLib/src/statistics/PixelStatistics.h
++++ b/YUViewLib/src/statistics/PixelStatistics.h
+@@ -53,9 +53,9 @@
+ namespace stats
+ {
+ 
+-/* One block's luma statistics. Stored as four float32 (16 bytes) so that the record size does not
+- * depend on the bit depth. Adding a field means bumping PIXEL_STATS_CACHE_VERSION, which makes
+- * existing cache files be discarded and recomputed.
++/* One block's luma statistics. The first four are float32 so that the record size does not depend on
++ * the bit depth. Adding a field means bumping PIXEL_STATS_CACHE_VERSION, which makes existing cache
++ * files be discarded and recomputed.
+  */
+ struct PixelBlockStats
+ {
+@@ -63,11 +63,16 @@ struct PixelBlockStats
+   float variance{};
+   float minimum{};
+   float maximum{};
++  /* Sum of squared luma differences against the original (source) YUV of the same frame, or negative
++   * when no original is attached to the item. double, not float: for a 64x64 block of 8 bit samples
++   * the sum reaches 2.6e8 and stays exact here, where float would already round it.
++   */
++  double sse{-1.0};
+ };
+-static_assert(sizeof(PixelBlockStats) == 16, "the on-disk record layout depends on this");
++static_assert(sizeof(PixelBlockStats) == 24, "the on-disk record layout depends on this");
+ 
+ //!< Bump when the record layout or the meaning of a field changes.
+-constexpr uint32_t PIXEL_STATS_CACHE_VERSION = 1;
++constexpr uint32_t PIXEL_STATS_CACHE_VERSION = 2;
+ 
+ /* Statistics of every blockSize x blockSize block of the luma plane, row major (left to right, top to
+  * bottom). Blocks at the right/bottom border are clipped to the picture, so their statistics only
+@@ -77,13 +82,18 @@ constexpr uint32_t PIXEL_STATS_CACHE_VERSION = 1;
+  * treat that as "no statistics available" rather than an error - it is a normal outcome for an exotic
+  * pixel format.
+  *
++ * originalYUV is the same frame of the original (source) sequence, in the same format and size. When
++ * given, every block also gets its luma SSE against it; when empty, or when it cannot be read, sse
++ * stays negative and the rest is computed as usual.
++ *
+  * Pure and thread safe: it only reads its arguments, so it can run on a worker thread while the GUI
+  * thread carries on. rawYUV must be a full frame in the given format.
+  */
+ std::vector<PixelBlockStats> computeLumaBlockStats(const QByteArray                 &rawYUV,
+                                                    const video::yuv::PixelFormatYUV &format,
+                                                    const Size                       &frameSize,
+-                                                   unsigned                          blockSize);
++                                                   unsigned                          blockSize,
++                                                   const QByteArray &originalYUV = {});
+ 
+ /* 256 bin histogram of the luma plane. Values are scaled down to 256 bins for bit depths above 8, so
+  * the bin index is comparable across bit depths. Empty for formats that cannot be read.
+diff --git a/YUViewLib/src/ui/Mainwindow.cpp b/YUViewLib/src/ui/Mainwindow.cpp
+index fcac1e03..47403b17 100644
+--- a/YUViewLib/src/ui/Mainwindow.cpp
++++ b/YUViewLib/src/ui/Mainwindow.cpp
+@@ -34,6 +34,7 @@
+ 
+ #include <QByteArray>
+ #include <QFileDialog>
++#include <QFileInfo>
+ #include <QLocale>
+ #include <QImageWriter>
+ #include <QMessageBox>
+@@ -185,6 +186,14 @@ MainWindow::MainWindow(bool useAlternativeSources, QWidget *parent) : QMainWindo
+           &PlaylistTreeWidget::selectedItemChanged,
+           ui.blockInfoWidget,
+           &BlockInfoWidget::refresh);
++  /* The syntax shown belongs to the frame on screen, not to the frame that happened to be displayed
++   * when the block was clicked. Without this the pane went stale as soon as the frame changed, while
++   * the pixel side of the same click (Frame Info) kept following along.
++   */
++  connect(ui.displaySplitView,
++          &splitViewWidget::viewFrameChanged,
++          ui.blockInfoWidget,
++          &BlockInfoWidget::setCurrentFrame);
+ 
+   /* The caching info pane hosts a second copy of the block syntax table (the caching thread list it
+    * used to show was removed). Same signals as the dock above.
+@@ -207,6 +216,10 @@ MainWindow::MainWindow(bool useAlternativeSources, QWidget *parent) : QMainWindo
+             &splitViewWidget::blockSelected,
+             cachingBlockInfo,
+             &BlockInfoWidget::setSelectedBlock);
++    connect(ui.displaySplitView,
++            &splitViewWidget::viewFrameChanged,
++            cachingBlockInfo,
++            &BlockInfoWidget::setCurrentFrame);
+   }
+ 
+   /* Frame Info: the pixel side of the same click. The block statistics are computed in the background,
+@@ -289,6 +302,22 @@ MainWindow::MainWindow(bool useAlternativeSources, QWidget *parent) : QMainWindo
+           &splitViewWidget::viewFrameChanged,
+           ui.hexdumpViewer,
+           &HexdumpViewerWidget::setCurrentFrame);
++  /* The rate/distortion plot next to the dump pane: it plots the whole displayed frame, so it follows
++   * the frame rather than a click. It reads the bitstream statistics (bits) and the pixel statistics
++   * (SSE), which arrive at different times - hence both the frame and the selection signals.
++   */
++  connect(ui.displaySplitView,
++          &splitViewWidget::viewFrameChanged,
++          ui.rateDistortionPlot,
++          &RateDistortionPlotWidget::setCurrentFrame);
++  connect(ui.playlistTreeWidget,
++          &PlaylistTreeWidget::selectionRangeChanged,
++          ui.rateDistortionPlot,
++          &RateDistortionPlotWidget::currentSelectedItemsChanged);
++  connect(ui.playlistTreeWidget,
++          &PlaylistTreeWidget::selectedItemChanged,
++          ui.rateDistortionPlot,
++          &RateDistortionPlotWidget::refresh);
+   connect(ui.playlistTreeWidget,
+           &PlaylistTreeWidget::selectedItemChanged,
+           ui.playbackController,
+@@ -356,6 +385,12 @@ MainWindow::MainWindow(bool useAlternativeSources, QWidget *parent) : QMainWindo
+   }
+ 
+   connect(ui.openButton, &QPushButton::clicked, this, &MainWindow::showFileOpenDialog);
++  connect(
++      ui.loadOrgYUVButton, &QPushButton::clicked, this, &MainWindow::showOriginalYUVOpenDialog);
++  connect(ui.displaySourceComboBox,
++          &QComboBox::currentIndexChanged,
++          this,
++          &MainWindow::displaySourceComboBoxIndexChanged);
+ 
+   // Connect signals from the separate window
+   connect(&separateViewWindow,
+@@ -844,6 +879,8 @@ void MainWindow::currentSelectedItemsChanged(playlistItem *item1, playlistItem *
+     QString newCaption = "YUView - " + item1->text(0);
+     setWindowTitle(newCaption);
+   }
++  // The Rec/Org selector belongs to the selected item, so it has to follow the selection.
++  this->updateDisplaySourceComboBox();
+ }
+ 
+ void MainWindow::deleteSelectedItems()
+@@ -1205,6 +1242,88 @@ void MainWindow::showFileOpenDialog()
+   updateRecentFileActions();
+ }
+ 
++void MainWindow::showOriginalYUVOpenDialog()
++{
++  /* The original belongs to one item - it is the source that item was coded from, and it is read with
++   * that item's frame size and pixel format. So it goes to the item that is selected, the same one
++   * the Frame Info pane reports on.
++   */
++  auto *item = ui.playlistTreeWidget->getSelectedItems()[0];
++  if (!item)
++  {
++    QMessageBox::information(this,
++                             "Load Org YUV",
++                             "Select the item to compare first, then load its original YUV.");
++    return;
++  }
++
++  QSettings settings;
++  auto      fileName = QFileDialog::getOpenFileName(this,
++                                               "Open the original (source) YUV",
++                                               settings.value("lastFilePath").toString(),
++                                               "Raw YUV files (*.yuv *.y4m);;All files (*)");
++  if (fileName.isEmpty())
++    return;
++  settings.setValue("lastFilePath", fileName.section('/', 0, -2));
++
++  QString error;
++  if (!item->setOriginalYUVSource(fileName, &error))
++  {
++    QMessageBox::warning(this, "Load Org YUV", error);
++    return;
++  }
++
++  /* The statistics of the frame on screen were dropped, so ask the pane to read them again. It finds
++   * nothing cached, requests a recomputation and shows the SSE when that reports back. The block
++   * syntax pane reads the same click, so keep the two in step.
++   */
++  ui.frameInfoWidget->refresh();
++  ui.blockInfoWidget->refresh();
++  // The plot has an SSE axis only once an original is attached, so it was showing a hint until now.
++  ui.rateDistortionPlot->refresh();
++  this->updateDisplaySourceComboBox();
++  ui.statusBar->showMessage(
++      QString("Original YUV of \"%1\": %2").arg(item->text(0), QFileInfo(fileName).fileName()),
++      5000);
++}
++
++void MainWindow::displaySourceComboBoxIndexChanged(int index)
++{
++  auto *item = ui.playlistTreeWidget->getSelectedItems()[0];
++  if (!item)
++    return;
++  const auto source = (index == 1) ? playlistItem::DisplaySource::Original
++                                   : playlistItem::DisplaySource::Reconstruction;
++  if (!item->setDisplaySource(source))
++  {
++    // No original attached, so there is nothing to switch to. Put the box back where it was.
++    this->updateDisplaySourceComboBox();
++    return;
++  }
++  // The item redraws itself (SignalItemChanged), the view has to pick the new picture up.
++  ui.displaySplitView->update();
++  separateViewWindow.splitView.update();
++}
++
++void MainWindow::updateDisplaySourceComboBox()
++{
++  auto *item = ui.playlistTreeWidget->getSelectedItems()[0];
++  const auto hasOriginal = item && !item->getOriginalYUVSource().isEmpty();
++
++  // Setting the index must not be taken for a user request to switch.
++  const QSignalBlocker blocker(ui.displaySourceComboBox);
++  ui.displaySourceComboBox->setEnabled(hasOriginal);
++  ui.displaySourceComboBox->setCurrentIndex(
++      item && item->getDisplaySource() == playlistItem::DisplaySource::Original ? 1 : 0);
++  ui.displaySourceComboBox->setToolTip(
++      hasOriginal ? QString("Show the reconstruction or the original (%1) in the viewer. The "
++                            "statistics, the histogram and the SSE always describe the "
++                            "reconstruction.")
++                        .arg(QFileInfo(item->getOriginalYUVSource()).fileName())
++                  : QString("Load an original YUV for the selected item to switch the viewer "
++                            "between reconstruction and original."));
++}
++
+ /// End Full screen. Goto one window mode and reset all the geometry and state settings that were
+ /// saved.
+ void MainWindow::resetWindowLayout()
+diff --git a/YUViewLib/src/ui/Mainwindow.h b/YUViewLib/src/ui/Mainwindow.h
+index bff55acb..0ea63aff 100644
+--- a/YUViewLib/src/ui/Mainwindow.h
++++ b/YUViewLib/src/ui/Mainwindow.h
+@@ -79,6 +79,14 @@ private slots:
+   void showSettingsWindow();
+   void saveScreenshot();
+   void showFileOpenDialog();
++  /* Pick a raw YUV file and attach it to the selected item as its original (source), so the block
++   * statistics can report the per block SSE against it.
++   */
++  void showOriginalYUVOpenDialog();
++  //!< The Rec/Org selector next to it: switch what the viewer draws for the selected item.
++  void displaySourceComboBoxIndexChanged(int index);
++  //!< Make that selector show what the currently selected item is actually doing.
++  void updateDisplaySourceComboBox();
+   void resetWindowLayout();
+   void closeAndClearSettings();
+ 
+diff --git a/YUViewLib/src/ui/widgets/BlockInfoWidget.cpp b/YUViewLib/src/ui/widgets/BlockInfoWidget.cpp
+index d3d86e96..17af0f91 100644
+--- a/YUViewLib/src/ui/widgets/BlockInfoWidget.cpp
++++ b/YUViewLib/src/ui/widgets/BlockInfoWidget.cpp
+@@ -100,10 +100,34 @@ void BlockInfoWidget::currentSelectedItemsChanged(playlistItem *item1, playlistI
+     this->setSelectedBlock(nullptr, QPoint(), -1);
+ }
+ 
++void BlockInfoWidget::setCurrentFrame(playlistItem *item, int frameIdx)
++{
++  if (!this->selectedItem)
++    // Nothing has been clicked, so there is no position whose syntax could be re-read.
++    return;
++  if (this->selectedItem != item)
++  {
++    // The view moved to a different item. The stored click belongs to the old one.
++    this->setSelectedBlock(nullptr, QPoint(), -1);
++    return;
++  }
++  /* The view announces a frame change before that frame has been decoded, and again once the data is
++   * there. That repeat is the only chance to fill the pane, so it must not be dismissed as "nothing
++   * changed" while the values on screen still come from another frame. Same reasoning as
++   * FrameInfoWidget::setCurrentFrame.
++   */
++  if (this->selectedFrameIdx == frameIdx && this->shownFrameIdx == frameIdx)
++    return;
++  this->selectedFrameIdx = frameIdx;
++  this->refresh();
++}
++
+ void BlockInfoWidget::showMessage(const QString &text)
+ {
+   this->tree.clear();
+   this->statusLabel.setText(text);
++  // Nothing valid on screen, so a repeat notification for the same frame still has work to do.
++  this->shownFrameIdx = -1;
+ }
+ 
+ void BlockInfoWidget::populate(const stats::BlockInfo &info)
+@@ -112,6 +136,8 @@ void BlockInfoWidget::populate(const stats::BlockInfo &info)
+                                 .arg(info.frameIndex)
+                                 .arg(this->selectedPos.x())
+                                 .arg(this->selectedPos.y()));
++  // Which frame the values below came from, see setCurrentFrame().
++  this->shownFrameIdx = info.frameIndex;
+ 
+   this->tree.clear();
+ 
+diff --git a/YUViewLib/src/ui/widgets/BlockInfoWidget.h b/YUViewLib/src/ui/widgets/BlockInfoWidget.h
+index 18726321..ff1e5752 100644
+--- a/YUViewLib/src/ui/widgets/BlockInfoWidget.h
++++ b/YUViewLib/src/ui/widgets/BlockInfoWidget.h
+@@ -67,6 +67,11 @@ public slots:
+   void refresh();
+   //!< The playlist selection changed. Clears when our item is no longer selected.
+   void currentSelectedItemsChanged(playlistItem *item1, playlistItem *item2);
++  /* Which item and frame the view is showing. The clicked position stays, but the syntax of that
++   * position belongs to the frame on screen - without this the pane keeps showing the frame that was
++   * clicked while the rest of the window has moved on.
++   */
++  void setCurrentFrame(playlistItem *item, int frameIdx);
+ 
+ private:
+   void showMessage(const QString &text);
+@@ -79,4 +84,6 @@ private:
+   QPointer<playlistItem> selectedItem;
+   QPoint                 selectedPos;
+   int                    selectedFrameIdx{-1};
++  //!< The frame the values on screen actually came from, or -1 while the pane shows a message.
++  int                    shownFrameIdx{-1};
+ };
+diff --git a/YUViewLib/src/ui/widgets/FrameInfoWidget.cpp b/YUViewLib/src/ui/widgets/FrameInfoWidget.cpp
+index adae9a2d..3d28dac1 100644
+--- a/YUViewLib/src/ui/widgets/FrameInfoWidget.cpp
++++ b/YUViewLib/src/ui/widgets/FrameInfoWidget.cpp
+@@ -63,6 +63,10 @@ const StatisticRow STATISTIC_ROWS[] = {
+      [](const stats::PixelBlockStats &s) { return formatValue(std::sqrt(s.variance)); }},
+     {"minimum", [](const stats::PixelBlockStats &s) { return QString::number(int(s.minimum)); }},
+     {"maximum", [](const stats::PixelBlockStats &s) { return QString::number(int(s.maximum)); }},
++    // Negative means no original YUV is attached to the item (Load Org YUV in the playlist panel).
++    {"SSE vs original",
++     [](const stats::PixelBlockStats &s)
++     { return s.sse < 0.0 ? QString("-") : QString::number(s.sse, 'f', 0); }},
+ };
+ 
+ } // namespace
+diff --git a/YUViewLib/src/ui/widgets/RateDistortionPlotWidget.cpp b/YUViewLib/src/ui/widgets/RateDistortionPlotWidget.cpp
+new file mode 100644
+index 00000000..30c50a35
+--- /dev/null
++++ b/YUViewLib/src/ui/widgets/RateDistortionPlotWidget.cpp
+@@ -0,0 +1,278 @@
++/*  This file is part of YUView - The YUV player with advanced analytics toolset
++ *   <https://github.com/IENT/YUView>
++ *   Copyright (C) 2015  Institut für Nachrichtentechnik, RWTH Aachen University, GERMANY
++ *
++ *   This program is free software; you can redistribute it and/or modify
++ *   it under the terms of the GNU General Public License as published by
++ *   the Free Software Foundation; either version 3 of the License, or
++ *   (at your option) any later version.
++ *
++ *   In addition, as a special exception, the copyright holders give
++ *   permission to link the code of portions of this program with the
++ *   OpenSSL library under certain conditions as described in each
++ *   individual source file, and distribute linked combinations including
++ *   the two.
++ *
++ *   You must obey the GNU General Public License in all respects for all
++ *   of the code used other than OpenSSL. If you modify file(s) with this
++ *   exception, you may extend this exception to your version of the
++ *   file(s), but you are not obligated to do so. If you do not wish to do
++ *   so, delete this exception statement from your version. If you delete
++ *   this exception statement from all source files in the program, then
++ *   also delete it here.
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ *   GNU General Public License for more details.
++ *
++ *   You should have received a copy of the GNU General Public License
++ *   along with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "RateDistortionPlotWidget.h"
++
++#include <QPainter>
++#include <QPaintEvent>
++
++#include <algorithm>
++#include <cmath>
++
++#include <playlistitem/playlistItem.h>
++
++namespace
++{
++// Room for the axis labels around the plot area.
++constexpr int MARGIN_LEFT   = 62;
++constexpr int MARGIN_RIGHT  = 8;
++constexpr int MARGIN_TOP    = 22;
++constexpr int MARGIN_BOTTOM = 30;
++
++//!< A round number at or above value, so the axis ends somewhere readable.
++double niceUpperBound(double value)
++{
++  if (value <= 0.0)
++    return 1.0;
++  const auto magnitude = std::pow(10.0, std::floor(std::log10(value)));
++  for (const auto step : {1.0, 2.0, 2.5, 5.0, 10.0})
++    if (value <= step * magnitude)
++      return step * magnitude;
++  return 10.0 * magnitude;
++}
++
++QString axisNumber(double value)
++{
++  if (value >= 1000000.0)
++    return QString::number(value / 1000000.0, 'g', 3) + "M";
++  if (value >= 1000.0)
++    return QString::number(value / 1000.0, 'g', 3) + "k";
++  return QString::number(value, 'g', 3);
++}
++} // namespace
++
++RateDistortionPlotWidget::RateDistortionPlotWidget(QWidget *parent) : QWidget(parent)
++{
++  this->message = "Select a stream to plot its superblocks.";
++}
++
++void RateDistortionPlotWidget::setItem(playlistItem *newItem)
++{
++  if (this->item == newItem)
++    return;
++  this->item = newItem;
++  if (newItem)
++    // UniqueConnection so re-selecting the same item does not stack connections.
++    connect(newItem,
++            &playlistItem::pixelStatisticsReady,
++            this,
++            &RateDistortionPlotWidget::pixelStatisticsReady,
++            Qt::UniqueConnection);
++}
++
++void RateDistortionPlotWidget::setCurrentFrame(playlistItem *newItem, int newFrameIdx)
++{
++  /* The view announces a frame change before it is decoded and again once the data is there. The
++   * repeat is the only chance to fill the plot, so it must not be dismissed while the points on screen
++   * still belong to another frame. Same reasoning as in FrameInfoWidget::setCurrentFrame.
++   */
++  if (this->item == newItem && this->frameIdx == newFrameIdx && this->shownFrameIdx == newFrameIdx)
++    return;
++  this->setItem(newItem);
++  this->frameIdx = newFrameIdx;
++  this->refresh();
++}
++
++void RateDistortionPlotWidget::currentSelectedItemsChanged(playlistItem *item1, playlistItem *item2)
++{
++  if (this->item && this->item != item1 && this->item != item2)
++  {
++    this->setItem(nullptr);
++    this->frameIdx = -1;
++    this->refresh();
++  }
++}
++
++void RateDistortionPlotWidget::pixelStatisticsReady(int readyFrameIdx)
++{
++  if (readyFrameIdx == this->frameIdx)
++    this->refresh();
++}
++
++void RateDistortionPlotWidget::refresh()
++{
++  this->collect();
++  this->update();
++}
++
++void RateDistortionPlotWidget::collect()
++{
++  this->points.clear();
++  this->shownFrameIdx = -1;
++  this->maxBits       = 0.0;
++  this->maxSse        = 0.0;
++
++  auto *currentItem = this->item.data();
++  if (!currentItem || this->frameIdx < 0)
++  {
++    this->message = "Select a stream to plot its superblocks.";
++    return;
++  }
++
++  const auto bits = currentItem->getSuperblockBits(this->frameIdx);
++  if (bits.empty())
++  {
++    this->message = QString("No superblock bit counts for frame %1. Click a block in the view, or "
++                            "switch on a statistics overlay, so the bitstream statistics are "
++                            "collected.")
++                        .arg(this->frameIdx);
++    return;
++  }
++  if (currentItem->getOriginalYUVSource().isEmpty())
++  {
++    this->message = "No original attached. Use \"Load Org YUV\" to get an SSE per superblock.";
++    return;
++  }
++
++  auto waitingForStatistics = false;
++  for (const auto &superblock : bits)
++  {
++    const auto blockStats = currentItem->getPixelBlockStats(superblock.rect.topLeft(), this->frameIdx);
++    if (!blockStats)
++    {
++      waitingForStatistics = true;
++      continue;
++    }
++    if (blockStats->sse < 0.0)
++      // Measured before the original was attached.
++      continue;
++    this->points.push_back({double(superblock.bits), blockStats->sse});
++    this->maxBits = std::max(this->maxBits, double(superblock.bits));
++    this->maxSse  = std::max(this->maxSse, blockStats->sse);
++  }
++
++  if (this->points.empty())
++  {
++    if (waitingForStatistics)
++    {
++      // The whole frame is computed in one background pass; pixelStatisticsReady() brings us back.
++      currentItem->requestPixelStatistics(this->frameIdx);
++      this->message = QString("Computing the SSE of frame %1...").arg(this->frameIdx);
++    }
++    else
++      this->message = QString("No SSE for frame %1 yet.").arg(this->frameIdx);
++    return;
++  }
++  this->shownFrameIdx = this->frameIdx;
++}
++
++void RateDistortionPlotWidget::paintEvent(QPaintEvent *)
++{
++  QPainter painter(this);
++  painter.fillRect(this->rect(), this->palette().color(QPalette::Base));
++
++  const auto textColor = this->palette().color(QPalette::WindowText);
++  painter.setPen(textColor);
++
++  if (this->points.empty())
++  {
++    painter.drawText(this->rect().adjusted(8, 8, -8, -8),
++                     Qt::AlignCenter | Qt::TextWordWrap,
++                     this->message);
++    return;
++  }
++
++  // Short, because this pane shares the bottom of the item view with the dump and can get narrow.
++  painter.drawText(QRect(MARGIN_LEFT, 2, this->width() - MARGIN_LEFT - MARGIN_RIGHT, MARGIN_TOP - 4),
++                   Qt::AlignLeft | Qt::AlignVCenter,
++                   QString("frame %1 - %2 SB").arg(this->shownFrameIdx).arg(this->points.size()));
++
++  const QRect plotArea(MARGIN_LEFT,
++                       MARGIN_TOP,
++                       std::max(1, this->width() - MARGIN_LEFT - MARGIN_RIGHT),
++                       std::max(1, this->height() - MARGIN_TOP - MARGIN_BOTTOM));
++
++  const auto xMax = niceUpperBound(this->maxBits);
++  const auto yMax = niceUpperBound(this->maxSse);
++
++  // Axes with one tick label at each end, so a point can be read off without a grid.
++  auto axisPen = QPen(textColor);
++  axisPen.setCosmetic(true);
++  painter.setPen(axisPen);
++  painter.drawLine(plotArea.bottomLeft(), plotArea.bottomRight());
++  painter.drawLine(plotArea.bottomLeft(), plotArea.topLeft());
++
++  auto gridPen = QPen(textColor);
++  gridPen.setStyle(Qt::DotLine);
++  gridPen.setCosmetic(true);
++  auto gridColor = textColor;
++  gridColor.setAlpha(60);
++  gridPen.setColor(gridColor);
++  painter.setPen(gridPen);
++  for (int i = 1; i <= 2; i++)
++  {
++    const auto y = plotArea.bottom() - plotArea.height() * i / 2;
++    const auto x = plotArea.left() + plotArea.width() * i / 2;
++    painter.drawLine(plotArea.left(), y, plotArea.right(), y);
++    painter.drawLine(x, plotArea.top(), x, plotArea.bottom());
++  }
++
++  painter.setPen(textColor);
++  const auto labelFlagsY = Qt::AlignRight | Qt::AlignVCenter;
++  painter.drawText(QRect(0, plotArea.top() - 7, MARGIN_LEFT - 4, 14), labelFlagsY, axisNumber(yMax));
++  painter.drawText(QRect(0, plotArea.center().y() - 7, MARGIN_LEFT - 4, 14),
++                   labelFlagsY,
++                   axisNumber(yMax / 2));
++  painter.drawText(QRect(0, plotArea.bottom() - 7, MARGIN_LEFT - 4, 14), labelFlagsY, "0");
++  painter.drawText(QRect(plotArea.left() - 10, plotArea.bottom() + 2, 40, 14),
++                   Qt::AlignLeft,
++                   "0");
++  painter.drawText(QRect(plotArea.center().x() - 30, plotArea.bottom() + 2, 60, 14),
++                   Qt::AlignCenter,
++                   axisNumber(xMax / 2));
++  painter.drawText(QRect(plotArea.right() - 60, plotArea.bottom() + 2, 60, 14),
++                   Qt::AlignRight,
++                   axisNumber(xMax));
++  painter.drawText(QRect(MARGIN_LEFT, this->height() - 15, plotArea.width(), 14),
++                   Qt::AlignCenter,
++                   "bits per superblock");
++  // The y axis label is rotated, so it fits in the left margin.
++  painter.save();
++  painter.translate(12, plotArea.center().y());
++  painter.rotate(-90);
++  painter.drawText(QRect(-60, -12, 120, 14), Qt::AlignCenter, "SSE (luma)");
++  painter.restore();
++
++  /* Semi transparent dots: superblocks cluster heavily near the origin (cheap and undistorted), and
++   * with opaque dots that cluster would read as a single blob of unknown weight.
++   */
++  auto pointColor = this->palette().color(QPalette::Highlight);
++  pointColor.setAlpha(160);
++  painter.setBrush(pointColor);
++  painter.setPen(Qt::NoPen);
++  for (const auto &point : this->points)
++  {
++    const auto x = plotArea.left() + int(std::lround(point.bits / xMax * plotArea.width()));
++    const auto y = plotArea.bottom() - int(std::lround(point.sse / yMax * plotArea.height()));
++    painter.drawEllipse(QPoint(x, y), 3, 3);
++  }
++}
+diff --git a/YUViewLib/src/ui/widgets/RateDistortionPlotWidget.h b/YUViewLib/src/ui/widgets/RateDistortionPlotWidget.h
+new file mode 100644
+index 00000000..32563496
+--- /dev/null
++++ b/YUViewLib/src/ui/widgets/RateDistortionPlotWidget.h
+@@ -0,0 +1,96 @@
++/*  This file is part of YUView - The YUV player with advanced analytics toolset
++ *   <https://github.com/IENT/YUView>
++ *   Copyright (C) 2015  Institut für Nachrichtentechnik, RWTH Aachen University, GERMANY
++ *
++ *   This program is free software; you can redistribute it and/or modify
++ *   it under the terms of the GNU General Public License as published by
++ *   the Free Software Foundation; either version 3 of the License, or
++ *   (at your option) any later version.
++ *
++ *   In addition, as a special exception, the copyright holders give
++ *   permission to link the code of portions of this program with the
++ *   OpenSSL library under certain conditions as described in each
++ *   individual source file, and distribute linked combinations including
++ *   the two.
++ *
++ *   You must obey the GNU General Public License in all respects for all
++ *   of the code used other than OpenSSL. If you modify file(s) with this
++ *   exception, you may extend this exception to your version of the
++ *   file(s), but you are not obligated to do so. If you do not wish to do
++ *   so, delete this exception statement from your version. If you delete
++ *   this exception statement from all source files in the program, then
++ *   also delete it here.
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ *   GNU General Public License for more details.
++ *
++ *   You should have received a copy of the GNU General Public License
++ *   along with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#pragma once
++
++#include <QPoint>
++#include <QPointer>
++#include <QWidget>
++
++#include <vector>
++
++class playlistItem;
++
++/* Rate against distortion, one point per superblock of the displayed frame: x is what the bitstream
++ * spent on the superblock (sb_bitcount), y is the SSE of its pixels against the attached original.
++ *
++ * Both numbers already exist elsewhere in the window - the bit count in the statistics overlay, the
++ * SSE in the block statistics table - but only per block that was clicked. Plotting the whole frame
++ * at once is what shows where the encoder spent bits without buying quality, which is the point of
++ * loading an original in the first place.
++ *
++ * Needs both sides to be available: the bit counts come from the bitstream statistics (collected only
++ * while something asks for them, so a block has to be selected or an overlay switched on) and the SSE
++ * needs an original attached. The pane says which one is missing rather than drawing an empty box.
++ */
++class RateDistortionPlotWidget : public QWidget
++{
++  Q_OBJECT
++
++public:
++  explicit RateDistortionPlotWidget(QWidget *parent = nullptr);
++
++  QSize minimumSizeHint() const override { return QSize(220, 150); }
++
++public slots:
++  //!< Which item and frame the view is showing. From splitViewWidget::viewFrameChanged.
++  void setCurrentFrame(playlistItem *item, int frameIdx);
++  //!< The playlist selection changed. Clears when our item is no longer selected.
++  void currentSelectedItemsChanged(playlistItem *item1, playlistItem *item2);
++  //!< Re-read everything for the current item and frame.
++  void refresh();
++  //!< The background computation of the pixel statistics finished.
++  void pixelStatisticsReady(int frameIdx);
++
++protected:
++  void paintEvent(QPaintEvent *event) override;
++
++private:
++  //!< Gather the points, or set message when there is nothing to draw.
++  void collect();
++  void setItem(playlistItem *item);
++
++  struct Point
++  {
++    double bits{};
++    double sse{};
++  };
++
++  std::vector<Point>     points;
++  QString                message;
++  QPointer<playlistItem> item;
++  int                    frameIdx{-1};
++  //!< The frame the points on screen belong to, or -1 when there are none. See setCurrentFrame().
++  int                    shownFrameIdx{-1};
++  double                 maxBits{};
++  double                 maxSse{};
++};
+diff --git a/YUViewLib/ui/mainwindow.ui b/YUViewLib/ui/mainwindow.ui
+index 9a3293d4..22464075 100644
+--- a/YUViewLib/ui/mainwindow.ui
++++ b/YUViewLib/ui/mainwindow.ui
+@@ -79,7 +79,13 @@
+            <enum>Qt::Vertical</enum>
+           </property>
+           <widget class="splitViewWidget" name="displaySplitView"/>
+-          <widget class="HexdumpViewerWidget" name="hexdumpViewer"/>
++          <widget class="QSplitter" name="itemViewBottomSplitter">
++           <property name="orientation">
++            <enum>Qt::Horizontal</enum>
++           </property>
++           <widget class="HexdumpViewerWidget" name="hexdumpViewer"/>
++           <widget class="RateDistortionPlotWidget" name="rateDistortionPlot"/>
++          </widget>
+          </widget>
+         </item>
+        </layout>
+@@ -187,6 +193,58 @@
+        </property>
+       </widget>
+      </item>
++     <item>
++      <layout class="QHBoxLayout" name="loadOrgYUVLayout">
++       <item>
++        <widget class="QPushButton" name="loadOrgYUVButton">
++         <property name="maximumSize">
++          <size>
++           <width>16777215</width>
++           <height>27</height>
++          </size>
++         </property>
++         <property name="toolTip">
++          <string>Load a raw YUV file as the original (source) of the selected item. The per 64x64 block statistics then also report the SSE against it.</string>
++         </property>
++         <property name="text">
++          <string>Load Org YUV</string>
++         </property>
++         <property name="iconSize">
++          <size>
++           <width>16</width>
++           <height>16</height>
++          </size>
++         </property>
++        </widget>
++       </item>
++       <item>
++        <widget class="QComboBox" name="displaySourceComboBox">
++         <property name="maximumSize">
++          <size>
++           <width>16777215</width>
++           <height>27</height>
++          </size>
++         </property>
++         <property name="enabled">
++          <bool>false</bool>
++         </property>
++         <property name="toolTip">
++          <string>Which pixels the viewer shows for the selected item. The statistics, the histogram and the SSE always describe the reconstruction, whichever is shown.</string>
++         </property>
++         <item>
++          <property name="text">
++           <string>Rec</string>
++          </property>
++         </item>
++         <item>
++          <property name="text">
++           <string>Org</string>
++          </property>
++         </item>
++        </widget>
++       </item>
++      </layout>
++     </item>
+     </layout>
+    </widget>
+   </widget>
+@@ -389,6 +447,12 @@
+    <header>ui/widgets/HexdumpViewerWidget.h</header>
+    <container>1</container>
+   </customwidget>
++  <customwidget>
++   <class>RateDistortionPlotWidget</class>
++   <extends>QWidget</extends>
++   <header>ui/widgets/RateDistortionPlotWidget.h</header>
++   <container>1</container>
++  </customwidget>
+  </customwidgets>
+  <tabstops>
+   <tabstop>playlistTreeWidget</tabstop>

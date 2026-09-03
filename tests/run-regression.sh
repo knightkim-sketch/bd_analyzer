@@ -138,8 +138,12 @@ if [[ ! -s "$RAWYUV" ]]; then
 fi
 if [[ -s "$RAWYUV" ]]; then
     run_test "$ROOT/tests/regression/12-raw-yuv-pixel-analysis.cpp"    "$RAWYUV" "$STREAM"
+    # original YUV 를 붙였을 때의 64x64 블록 SSE (Load Org YUV 버튼이 하는 일).
+    run_test "$ROOT/tests/regression/18-org-yuv-block-sse.cpp"         "$RAWYUV"
 else
     echo "  SKIP  12-raw-yuv-pixel-analysis (raw YUV 생성 실패)"
+    ((skip_count++))
+    echo "  SKIP  18-org-yuv-block-sse (raw YUV 생성 실패)"
     ((skip_count++))
 fi
 # 히스토그램/블록 통계가 표시 중인 프레임을 따라가는지 (전체 창을 띄워서 검사한다).
@@ -167,6 +171,14 @@ fi
 if [[ -e "$APPDIR/decoder/libdav1d-internals.so" ]]; then
     run_test "$ROOT/tests/regression/14-block-bitstream-range.cpp"      "$STREAM"
     run_test "$ROOT/tests/regression/16-statistics-ui-grouping.cpp"     "$STREAM"
+    # 블록 syntax pane 의 프레임 추종 + Rec/Org 뷰어 전환 + SSE/bitcount 그래프.
+    # test.ivf 와 raw YUV 는 같은 testsrc2 소스라서 raw YUV 를 original 로 붙일 수 있다.
+    if [[ -s "$RAWYUV" ]]; then
+        run_test "$ROOT/tests/regression/19-block-syntax-and-rd-plot.cpp" "$STREAM" "$RAWYUV"
+    else
+        echo "  SKIP  19-block-syntax-and-rd-plot (raw YUV 없음)"
+        ((skip_count++))
+    fi
 else
     echo "  SKIP  14-block-bitstream-range (libdav1d-internals.so 없음)"
     ((skip_count++))
