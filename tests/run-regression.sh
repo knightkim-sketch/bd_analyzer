@@ -60,6 +60,35 @@ echo "테스트 스트림: $STREAM"
 echo
 
 # ------------------------------------------------------------------- 빌드/실행
+# src/me 는 Qt-free 다. 단위 테스트도 Qt / libYUViewLib 없이 빌드해서 그 사실을 실제로 검증한다
+# (Qt 헤더가 하나라도 섞여 들어오면 여기서 컴파일이 깨진다).
+compile_unit() {
+    local src="$1" bin="$2"; shift 2
+    scl enable "$TOOLSET" -- bash -c "
+        g++ -std=gnu++2a -O1 -g -Wall -Wextra -I'$ROOT/src' \
+            '$src' $* -o '$bin'"
+}
+
+run_unit_test() {
+    local src="$1"; shift
+    local name log bin rc
+    name="$(basename "$src" .cpp)"
+    bin="$OUT/$name"
+    log="$OUT/$name.log"
+
+    if ! compile_unit "$src" "$bin" "$@" > "$log" 2>&1; then
+        echo "  FAIL  $name (컴파일 실패, $log)"
+        ((fail_count++)); return
+    fi
+    if timeout "$TIMEOUT" "$bin" > "$log" 2>&1; then
+        echo "  PASS  $name"; ((pass_count++))
+    else
+        rc=$?
+        echo "  FAIL  $name (종료 코드 $rc, $log)"
+        ((fail_count++))
+    fi
+}
+
 compile() {
     local src="$1" bin="$2"
     scl enable "$TOOLSET" -- bash -c "
@@ -100,6 +129,11 @@ run_test() {
     else                         echo "  FAIL  $name (exit $rc, $log)"; ((fail_count++))
     fi
 }
+
+echo "== ME 코어 단위 테스트 (Qt 없이 빌드) =="
+run_unit_test "$ROOT/tests/unit/me-plane-and-cost.cpp" \
+              "$ROOT/src/me/MePlane.cpp" "$ROOT/src/me/MeCost.cpp"
+echo
 
 echo "== AV1 분석 경로 =="
 run_test "$ROOT/tests/regression/01-av1-obu-parsing.cpp"              "$STREAM"
