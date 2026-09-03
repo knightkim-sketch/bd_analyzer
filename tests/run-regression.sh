@@ -146,6 +146,11 @@ else
     echo "  SKIP  18-org-yuv-block-sse (raw YUV 생성 실패)"
     ((skip_count++))
 fi
+# 이름에 해상도가 없고 크기로도 포맷을 추측할 수 없는 raw YUV. 열자마자 bad_alloc 으로
+# abort 하던 회귀 (videoHandlerYUV::getFormatAsString 의 빈 optional 역참조).
+# 테스트가 자기 파일을 만들므로 RAWYUV 유무와 무관하다.
+run_test "$ROOT/tests/regression/20-raw-yuv-unknown-format.cpp"
+
 # 히스토그램/블록 통계가 표시 중인 프레임을 따라가는지 (전체 창을 띄워서 검사한다).
 run_test "$ROOT/tests/regression/17-frame-info-follows-frame.cpp"      "$STREAM"
 

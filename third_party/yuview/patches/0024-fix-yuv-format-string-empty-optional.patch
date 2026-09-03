@@ -1,0 +1,16 @@
+diff --git a/YUViewLib/src/video/yuv/videoHandlerYUV.h b/YUViewLib/src/video/yuv/videoHandlerYUV.h
+--- a/YUViewLib/src/video/yuv/videoHandlerYUV.h
++++ b/YUViewLib/src/video/yuv/videoHandlerYUV.h
+@@ -143,6 +143,12 @@
+   virtual std::optional<std::string> getFormatAsString() const override
+   {
+     const auto frameFormat = FrameHandler::getFormatAsString();
++    // The base returns nothing when the frame size is not valid, which happens for a raw file
++    // whose name carries no resolution and whose size does not match any guess. Dereferencing
++    // the empty optional built a string from a garbage length and aborted with bad_alloc before
++    // the item was even shown. videoHandlerRGB::getFormatAsString does this check already.
++    if (!frameFormat)
++      return {};
+     return *frameFormat + ";YUV;" + this->srcPixelFormat.getName();
+   }
+   virtual bool setFormatFromString(const std::string_view format) override;
