@@ -1,0 +1,148 @@
+diff --git a/YUViewLib/src/ui/Mainwindow.cpp b/YUViewLib/src/ui/Mainwindow.cpp
+--- a/YUViewLib/src/ui/Mainwindow.cpp
++++ b/YUViewLib/src/ui/Mainwindow.cpp
+@@ -413,18 +413,28 @@
+ 
+   if (ui.playlistTreeWidget->isAutosaveAvailable())
+   {
+-    QMessageBox::StandardButton resBtn =
+-        QMessageBox::question(this,
+-                              "Restore Playlist",
+-                              tr("It looks like YUView crashed the last time you used it. We are "
+-                                 "sorry about that. However, we have an autosave of the playlist "
+-                                 "you were working with. Do you want to restore this playlist?\n"),
+-                              QMessageBox::Yes | QMessageBox::No,
+-                              QMessageBox::No);
+-    if (resBtn == QMessageBox::Yes)
++    QSettings settings;
++    if (settings.value("SavePlaylistOnExit", true).toBool())
++    {
++      // The snapshot is written on a normal quit too, so restoring it is the expected outcome
++      // rather than a recovery, and asking about it every start would only be noise.
+       ui.playlistTreeWidget->loadAutosavedPlaylist();
++    }
+     else
+-      ui.playlistTreeWidget->dropAutosavedPlaylist();
++    {
++      QMessageBox::StandardButton resBtn =
++          QMessageBox::question(this,
++                                "Restore Playlist",
++                                tr("It looks like YUView crashed the last time you used it. We are "
++                                   "sorry about that. However, we have an autosave of the playlist "
++                                   "you were working with. Do you want to restore this playlist?\n"),
++                                QMessageBox::Yes | QMessageBox::No,
++                                QMessageBox::No);
++      if (resBtn == QMessageBox::Yes)
++        ui.playlistTreeWidget->loadAutosavedPlaylist();
++      else
++        ui.playlistTreeWidget->dropAutosavedPlaylist();
++    }
+   }
+   // Start the timer now (and not in the constructor of rht playlistTreeWidget) so that the autosave
+   // is not accidetly overwritten.
+@@ -565,6 +575,22 @@
+                   ui.playlistTreeWidget,
+                   &PlaylistTreeWidget::savePlaylistToFile,
+                   Qt::CTRL | Qt::Key_S);
++  /* Keeping the playlist across sessions is on by default. The snapshot that used to exist only
++   * for crash recovery is now written on a normal quit as well and restored without asking, so
++   * this toggle is the only thing standing between the two behaviours. It lives in the menu
++   * rather than only in the settings dialog because it is a per-session habit, not a one-off
++   * configuration.
++   */
++  {
++    QSettings settings;
++    auto      savePlaylistOnExitAction = fileMenu->addAction(tr("Save Playlist on Exit"));
++    savePlaylistOnExitAction->setCheckable(true);
++    savePlaylistOnExitAction->setChecked(settings.value("SavePlaylistOnExit", true).toBool());
++    connect(savePlaylistOnExitAction, &QAction::toggled, this, [](bool checked) {
++      QSettings settings;
++      settings.setValue("SavePlaylistOnExit", checked);
++    });
++  }
+   fileMenu->addSeparator();
+   addActionToMenu(fileMenu, "&Save Screenshot...", this, &MainWindow::saveScreenshot);
+   fileMenu->addSeparator();
+@@ -789,7 +815,14 @@
+   ui.playbackController->pausePlayback();
+ 
+   QSettings settings;
+-  if (!ui.playlistTreeWidget->getIsSaved() && settings.value("AskToSaveOnExit", true).toBool())
++  if (settings.value("SavePlaylistOnExit", true).toBool())
++  {
++    // Snapshot into the settings, which needs neither a file dialog nor a prompt. This has to
++    // happen before deletePlaylistItems() below empties the playlist.
++    ui.playlistTreeWidget->savePlaylistForNextSession();
++  }
++  else if (!ui.playlistTreeWidget->getIsSaved() &&
++           settings.value("AskToSaveOnExit", true).toBool())
+   {
+     QMessageBox::StandardButton resBtn =
+         QMessageBox::question(this,
+diff --git a/YUViewLib/src/ui/widgets/PlaylistTreeWidget.cpp b/YUViewLib/src/ui/widgets/PlaylistTreeWidget.cpp
+--- a/YUViewLib/src/ui/widgets/PlaylistTreeWidget.cpp
++++ b/YUViewLib/src/ui/widgets/PlaylistTreeWidget.cpp
+@@ -161,13 +161,28 @@
+ 
+ PlaylistTreeWidget::~PlaylistTreeWidget()
+ {
+-  // This is a conventional quit. Remove the automatically saved playlist.
++  // This is a conventional quit. Remove the automatically saved playlist - unless the playlist is
++  // meant to survive the session, in which case that snapshot is what the next start restores.
+   autosaveTimer.stop();
+   QSettings settings;
+-  if (settings.contains("Autosaveplaylist"))
++  if (!settings.value("SavePlaylistOnExit", true).toBool() &&
++      settings.contains("Autosaveplaylist"))
+     settings.remove("Autosaveplaylist");
+ }
+ 
++/* Snapshot the playlist for the next session and stop the timer in the same step.
++ *
++ * The timer has to stop here, not later: MainWindow::closeEvent deletes the playlist items after
++ * this call and then may open a dialog, which runs a nested event loop. A timer firing in that
++ * window would call autoSavePlaylist() on an empty playlist, and that removes the snapshot instead
++ * of writing one.
++ */
++void PlaylistTreeWidget::savePlaylistForNextSession()
++{
++  this->autosaveTimer.stop();
++  this->autoSavePlaylist();
++}
++
+ playlistItem *PlaylistTreeWidget::getDropTarget(const QPoint &pos) const
+ {
+   auto pItem = dynamic_cast<playlistItem *>(this->itemAt(pos));
+@@ -1031,7 +1046,18 @@
+ 
+   QByteArray compressedPlaylist   = settings.value("Autosaveplaylist").toByteArray();
+   QByteArray uncompressedPlaylist = qUncompress(compressedPlaylist);
+-  loadPlaylistFromByteArray(uncompressedPlaylist, QDir::current().absolutePath());
++  /* The second argument is a playlist *file* path, not a directory: the item loaders run it
++   * through QFileInfo::path() to get the directory that the stored relative paths are based on.
++   * Passing the directory itself stripped one level off, so every relative path resolved one
++   * directory too high and every item came back as a nullptr - an empty playlist. The names in
++   * the snapshot are relative to QDir::current() because that is what autoSavePlaylist() passes
++   * to getPlaylistString(), so name a file inside that directory to keep the two symmetric.
++   *
++   * The stored absolutePath does not save us here: it is written as a "file://" URL but checked
++   * with QFileInfo, which never matches, so the relative path is the only route that works.
++   */
++  loadPlaylistFromByteArray(uncompressedPlaylist,
++                            QDir::current().absoluteFilePath("autosave.yuvplaylist"));
+ 
+   dropAutosavedPlaylist();
+ }
+diff --git a/YUViewLib/src/ui/widgets/PlaylistTreeWidget.h b/YUViewLib/src/ui/widgets/PlaylistTreeWidget.h
+--- a/YUViewLib/src/ui/widgets/PlaylistTreeWidget.h
++++ b/YUViewLib/src/ui/widgets/PlaylistTreeWidget.h
+@@ -93,6 +93,9 @@
+   void loadAutosavedPlaylist();
+   void dropAutosavedPlaylist();
+   void startAutosaveTimer();
++  // Take the snapshot that the next session restores. Also stops the autosave timer - see the
++  // implementation for why that has to happen together with the snapshot.
++  void savePlaylistForNextSession();
+ 
+ public slots:
+   void savePlaylistToFile();
