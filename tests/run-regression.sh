@@ -94,7 +94,8 @@ run_unit_test() {
 # 않는다 - 그러면 .pro 배선이 깨져도 테스트가 통과해 버린다.
 BDA_ME_SRCS="$ROOT/src/me/MePlane.cpp $ROOT/src/me/MeCost.cpp $ROOT/src/me/SvtIntegerMe.cpp \
              $ROOT/src/me/OdysseyOpenLoopMe.cpp $ROOT/src/me/MeEstimatorFactory.cpp \
-             $ROOT/src/integration/MeStatisticsAdapter.cpp"
+             $ROOT/src/integration/MeStatisticsAdapter.cpp $ROOT/src/integration/MeFrameSource.cpp \
+             $ROOT/src/integration/MeRunner.cpp"
 
 compile() {
     local src="$1" bin="$2"; shift 2
@@ -172,6 +173,9 @@ run_unit_test "$ROOT/tests/unit/me-odyssey-openloop.cpp" \
 # ME 결과가 upstream 통계 오버레이(기존 MV drawer)로 실제로 들어가는지. 별도 drawer 를 만들지
 # 않기로 한 결정이 성립하는지를 여기서 확인한다.
 run_test_bda "$ROOT/tests/regression/22-me-statistics-overlay.cpp"
+
+# raw YUV 프레임 두 장 -> ME 결과. ME 패널이 워커 스레드에서 부르는 경로 전체.
+run_test_bda "$ROOT/tests/regression/23-me-runner.cpp"
 echo
 
 echo "== AV1 분석 경로 =="

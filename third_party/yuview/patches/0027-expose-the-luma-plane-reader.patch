@@ -1,0 +1,78 @@
+diff --git a/YUViewLib/src/statistics/PixelStatistics.h b/YUViewLib/src/statistics/PixelStatistics.h
+--- a/YUViewLib/src/statistics/PixelStatistics.h
++++ b/YUViewLib/src/statistics/PixelStatistics.h
+@@ -53,6 +53,38 @@
+ namespace stats
+ {
+ 
++/* Read the luma plane out of one raw YUV frame, at its native bit depth.
++ *
++ * Exposed because bd_analyzer's motion estimation needs the same plane the pixel statistics use,
++ * and the bit depth / endianness / plane-layout handling here is already right. A second copy of
++ * it in the analysis code would be a second place to get 10-bit or big-endian wrong.
++ */
++struct LumaPlaneReader
++{
++  const uint8_t *data{};
++  int64_t        sampleCount{};
++  unsigned       width{};
++  bool           twoBytes{};
++  bool           bigEndian{};
++
++  unsigned at(unsigned x, unsigned y) const
++  {
++    const int64_t index = int64_t(y) * this->width + x;
++    if (!this->twoBytes)
++      return this->data[index];
++    const auto *p = this->data + index * 2;
++    return this->bigEndian ? (unsigned(p[0]) << 8 | p[1]) : (unsigned(p[1]) << 8 | p[0]);
++  }
++};
++
++/* Nothing for a packed or byte-packed format, an invalid size, a bit depth outside 8..16, or a
++ * frame too short to hold the luma plane. The reader borrows `rawYUV` - it must outlive it.
++ */
++std::optional<LumaPlaneReader> makeLumaReader(const QByteArray                 &rawYUV,
++                                              const video::yuv::PixelFormatYUV &format,
++                                              const Size                       &frameSize);
++
++
+ /* One block's luma statistics. The first four are float32 so that the record size does not depend on
+  * the bit depth. Adding a field means bumping PIXEL_STATS_CACHE_VERSION, which makes existing cache
+  * files be discarded and recomputed.
+diff --git a/YUViewLib/src/statistics/PixelStatistics.cpp b/YUViewLib/src/statistics/PixelStatistics.cpp
+--- a/YUViewLib/src/statistics/PixelStatistics.cpp
++++ b/YUViewLib/src/statistics/PixelStatistics.cpp
+@@ -58,23 +58,7 @@
+  * interleave the components, and byte packing squeezes samples across byte boundaries - both would
+  * need the full unpacking logic from videoHandlerYUV, which is not worth duplicating here.
+  */
+-struct LumaPlaneReader
+-{
+-  const uint8_t *data{};
+-  int64_t        sampleCount{};
+-  unsigned       width{};
+-  bool           twoBytes{};
+-  bool           bigEndian{};
+-
+-  unsigned at(unsigned x, unsigned y) const
+-  {
+-    const int64_t index = int64_t(y) * this->width + x;
+-    if (!this->twoBytes)
+-      return this->data[index];
+-    const auto *p = this->data + index * 2;
+-    return this->bigEndian ? (unsigned(p[0]) << 8 | p[1]) : (unsigned(p[1]) << 8 | p[0]);
+-  }
+-};
++} // namespace
+ 
+ std::optional<LumaPlaneReader> makeLumaReader(const QByteArray                 &rawYUV,
+                                              const video::yuv::PixelFormatYUV &format,
+@@ -104,7 +88,6 @@
+   return reader;
+ }
+ 
+-} // namespace
+ 
+ std::vector<PixelBlockStats> computeLumaBlockStats(const QByteArray                 &rawYUV,
+                                                    const video::yuv::PixelFormatYUV &format,
