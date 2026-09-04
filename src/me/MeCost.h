@@ -85,6 +85,37 @@ std::int64_t odysseyVbsRateTerm(int mvdFromCentreX, int mvdFromCentreY);
  */
 std::int64_t odysseyClosedLoopRateTerm(int mvdX, int mvdY, BlockSize size);
 
+/* Restrict a search range so every read stays inside the reference plane and its border.
+ *
+ * Both encoders do this explicitly and it is not an optimisation: SVT corrects each HME level's
+ * search origin against the picture ("Correct the left edge of the Search Area if it is not on the
+ * reference picture", motion_estimation.c:811 and the three that follow), and odyssey runs every
+ * stage through clamp_search_range(). Leaving it out reads past the allocated plane - the border
+ * is finite - which is undefined behaviour rather than a slightly wrong vector.
+ *
+ * The range is inclusive on both ends. An empty range comes back as min > max, which the callers
+ * treat as "nothing to search here".
+ */
+struct SearchRange
+{
+  int minDx = 0;
+  int maxDx = 0;
+  int minDy = 0;
+  int maxDy = 0;
+
+  bool empty() const { return this->minDx > this->maxDx || this->minDy > this->maxDy; }
+};
+
+SearchRange clampSearchRange(const MePlane &ref,
+                             int            blockX,
+                             int            blockY,
+                             int            blockWidth,
+                             int            blockHeight,
+                             int            wantMinDx,
+                             int            wantMaxDx,
+                             int            wantMinDy,
+                             int            wantMaxDy);
+
 /* The common metric: plain SAD of the chosen prediction, every row, no rate.
  *
  * This exists so the three algorithms can be put in one table. Their native costs cannot be

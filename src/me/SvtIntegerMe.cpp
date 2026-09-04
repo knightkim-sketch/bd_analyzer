@@ -47,9 +47,26 @@ BestPoint searchLevel(const MePlane &src,
 {
   const int halfW = roundSearchWidthUp(2 * area) / 2;
 
+  /* Corrected against the picture and its border, the way each HME level corrects its own search
+   * origin. Without this the coarse levels read past the end of the plane on small pictures - the
+   * border is only as wide as the pad.
+   */
+  const auto range = clampSearchRange(ref,
+                                      blkX,
+                                      blkY,
+                                      blkW,
+                                      blkH,
+                                      centreX - halfW,
+                                      centreX + halfW,
+                                      centreY - area,
+                                      centreY + area);
+
   BestPoint best;
-  for (int dy = centreY - area; dy <= centreY + area; ++dy)
-    for (int dx = centreX - halfW; dx <= centreX + halfW; ++dx)
+  if (range.empty())
+    return best;
+
+  for (int dy = range.minDy; dy <= range.maxDy; ++dy)
+    for (int dx = range.minDx; dx <= range.maxDx; ++dx)
     {
       const auto cost = blockSad(src, blkX, blkY, ref, blkX + dx, blkY + dy, blkW, blkH);
       // Strictly-less keeps the first candidate on a tie, which is what SVT's loops do.
@@ -114,8 +131,8 @@ MeFrameResult SvtIntegerMe::estimateFrame(const MePictureSet &pictures, const Me
    * step 4. buildSvtPyramid() carries the reasoning; getting this wrong changes the picture that
    * level 0 searches.
    */
-  const auto srcPyr = buildSvtPyramid(src, 16, 16);
-  const auto refPyr = buildSvtPyramid(ref, 16, 16);
+  const auto srcPyr = buildSvtPyramid(src, kHmePyramidPad, kHmePyramidPad);
+  const auto refPyr = buildSvtPyramid(ref, kHmePyramidPad, kHmePyramidPad);
 
   /* Scale the search areas with the frame interval. SVT does this through
    * svt_aom_get_scaled_picture_distance(); a reference further away needs a wider search because
@@ -231,9 +248,18 @@ MeFrameResult SvtIntegerMe::estimateFrame(const MePictureSet &pictures, const Me
       std::array<Best, 4>               best32;
       Best                              best64;
 
-      const int sr = roundSearchWidthUp(2 * kIntegerSearchSr) / 2;
-      for (int dy = centreY - kIntegerSearchSr; dy <= centreY + kIntegerSearchSr; ++dy)
-        for (int dx = centreX - sr; dx <= centreX + sr; ++dx)
+      const int  sr    = roundSearchWidthUp(2 * kIntegerSearchSr) / 2;
+      const auto range = clampSearchRange(ref,
+                                          b64X,
+                                          b64Y,
+                                          kB64,
+                                          kB64,
+                                          centreX - sr,
+                                          centreX + sr,
+                                          centreY - kIntegerSearchSr,
+                                          centreY + kIntegerSearchSr);
+      for (int dy = range.minDy; dy <= range.maxDy; ++dy)
+        for (int dx = range.minDx; dx <= range.maxDx; ++dx)
         {
           std::array<std::int64_t, kUnits * kUnits> sad8{};
           for (int uy = 0; uy < kUnits; ++uy)

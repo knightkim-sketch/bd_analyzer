@@ -206,11 +206,21 @@ MeFrameResult OdysseyOpenLoopMe::estimateFrame(const MePictureSet &pictures, con
        * that the later stages use. Using one cost for all stages changes which centre wins.
        */
       Candidate best;
+      /* Every stage is corrected against the plane it searches, as clamp_search_range() does in
+       * the encoder. The half and upscaled planes have different pads, so this cannot be hoisted.
+       */
+      const auto halfRange = clampSearchRange(
+          refHalf, orgX / 2, orgY / 2, kSb / 2, kSb / 2, -1024, 1024, -1024, 1024);
+      const auto clampHalf = [&halfRange](MotionVector mv) {
+        mv.x = mv.x < halfRange.minDx ? halfRange.minDx : (mv.x > halfRange.maxDx ? halfRange.maxDx : mv.x);
+        mv.y = mv.y < halfRange.minDy ? halfRange.minDy : (mv.y > halfRange.maxDy ? halfRange.maxDy : mv.y);
+        return mv;
+      };
       for (const auto &cand : candidates)
         for (int ry = -1; ry <= 1; ++ry)
           for (int rx = -1; rx <= 1; ++rx)
           {
-            const MotionVector mv{cand.x + rx, cand.y + ry};
+            const MotionVector mv = clampHalf({cand.x + rx, cand.y + ry});
             const auto         sad = blockSad(srcHalf,
                                       orgX / 2,
                                       orgY / 2,
@@ -252,7 +262,8 @@ MeFrameResult OdysseyOpenLoopMe::estimateFrame(const MePictureSet &pictures, con
             for (int iy = 0; iy < 8; ++iy)
               for (int ix = 0; ix < 8; ++ix)
               {
-                const MotionVector mv{best.mv.x + baseX + ix * 2, best.mv.y + baseY + iy * 2};
+                const MotionVector mv =
+                    clampHalf({best.mv.x + baseX + ix * 2, best.mv.y + baseY + iy * 2});
                 const auto         sse = blockSse(srcHalf,
                                           orgX / 2,
                                           orgY / 2,
@@ -279,7 +290,7 @@ MeFrameResult OdysseyOpenLoopMe::estimateFrame(const MePictureSet &pictures, con
         for (int dy = -(kOdyHalfMaxSr / 2); dy < kOdyHalfMaxSr / 2; ++dy)
           for (int dx = -(kOdyHalfMaxSr / 2); dx < kOdyHalfMaxSr / 2; ++dx)
           {
-            const MotionVector mv{centre.x + dx, centre.y + dy};
+            const MotionVector mv = clampHalf({centre.x + dx, centre.y + dy});
             const auto         sse = blockSse(srcHalf,
                                       orgX / 2,
                                       orgY / 2,
@@ -314,6 +325,7 @@ MeFrameResult OdysseyOpenLoopMe::estimateFrame(const MePictureSet &pictures, con
       Best                              best64;
 
       const MotionVector vbsCentre{halfBest.mv.x * 2, halfBest.mv.y * 2};
+      const auto upRange = clampSearchRange(refUp, orgX, orgY, kSb, kSb, -1024, 1024, -1024, 1024);
       const int          lo4 = -(kOdyFullMaxSr / 2); // -8
 
       for (int pass = 0; pass < 4; ++pass)
@@ -323,8 +335,10 @@ MeFrameResult OdysseyOpenLoopMe::estimateFrame(const MePictureSet &pictures, con
         for (int iy = 0; iy < 8; ++iy)
           for (int ix = 0; ix < 8; ++ix)
           {
-            const MotionVector mv{vbsCentre.x + lo4 + offX + ix * 2,
-                                  vbsCentre.y + lo4 + offY + iy * 2};
+            MotionVector mv{vbsCentre.x + lo4 + offX + ix * 2,
+                            vbsCentre.y + lo4 + offY + iy * 2};
+            mv.x = mv.x < upRange.minDx ? upRange.minDx : (mv.x > upRange.maxDx ? upRange.maxDx : mv.x);
+            mv.y = mv.y < upRange.minDy ? upRange.minDy : (mv.y > upRange.maxDy ? upRange.maxDy : mv.y);
 
             /* The rate is charged once per 8x8 against the offset from the search centre, and the
              * larger sizes inherit it by summing those costs. So the cost of every size already

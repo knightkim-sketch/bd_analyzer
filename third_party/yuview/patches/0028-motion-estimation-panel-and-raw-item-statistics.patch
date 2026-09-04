@@ -1,0 +1,496 @@
+diff --git a/YUViewLib/ui/mainwindow.ui b/YUViewLib/ui/mainwindow.ui
+--- a/YUViewLib/ui/mainwindow.ui
++++ b/YUViewLib/ui/mainwindow.ui
+@@ -380,6 +380,24 @@
+    </attribute>
+    <widget class="FrameInfoWidget" name="frameInfoWidget"/>
+   </widget>
++  <widget class="QDockWidget" name="motionEstimationDock">
++   <property name="visible">
++    <bool>false</bool>
++   </property>
++   <property name="minimumSize">
++    <size>
++     <width>220</width>
++     <height>200</height>
++    </size>
++   </property>
++   <property name="windowTitle">
++    <string>Motion Estimation</string>
++   </property>
++   <attribute name="dockWidgetArea">
++    <number>2</number>
++   </attribute>
++   <widget class="MotionEstimationWidget" name="motionEstimationWidget"/>
++  </widget>
+   <action name="actionOpen">
+    <property name="text">
+     <string>Open...</string>
+@@ -401,6 +419,12 @@
+    <container>1</container>
+   </customwidget>
+   <customwidget>
++   <class>MotionEstimationWidget</class>
++   <extends>QWidget</extends>
++   <header>integration/MotionEstimationWidget.h</header>
++   <container>1</container>
++  </customwidget>
++  <customwidget>
+    <class>PlaylistTreeWidget</class>
+    <extends>QTreeWidget</extends>
+    <header>ui/widgets/PlaylistTreeWidget.h</header>
+diff --git a/YUViewLib/src/playlistitem/playlistItem.h b/YUViewLib/src/playlistitem/playlistItem.h
+--- a/YUViewLib/src/playlistitem/playlistItem.h
++++ b/YUViewLib/src/playlistitem/playlistItem.h
+@@ -245,6 +245,18 @@
+    */
+   virtual bool supportsPixelStatistics() const { return false; }
+ 
++  /* Motion estimation needs two arbitrary frames of raw luma, which only a raw file can hand over
++   * cheaply - a compressed item would have to decode the reference, and this decoder is built
++   * around sequential access. Answering false here is what greys the ME panel out with a reason
++   * instead of leaving it to produce nothing.
++   */
++  virtual bool supportsMotionEstimation() const { return false; }
++
++  /* One frame of raw data, read without disturbing what the viewer is showing. Empty when the item
++   * cannot serve it.
++   */
++  virtual QByteArray readRawFrame(int) { return {}; }
++
+   //!< Edge length of the blocks getPixelBlockStats() reports on. 0 when unsupported.
+   virtual unsigned getPixelStatisticsBlockSize() const { return 0; }
+ 
+diff --git a/YUViewLib/src/playlistitem/playlistItemRawFile.h b/YUViewLib/src/playlistitem/playlistItemRawFile.h
+--- a/YUViewLib/src/playlistitem/playlistItemRawFile.h
++++ b/YUViewLib/src/playlistitem/playlistItemRawFile.h
+@@ -34,6 +34,8 @@
+ 
+ #include <common/Typedef.h>
+ #include <filesource/FileSource.h>
++#include <statistics/StatisticUIHandler.h>
++#include <statistics/StatisticsData.h>
+ 
+ #include <QFuture>
+ #include <QString>
+@@ -49,6 +51,44 @@
+   Q_OBJECT
+ 
+ public:
++  /* Raw data of an arbitrary frame, read straight from the file into a fresh buffer.
++   *
++   * Deliberately not loadRawData(): that one writes into the video handler's buffer and moves
++   * rawData_frameIndex, which would fight with whatever the viewer is displaying. The offset
++   * arithmetic is shared with it, Y4M frame index table included.
++   */
++  bool       supportsMotionEstimation() const override;
++  QByteArray readRawFrame(int frameIdx) override;
++
++  /* Statistics on a raw item.
++   *
++   * A raw YUV file has no bitstream to describe, so upstream gives it no statistics container -
++   * only the compressed and the statistics-file items have one. The motion estimation overlay
++   * needs one anyway: it draws through the same statistics machinery as the bitstream's own
++   * vectors, which is what lets the two be compared on one canvas instead of through a second
++   * drawer that would drift on zoom and style.
++   *
++   * Owned and wired exactly as playlistItemCompressedVideo owns its pair, so there is one pattern
++   * in the codebase rather than two.
++   */
++  stats::StatisticUIHandler *getStatisticsUIHandler() override { return &this->statisticsUIHandler; }
++  stats::StatisticsData     &getStatisticsData() { return this->statisticsData; }
++
++  void drawItem(QPainter *painter, int frameIdx, double zoomFactor, bool drawRawValues) override;
++
++  /* Public because the main window assembles the motion estimation request: it needs the pixel
++   * format and the frame size alongside the frames themselves, and the video handler that holds
++   * them is protected.
++   */
++  video::yuv::PixelFormatYUV getRawPixelFormat() const
++  {
++    return this->getYUVVideo() ? this->getYUVVideo()->getPixelFormatYUV()
++                               : video::yuv::PixelFormatYUV();
++  }
++  Size getRawFrameSize() const
++  {
++    return this->getYUVVideo() ? this->getYUVVideo()->getFrameSize() : Size();
++  }
+   // Create a new raw file. The format (RGB or YUV) will be gotten from the extension. If the
+   // extension is not one of the supported extensions (getSupportedFileExtensions), set the format
+   // "fmt" to either "rgb" or "yuv". If you already know the frame size and/or sourcePixelFormat,
+@@ -114,6 +154,9 @@
+ 
+   FileSource dataSource;
+ 
++  stats::StatisticUIHandler statisticsUIHandler;
++  stats::StatisticsData     statisticsData;
++
+   void updateStartEndRange() override;
+ 
+   // A y4m file is a raw YUV file but it adds a header (which has information about the YUV format)
+diff --git a/YUViewLib/src/playlistitem/playlistItemRawFile.cpp b/YUViewLib/src/playlistitem/playlistItemRawFile.cpp
+--- a/YUViewLib/src/playlistitem/playlistItemRawFile.cpp
++++ b/YUViewLib/src/playlistitem/playlistItemRawFile.cpp
+@@ -31,6 +31,7 @@
+  */
+ 
+ #include "playlistItemRawFile.h"
++#include <statistics/StatisticsDataPainting.h>
+ 
+ #include <QCryptographicHash>
+ #include <QPainter>
+@@ -171,6 +172,23 @@
+           this,
+           &playlistItemRawFile::slotVideoPropertiesChanged);
+ 
++  /* The statistics container the motion estimation overlay draws through. Frame size is set here
++   * and refreshed whenever the video properties change, because an overlay laid out for the wrong
++   * size would silently draw in the wrong places.
++   */
++  this->statisticsData.setFrameSize(this->video->getFrameSize());
++  this->statisticsUIHandler.setStatisticsData(&this->statisticsData);
++  /* Deliberately NOT connected to StatisticUIHandler::updateItem.
++   *
++   * playlistItemCompressedVideo does connect it, but that item has a decoder to re-run. Here the
++   * only producer is the motion estimation panel, which already asks for a redraw when it has a
++   * result. Wiring updateItem back to SignalItemChanged closed a loop instead: the redraw rebuilt
++   * the statistics rows, which emitted updateItem again, and MainWindow-driven tests hung.
++   *
++   * Cost of leaving it out: changing a statistics style from the panel does not repaint until the
++   * next frame change. Worth it against a hang.
++   */
++
+   this->pixelFormatAfterLoading = this->video->getFormatAsString();
+ 
+   // A raw file can be cached.
+@@ -493,6 +511,9 @@
+   vAllLaout->addWidget(line);
+   vAllLaout->addLayout(this->video->createVideoHandlerControls());
+ 
++  // The statistics controls, so the ME overlays can be toggled and styled like any other.
++  vAllLaout->addLayout(this->statisticsUIHandler.createStatisticsHandlerControls(), 1);
++
+   vAllLaout->insertStretch(-1, 1); // Push controls up
+ }
+ 
+@@ -541,6 +562,55 @@
+   return newFile;
+ }
+ 
++void playlistItemRawFile::drawItem(QPainter *painter,
++                                   int       frameIdx,
++                                   double    zoomFactor,
++                                   bool      drawRawValues)
++{
++  /* The picture first, then the statistics on top - the same order and the same painter call
++   * playlistItemCompressedVideo uses, so an ME overlay on a raw item looks and zooms exactly like
++   * a bitstream overlay on a compressed one.
++   */
++  playlistItemWithVideo::drawItem(painter, frameIdx, zoomFactor, drawRawValues);
++
++  const auto range = this->properties().startEndRange;
++  if (frameIdx >= range.first && frameIdx <= range.second)
++    stats::paintStatisticsData(painter, this->statisticsData, frameIdx, zoomFactor);
++}
++
++bool playlistItemRawFile::supportsMotionEstimation() const
++{
++  // A valid YUV format is the whole requirement: the estimators work on the luma plane, and
++  // readRawFrame() below needs getBytesPerFrame() to mean something.
++  return this->rawFormat == video::RawFormat::YUV && this->video && this->video->isFormatValid();
++}
++
++QByteArray playlistItemRawFile::readRawFrame(int frameIdx)
++{
++  if (!this->supportsMotionEstimation() || frameIdx < 0)
++    return {};
++
++  const auto nrBytes = this->video->getBytesPerFrame();
++  if (nrBytes <= 0)
++    return {};
++
++  int64_t fileStartPos;
++  if (this->isY4MFile)
++  {
++    if (frameIdx >= int(this->y4mFrameIndices.size()))
++      return {};
++    fileStartPos = this->y4mFrameIndices.at(frameIdx);
++  }
++  else
++    fileStartPos = int64_t(frameIdx) * nrBytes;
++
++  QByteArray frame;
++  if (this->dataSource.readBytes(frame, fileStartPos, nrBytes) < nrBytes)
++    // Past the end, or a truncated file.
++    return {};
++  return frame;
++}
++
+ void playlistItemRawFile::loadRawData(int frameIdx)
+ {
+   if (!this->video->isFormatValid())
+diff --git a/YUViewLib/src/ui/Mainwindow.h b/YUViewLib/src/ui/Mainwindow.h
+--- a/YUViewLib/src/ui/Mainwindow.h
++++ b/YUViewLib/src/ui/Mainwindow.h
+@@ -33,9 +33,15 @@
+ #pragma once
+ 
+ #include <QDesktopServices>
++#include <QFutureWatcher>
+ #include <QMainWindow>
++#include <QPointer>
+ #include <QSettings>
+ 
++#include <memory>
++
++#include <integration/MeRunner.h>
++
+ #include <handler/UpdateHandler.h>
+ #include <ui/SeparateWindow.h>
+ #include <video/caching/VideoCache.h>
+@@ -88,6 +94,16 @@
+   //!< Make that selector show what the currently selected item is actually doing.
+   void updateDisplaySourceComboBox();
+   void resetWindowLayout();
++
++  /* Motion estimation, run in the background when the panel's checkbox is on.
++   *
++   * Three entry points because there are three ways the answer can go stale: the displayed frame
++   * moves, a control changes, or a run finishes. All three funnel into restart, which cancels
++   * whatever is in flight first.
++   */
++  void motionEstimationTargetChanged(playlistItem *item, int frameIdx);
++  void restartMotionEstimation();
++  void takeMotionEstimation();
+   void closeAndClearSettings();
+ 
+   void onMenuResetView(bool checked)
+@@ -179,6 +195,19 @@
+   std::unique_ptr<updateHandler>     updater;
+   ViewStateHandler                   stateHandler;
+   SeparateWindow                     separateViewWindow;
++  void cancelMotionEstimation();
++
++  /* A fresh token per run rather than one that gets reset.
++   *
++   * Cancelling and then resetting a shared token races: the worker that was told to stop may not
++   * have looked yet, and the reset would revive it. Handing each run its own token - held alive by
++   * the worker's own copy of the shared_ptr - means a cancelled run stays cancelled.
++   */
++  std::shared_ptr<bda::me::CancelToken>            meCancel;
++  QFutureWatcher<bda::me::MeFrameResult>           meWatcher;
++  QPointer<playlistItem>                           meItem;
++  int                                              meFrameIdx{-1};
++
+   bool showNormalMaximized;     // When going to full screen: Was this windows maximized?
+   bool panelsVisible[7]{false}; // Which panels are visible when going to full-screen mode?
+ };
+diff --git a/YUViewLib/src/ui/Mainwindow.cpp b/YUViewLib/src/ui/Mainwindow.cpp
+--- a/YUViewLib/src/ui/Mainwindow.cpp
++++ b/YUViewLib/src/ui/Mainwindow.cpp
+@@ -31,6 +31,12 @@
+  */
+ 
+ #include "Mainwindow.h"
++#include <QtConcurrent>
++
++#include <integration/MeFrameSource.h>
++#include <integration/MeStatisticsAdapter.h>
++#include <integration/MotionEstimationWidget.h>
++#include <playlistitem/playlistItemRawFile.h>
+ 
+ #include <QByteArray>
+ #include <QFileDialog>
+@@ -318,6 +324,27 @@
+           &PlaylistTreeWidget::selectedItemChanged,
+           ui.rateDistortionPlot,
+           &RateDistortionPlotWidget::refresh);
++
++  /* Motion estimation. The panel follows the displayed frame the same way the rate/distortion plot
++   * does - it describes the whole frame, not a clicked block - and any control change has the same
++   * consequence as a frame change, so both land on restartMotionEstimation().
++   */
++  connect(ui.displaySplitView,
++          &splitViewWidget::viewFrameChanged,
++          this,
++          &MainWindow::motionEstimationTargetChanged);
++  connect(ui.motionEstimationWidget,
++          &MotionEstimationWidget::parametersChanged,
++          this,
++          &MainWindow::restartMotionEstimation);
++  connect(ui.playlistTreeWidget,
++          &PlaylistTreeWidget::selectedItemChanged,
++          this,
++          &MainWindow::restartMotionEstimation);
++  connect(&this->meWatcher,
++          &QFutureWatcher<bda::me::MeFrameResult>::finished,
++          this,
++          &MainWindow::takeMotionEstimation);
+   connect(ui.playlistTreeWidget,
+           &PlaylistTreeWidget::selectedItemChanged,
+           ui.playbackController,
+@@ -809,6 +836,164 @@
+   settings.setValue("recentFileList", files);
+ }
+ 
++void MainWindow::cancelMotionEstimation()
++{
++  if (this->meCancel)
++  {
++    this->meCancel->cancel();
++    // Dropped rather than reset: the worker keeps its own copy alive and must keep seeing "stop".
++    this->meCancel.reset();
++  }
++}
++
++void MainWindow::motionEstimationTargetChanged(playlistItem *item, int frameIdx)
++{
++  /* Only react when the target actually moved.
++   *
++   * This guard is load-bearing, not tidiness. A finished estimate asks the item to redraw so the
++   * new overlay appears, the redraw makes the view announce its frame again, and that announcement
++   * used to restart the estimate - which finished, redrew, announced... The panel sat there
++   * recomputing the same frame forever and the test that drives it never returned.
++   */
++  if (this->meItem == item && this->meFrameIdx == frameIdx)
++    return;
++
++  this->meItem     = item;
++  this->meFrameIdx = frameIdx;
++  this->restartMotionEstimation();
++}
++
++void MainWindow::restartMotionEstimation()
++{
++  this->cancelMotionEstimation();
++
++  auto *panel = ui.motionEstimationWidget;
++  auto *item  = qobject_cast<playlistItemRawFile *>(this->meItem.data());
++
++  if (this->meItem.isNull())
++  {
++    panel->setUnavailable(tr("No item selected."));
++    return;
++  }
++  if (item == nullptr || !item->supportsMotionEstimation())
++  {
++    /* Compressed streams are the second phase: the reference frame would have to be decoded, and
++     * this decoder is built around sequential access. Saying so beats a panel that quietly does
++     * nothing.
++     */
++    panel->setUnavailable(tr("Raw YUV items only, for now. A compressed stream would have to decode "
++                             "the reference frame."));
++    return;
++  }
++
++  panel->setAvailable();
++  if (!panel->autoComputeEnabled())
++  {
++    panel->setStatus(tr("Off. Check the box above to estimate in the background."));
++    return;
++  }
++
++  auto       params     = panel->params();
++  const auto range      = item->properties().startEndRange;
++  const int  frameCount = range.second - range.first + 1;
++
++  std::string reason;
++  if (!bda::integration::meFrameRangeOk(this->meFrameIdx, params.frameInterval, frameCount, &reason))
++  {
++    panel->setStatus(QString::fromStdString(reason));
++    return;
++  }
++
++  const int refIdx = bda::integration::meReferenceFrameIdx(this->meFrameIdx, params.frameInterval);
++
++  bda::integration::MeRunRequest request;
++  request.currentFrame   = item->readRawFrame(this->meFrameIdx);
++  request.referenceFrame = item->readRawFrame(refIdx);
++  request.format         = item->getRawPixelFormat();
++  request.frameSize      = item->getRawFrameSize();
++  request.frameIdx       = this->meFrameIdx;
++  request.refFrameIdx    = refIdx;
++
++  if (request.currentFrame.isEmpty() || request.referenceFrame.isEmpty())
++  {
++    panel->setStatus(tr("Could not read frame %1 or %2 from the file.")
++                         .arg(this->meFrameIdx)
++                         .arg(refIdx));
++    return;
++  }
++
++  this->meCancel = std::make_shared<bda::me::CancelToken>();
++  params.cancel  = this->meCancel.get();
++  request.params = params;
++
++  panel->setStatus(tr("Estimating frame %1 against %2...").arg(this->meFrameIdx).arg(refIdx));
++
++  /* The token is captured by value so the worker keeps it alive: params.cancel points into it, and
++   * this thread drops its own copy the moment the next restart happens.
++   */
++  this->meWatcher.setFuture(QtConcurrent::run(
++      [request, token = this->meCancel]() { return bda::integration::runMe(request); }));
++}
++
++void MainWindow::takeMotionEstimation()
++{
++  const auto result = this->meWatcher.result();
++  auto      *panel  = ui.motionEstimationWidget;
++
++  // A newer run is already on its way; drawing a frame that was abandoned half way would read as a
++  // result rather than as an interruption.
++  if (result.cancelled)
++    return;
++
++  if (!result.error.empty())
++  {
++    panel->setStatus(QString::fromStdString(result.error));
++    return;
++  }
++
++  auto *item = qobject_cast<playlistItemRawFile *>(this->meItem.data());
++  if (item == nullptr || result.frameIdx != this->meFrameIdx)
++    // The selection or the frame moved on while this was running.
++    return;
++
++  /* No lock taken here, and that is not an oversight.
++   *
++   * StatisticsData::setFrameIndex() locks accessMutex itself (StatisticsData.cpp:607), so calling
++   * it while already holding that lock deadlocks the GUI thread against itself - the mutex is not
++   * recursive. That is exactly what happened: the estimate finished, the finished() handler took
++   * the lock, and setFrameIndex() then waited for a lock its own caller was holding.
++   *
++   * The order below matters instead. setFrameIndex() clears the frame cache when the index moves,
++   * so it has to run *before* the results are filled in, or the fill would be thrown away.
++   */
++  auto &data = item->getStatisticsData();
++  data.setFrameIndex(result.frameIdx);
++  bda::integration::syncMeStatTypes(
++      data,
++      result.algorithm,
++      result.blocks.empty() ? bda::me::BlockSizeSet() : panel->params().blockSizes);
++  bda::integration::fillMeStatistics(data, result);
++
++  /* No updateStatisticsHandlerControls() here: it rebuilds the panel's rows, and doing that from
++   * a finished background run was the other half of the loop described in playlistItemRawFile's
++   * constructor. The types are registered once per parameter change, which is when the rows are
++   * built anyway.
++   */
++  panel->setStatus(tr("Frame %1 against %2: %3 blocks.")
++                       .arg(result.frameIdx)
++                       .arg(result.refFrameIdx)
++                       .arg(int(result.blocks.size())));
++
++  /* Repaint the view, nothing more.
++   *
++   * SignalItemChanged() was the obvious call and the wrong one: it means "this item changed", so it
++   * pulls in reloads and further signals, and one of those came back round to restart the estimate
++   * that had just finished. All that is actually needed here is for the overlay to appear, which is
++   * a repaint.
++   */
++  ui.displaySplitView->update();
++}
++
+ void MainWindow::closeEvent(QCloseEvent *event)
+ {
+   // Stop playback

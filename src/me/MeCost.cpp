@@ -135,6 +135,32 @@ std::int64_t odysseyClosedLoopRateTerm(int mvdX, int mvdY, BlockSize size)
   return rate;
 }
 
+SearchRange clampSearchRange(const MePlane &ref,
+                             int            blockX,
+                             int            blockY,
+                             int            blockWidth,
+                             int            blockHeight,
+                             int            wantMinDx,
+                             int            wantMaxDx,
+                             int            wantMinDy,
+                             int            wantMaxDy)
+{
+  /* Readable x runs from -pad to width + pad - 1, and the block reads blockWidth of them starting
+   * at blockX + dx, so dx is bounded by both ends of that. Same for y.
+   */
+  const int loX = -ref.pad() - blockX;
+  const int hiX = ref.width() + ref.pad() - blockWidth - blockX;
+  const int loY = -ref.pad() - blockY;
+  const int hiY = ref.height() + ref.pad() - blockHeight - blockY;
+
+  SearchRange range;
+  range.minDx = wantMinDx > loX ? wantMinDx : loX;
+  range.maxDx = wantMaxDx < hiX ? wantMaxDx : hiX;
+  range.minDy = wantMinDy > loY ? wantMinDy : loY;
+  range.maxDy = wantMaxDy < hiY ? wantMaxDy : hiY;
+  return range;
+}
+
 std::int64_t commonMetricSad(const MePlane      &src,
                              const MePlane      &ref,
                              const MeBlock      &block,

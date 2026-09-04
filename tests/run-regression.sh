@@ -219,12 +219,16 @@ if [[ -s "$RAWYUV" ]]; then
     run_test "$ROOT/tests/regression/18-org-yuv-block-sse.cpp"         "$RAWYUV"
     # playlist 가 정상 종료를 넘어 유지되는지 + File 메뉴 on/off 스위치.
     run_test "$ROOT/tests/regression/21-playlist-saved-across-sessions.cpp" "$RAWYUV"
+    # ME 패널과 그것이 구동하는 raw YUV 아이템 (통계 컨테이너, 임의 프레임 읽기, 백그라운드 실행).
+    run_test_bda "$ROOT/tests/regression/24-me-panel.cpp"                   "$RAWYUV"
 else
     echo "  SKIP  12-raw-yuv-pixel-analysis (raw YUV 생성 실패)"
     ((skip_count++))
     echo "  SKIP  18-org-yuv-block-sse (raw YUV 생성 실패)"
     ((skip_count++))
     echo "  SKIP  21-playlist-saved-across-sessions (raw YUV 생성 실패)"
+    ((skip_count++))
+    echo "  SKIP  24-me-panel (raw YUV 생성 실패)"
     ((skip_count++))
 fi
 # 이름에 해상도가 없고 크기로도 포맷을 추측할 수 없는 raw YUV. 열자마자 bad_alloc 으로

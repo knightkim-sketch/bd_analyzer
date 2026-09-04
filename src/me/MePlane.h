@@ -22,6 +22,7 @@
 // than reaching for step 4.
 #pragma once
 
+#include <cassert>
 #include <cstdint>
 #include <vector>
 
@@ -35,6 +36,20 @@ namespace bda::me
  */
 inline constexpr int kOdysseyPadFull = 64;
 inline constexpr int kOdysseyPadHalf = 32;
+
+/* Border for the HME pyramid levels.
+ *
+ * Wider than it looks necessary, and for a reason the encoders sidestep: they align the picture to
+ * the superblock grid (odyssey does ALIGN_POWER_OF_TWO(width, SB_SIZE_LOG2) before any of this),
+ * so a 144-row picture becomes 192 rows and a superblock never hangs off the end. We keep the real
+ * picture size and let the border absorb the slack instead - which means the border has to cover
+ * the alignment gap (up to 63 luma rows, so up to 32 at quarter and 16 at sixteenth) *plus* the
+ * search area on top.
+ *
+ * 16 was not enough and did not fail loudly: the reads simply went past the plane. Hence the debug
+ * assertion in MePlane::offset() as well.
+ */
+inline constexpr int kHmePyramidPad = 64;
 
 class MePlane
 {
@@ -51,6 +66,19 @@ public:
   // Coordinates may run into the border, i.e. -pad <= x < width + pad.
   std::uint8_t       &at(int x, int y) { return this->buf_[this->offset(x, y)]; }
   const std::uint8_t &at(int x, int y) const { return this->buf_[this->offset(x, y)]; }
+
+  /* True when (x, y) is inside the active area or its border.
+   *
+   * offset() does no checking - it is on the innermost path of every SAD - so this is here for the
+   * debug assertion in it and for callers that want to verify a search range. A search that runs
+   * off the plane is the failure mode both encoders guard against by correcting their search area
+   * against the picture; see clampSearchRange() in MeCost.h.
+   */
+  bool contains(int x, int y) const
+  {
+    return x >= -this->pad_ && x < this->width_ + this->pad_ && y >= -this->pad_ &&
+           y < this->height_ + this->pad_;
+  }
 
   std::uint8_t       *row(int y) { return &this->at(0, y); }
   const std::uint8_t *row(int y) const { return &this->at(0, y); }
@@ -91,6 +119,8 @@ public:
 private:
   std::size_t offset(int x, int y) const
   {
+    // Checked in debug builds only: this is the innermost path of every SAD and SSE.
+    assert(this->contains(x, y));
     return static_cast<std::size_t>(y + this->pad_) * static_cast<std::size_t>(this->stride_) +
            static_cast<std::size_t>(x + this->pad_);
   }
