@@ -89,15 +89,22 @@ run_unit_test() {
     fi
 }
 
+# ME 통합 테스트용: 우리 src/me + src/integration 을 함께 컴파일한다. 앱 빌드에서는 .pro 가
+# 같은 파일들을 가져가지만(패치 0026), 테스트는 libYUViewLib.a 에 그것들이 들어있다고 가정하지
+# 않는다 - 그러면 .pro 배선이 깨져도 테스트가 통과해 버린다.
+BDA_ME_SRCS="$ROOT/src/me/MePlane.cpp $ROOT/src/me/MeCost.cpp $ROOT/src/me/SvtIntegerMe.cpp \
+             $ROOT/src/me/OdysseyOpenLoopMe.cpp $ROOT/src/me/MeEstimatorFactory.cpp \
+             $ROOT/src/integration/MeStatisticsAdapter.cpp"
+
 compile() {
-    local src="$1" bin="$2"
+    local src="$1" bin="$2"; shift 2
     scl enable "$TOOLSET" -- bash -c "
         g++ -std=gnu++2a -O1 -g -fPIC \
-            -I'$SRC' -I'$LIB' \
+            -I'$SRC' -I'$LIB' -I'$ROOT/src' \
             -I'$QT/include' -I'$QT/include/QtCore' -I'$QT/include/QtGui' \
             -I'$QT/include/QtWidgets' -I'$QT/include/QtXml' -I'$QT/include/QtConcurrent' \
             -I'$QT/include/QtNetwork' -I'$QT/include/QtOpenGL' \
-            '$src' -o '$bin' \
+            '$src' $* -o '$bin' \
             -L'$LIB' -lYUViewLib \
             '$QT/lib/libQt6Widgets.so' '$QT/lib/libQt6OpenGL.so' '$QT/lib/libQt6Gui.so' \
             '$QT/lib/libQt6Xml.so' '$QT/lib/libQt6Concurrent.so' '$QT/lib/libQt6Network.so' \
@@ -107,6 +114,30 @@ compile() {
 
 # 테스트는 반드시 build/YUViewApp 에서 실행해야 한다: YUView 는 ffmpeg 를
 # applicationDirPath()/ffmpeg/ 에서, 디코더를 .../decoder/ 에서 dlopen 한다.
+# run_test 와 같지만 우리 src/me + src/integration 을 함께 컴파일한다.
+run_test_bda() {
+    local src="$1"; shift
+    local name log bin rc
+    name="$(basename "$src" .cpp)"
+    bin="$OUT/$name"
+    log="$OUT/$name.log"
+
+    if ! compile "$src" "$bin" $BDA_ME_SRCS > "$log" 2>&1; then
+        echo "  FAIL  $name (컴파일 실패, $log)"
+        ((fail_count++)); return
+    fi
+
+    ( cd "$APPDIR" && QT_QPA_PLATFORM=offscreen LD_LIBRARY_PATH="$QT/lib" \
+        timeout "$TIMEOUT" "$bin" "$@" ) >> "$log" 2>&1
+    rc=$?
+
+    if   [[ $rc -eq 0   ]]; then echo "  PASS  $name"; ((pass_count++))
+    elif [[ $rc -eq 124 ]]; then echo "  FAIL  $name (${TIMEOUT}s 타임아웃 = 행. $log)"; ((fail_count++))
+    elif [[ $rc -gt 128 ]]; then echo "  FAIL  $name (시그널 $((rc-128)) = 크래시. $log)"; ((fail_count++))
+    else                         echo "  FAIL  $name (exit $rc, $log)"; ((fail_count++))
+    fi
+}
+
 run_test() {
     local src="$1"; shift
     local name log bin rc
@@ -137,6 +168,10 @@ run_unit_test "$ROOT/tests/unit/me-svt-integer.cpp" \
               "$ROOT/src/me/MePlane.cpp" "$ROOT/src/me/MeCost.cpp" "$ROOT/src/me/SvtIntegerMe.cpp"
 run_unit_test "$ROOT/tests/unit/me-odyssey-openloop.cpp" \
               "$ROOT/src/me/MePlane.cpp" "$ROOT/src/me/MeCost.cpp" "$ROOT/src/me/OdysseyOpenLoopMe.cpp"
+
+# ME 결과가 upstream 통계 오버레이(기존 MV drawer)로 실제로 들어가는지. 별도 drawer 를 만들지
+# 않기로 한 결정이 성립하는지를 여기서 확인한다.
+run_test_bda "$ROOT/tests/regression/22-me-statistics-overlay.cpp"
 echo
 
 echo "== AV1 분석 경로 =="

@@ -1,0 +1,25 @@
+diff --git a/YUViewLib/YUViewLib.pro b/YUViewLib/YUViewLib.pro
+--- a/YUViewLib/YUViewLib.pro
++++ b/YUViewLib/YUViewLib.pro
+@@ -13,6 +13,21 @@
+ 
+ INCLUDEPATH += src/
+ 
++# bd_analyzer's own sources. They live outside this tree on purpose - the repository rule is that
++# upstream is only ever changed through patches, and our code sits in ../../../../src so a rebase
++# never has to merge it. This is the one place the two are joined.
++#
++#   src/me/           Qt-free motion estimation core, shared with the headless CLI
++#   src/integration/  the only part of our tree allowed to know about upstream types
++#
++# $$PWD is .../third_party/yuview/upstream/YUViewLib, so four levels up is the repository root.
++BDA_ROOT = $$PWD/../../../..
++INCLUDEPATH += $$BDA_ROOT/src
++SOURCES += $$files($$BDA_ROOT/src/me/*.cpp, true)
++SOURCES += $$files($$BDA_ROOT/src/integration/*.cpp, true)
++HEADERS += $$files($$BDA_ROOT/src/me/*.h, true)
++HEADERS += $$files($$BDA_ROOT/src/integration/*.h, true)
++
+ RESOURCES += \
+     images/images.qrc \
+     docs/docs.qrc
