@@ -205,6 +205,36 @@ int main()
     check(!reason.empty(), "with a reason: " + reason);
   }
 
+  /* --- cancellation --------------------------------------------------------------------------
+   *
+   * A whole-frame estimate is what the UI runs in the background on every frame change, so it has
+   * to be abandonable. Cancelling before the call is the sharp case: nothing should come back as a
+   * usable result, and ok() has to report false so a caller cannot mistake a partial frame for a
+   * finished one.
+   */
+  {
+    MePictureSet pictures;
+    pictures.current   = makePlane(0, 0);
+    pictures.reference = makePlane(4, 2);
+
+    CancelToken token;
+    token.cancel();
+
+    MeParams params;
+    params.staticBypass = false;
+    params.cancel       = &token;
+
+    const auto result = estimator.estimateFrame(pictures, params);
+    check(result.cancelled, "a pre-cancelled token stops the estimate");
+    check(!result.ok(), "and the result does not report itself as usable");
+    check(result.error.empty(), "cancellation is not an error - it is a different outcome");
+
+    // Reusing the same token after a reset has to work, because the UI keeps one per item.
+    token.reset();
+    const auto again = estimator.estimateFrame(pictures, params);
+    check(!again.cancelled && again.ok(), "resetting the token lets the next estimate run");
+  }
+
   std::cout << (g_failures == 0 ? "PASS" : "FAIL") << std::endl;
   return g_failures == 0 ? 0 : 1;
 }

@@ -187,6 +187,33 @@ int main(int argc, char **argv)
     check(matched, "the stored vector is the estimator's, in eighth-pel");
   }
 
+  /* --- a cancelled estimate must not reach the overlay ----------------------------------------
+   *
+   * The UI cancels the in-flight estimate on every frame change, so this path runs constantly. A
+   * half-filled frame drawn as if it were finished would be worse than nothing: it looks like the
+   * algorithm found vectors for the top of the picture and none for the bottom.
+   */
+  {
+    stats::StatisticsData fresh;
+    fresh.setFrameSize(Size(kW, kH));
+    me::BlockSizeSet sizes;
+    sizes.add(BlockSize::Blk64);
+    integration::syncMeStatTypes(fresh, Algorithm::SvtIntegerMe, sizes);
+    fresh.setFrameIndex(0);
+
+    me::MeFrameResult partial;
+    partial.algorithm = Algorithm::SvtIntegerMe;
+    partial.cancelled = true;
+    me::MeBlockResult one;
+    one.block = {0, 0, BlockSize::Blk64};
+    one.mv    = me::MotionVector::fromFullPel(1, 1);
+    partial.blocks.push_back(one);
+
+    integration::fillMeStatistics(fresh, partial);
+    const int vecId = integration::meVectorTypeId(Algorithm::SvtIntegerMe, BlockSize::Blk64);
+    check(!fresh.hasDataForTypeID(vecId), "a cancelled result is dropped, partial blocks and all");
+  }
+
   // --- clearing takes everything of ours away, and nothing else -------------------------------
   {
     stats::StatisticsType foreign(24, "Motion Vector 0", 4);

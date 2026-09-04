@@ -5,6 +5,7 @@
 // adapter in src/integration is allowed to know about both sides.
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -152,7 +153,35 @@ struct MeFrameResult
   // Filled in when the estimator could not run at all; blocks is then empty.
   std::string error;
 
-  bool ok() const { return this->error.empty(); }
+  /* Set when the estimate was abandoned part way. `blocks` then holds whatever was finished, which
+   * is deliberately kept rather than discarded here - but a caller drawing an overlay should throw
+   * it away, because a frame with only its first few superblocks filled in reads as a result
+   * rather than as an interruption.
+   */
+  bool cancelled = false;
+
+  bool ok() const { return this->error.empty() && !this->cancelled; }
+};
+
+/* Cancellation for a running estimate.
+ *
+ * A whole-frame estimate is not cheap - odyssey's open-loop walks four stages per superblock and
+ * 256 candidates in the VBS pass - so when the displayed frame or a parameter changes, the
+ * in-flight estimate has to be abandoned rather than finished and thrown away.
+ *
+ * A plain atomic flag rather than anything Qt: the core has to stay usable from the CLI, and the
+ * estimators only need to ask "should I stop" between superblocks. Owned by the caller, borrowed
+ * by MeParams, so one token can be reused across runs by resetting it.
+ */
+class CancelToken
+{
+public:
+  void cancel() { this->flag_.store(true, std::memory_order_relaxed); }
+  void reset() { this->flag_.store(false, std::memory_order_relaxed); }
+  bool cancelled() const { return this->flag_.load(std::memory_order_relaxed); }
+
+private:
+  std::atomic<bool> flag_{false};
 };
 
 struct MeParams
@@ -176,6 +205,11 @@ struct MeParams
   // Debug switch mirrored from odyssey's av1_dbg_srb_zero_center: pin the search centre to (0,0)
   // so a reproduction can be compared stage by stage.
   bool forceZeroCentre = false;
+
+  /* Borrowed, may be null. Checked between superblocks - fine enough to stay responsive, coarse
+   * enough not to cost anything in the inner loops.
+   */
+  const CancelToken *cancel = nullptr;
 };
 
 } // namespace bda::me

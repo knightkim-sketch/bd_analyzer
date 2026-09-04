@@ -161,6 +161,15 @@ MeFrameResult OdysseyOpenLoopMe::estimateFrame(const MePictureSet &pictures, con
 
     for (int sbX = 0; sbX < sbCols; ++sbX)
     {
+      /* Between superblocks is the right granularity: fine enough that a frame change feels
+       * immediate, coarse enough that the check is invisible next to a superblock's worth of SAD.
+       */
+      if (params.cancel != nullptr && params.cancel->cancelled())
+      {
+        result.cancelled = true;
+        return result;
+      }
+
       const int orgX = sbX * kSb;
       const int orgY = sbY * kSb;
 
