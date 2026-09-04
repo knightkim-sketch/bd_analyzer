@@ -135,6 +135,8 @@ run_unit_test "$ROOT/tests/unit/me-plane-and-cost.cpp" \
               "$ROOT/src/me/MePlane.cpp" "$ROOT/src/me/MeCost.cpp"
 run_unit_test "$ROOT/tests/unit/me-svt-integer.cpp" \
               "$ROOT/src/me/MePlane.cpp" "$ROOT/src/me/MeCost.cpp" "$ROOT/src/me/SvtIntegerMe.cpp"
+run_unit_test "$ROOT/tests/unit/me-odyssey-openloop.cpp" \
+              "$ROOT/src/me/MePlane.cpp" "$ROOT/src/me/MeCost.cpp" "$ROOT/src/me/OdysseyOpenLoopMe.cpp"
 echo
 
 echo "== AV1 분석 경로 =="

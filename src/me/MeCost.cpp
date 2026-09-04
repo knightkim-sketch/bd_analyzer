@@ -107,6 +107,17 @@ std::int64_t odysseyOpenLoopRateTerm(int mvdX, int mvdY, int mvRateWeight)
   return (scaled * scaled) << 6;
 }
 
+std::int64_t odysseyVbsRateTerm(int mvdFromCentreX, int mvdFromCentreY)
+{
+  /* ods_me_full_search_vbs(), openloop_me.c:871-881:
+   *   mvd    = the offset from the search centre, not from the predictor
+   *   mrate  = divide_round(ods_me_get_mvcost(mvd), 8)
+   *   cost  += mrate * mrate                       // per 8x8, no << 6
+   */
+  const std::int64_t mrate = divideRound(odysseyMvCost(mvdFromCentreX, mvdFromCentreY), 8);
+  return mrate * mrate;
+}
+
 std::int64_t odysseyClosedLoopRateTerm(int mvdX, int mvdY, BlockSize size)
 {
   const std::int64_t rate = odysseyMvCost(mvdX, mvdY);

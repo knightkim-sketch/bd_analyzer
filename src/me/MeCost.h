@@ -65,6 +65,20 @@ int odysseyMvCost(std::int32_t mvdX, std::int32_t mvdY);
  */
 std::int64_t odysseyOpenLoopRateTerm(int mvdX, int mvdY, int mvRateWeight);
 
+/* The rate term as odyssey's VBS stage adds it - a different formula from the one above, and the
+ * difference is easy to miss:
+ *
+ *   ods_me_full_search_area()  rate against the PREDICTOR, weighted, divided by 6, then << 6 to
+ *                              lift an 8x8 basis up to the 64x64 block it is scoring
+ *   ods_me_full_search_vbs()   rate against the SEARCH CENTRE, unweighted, divided by 8, squared,
+ *                              and added to each 8x8 - the larger sizes then inherit it by summing
+ *                              the 8x8 costs, so the area scaling happens for free
+ *
+ * Using the first form in the VBS stage makes the rate swamp the SSE and every block collapses to
+ * the centre vector.
+ */
+std::int64_t odysseyVbsRateTerm(int mvdFromCentreX, int mvdFromCentreY);
+
 /* The rate term as odyssey's closed-loop full-pel search adds it: linear, and shifted by the
  * block's area relative to 64x64, because ods_me_get_mvcost() is defined on a 64x64 basis.
  *   8x8 -> (rate + 32) >> 6,  16x16 -> (rate + 8) >> 4,  32x32 -> (rate + 2) >> 2,  64x64 -> rate
