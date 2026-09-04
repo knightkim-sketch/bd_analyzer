@@ -133,6 +133,8 @@ run_test() {
 echo "== ME 코어 단위 테스트 (Qt 없이 빌드) =="
 run_unit_test "$ROOT/tests/unit/me-plane-and-cost.cpp" \
               "$ROOT/src/me/MePlane.cpp" "$ROOT/src/me/MeCost.cpp"
+run_unit_test "$ROOT/tests/unit/me-svt-integer.cpp" \
+              "$ROOT/src/me/MePlane.cpp" "$ROOT/src/me/MeCost.cpp" "$ROOT/src/me/SvtIntegerMe.cpp"
 echo
 
 echo "== AV1 분석 경로 =="
