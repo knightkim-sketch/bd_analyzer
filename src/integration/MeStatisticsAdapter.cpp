@@ -145,10 +145,11 @@ std::string meCommonSadTypeName(Algorithm algorithm, BlockSize size)
          "x" + std::to_string(px);
 }
 
-void syncMeStatTypes(stats::StatisticsData  &data,
+bool syncMeStatTypes(stats::StatisticsData  &data,
                      Algorithm               algorithm,
                      const me::BlockSizeSet &sizes)
 {
+  bool changed = false;
   for (int s = 0; s < me::kBlockSizeCount; ++s)
   {
     const auto size      = static_cast<BlockSize>(s);
@@ -159,6 +160,7 @@ void syncMeStatTypes(stats::StatisticsData  &data,
 
     if (!wanted)
     {
+      changed = changed || hasType(data, vectorId);
       eraseType(data, vectorId);
       eraseType(data, costId);
       eraseType(data, commonId);
@@ -176,9 +178,16 @@ void syncMeStatTypes(stats::StatisticsData  &data,
           std::string("Reproduced ") + algorithmShortName(algorithm) + " motion vector");
       type.vectorStyle       = stats::LineDrawStyle({algorithmColor(algorithm), 2.0, stats::Pattern::Solid});
       type.scaleVectorToZoom = true;
+      /* Drawn as soon as it exists. The base StatisticsType leaves `render` false, which is right
+       * for a decoder that registers thirty types at once - but here the user asked for exactly
+       * this overlay by ticking the box, and making them find a second checkbox to actually see it
+       * is a step with no decision in it. The cost types stay off: they paint over the picture.
+       */
+      type.render = true;
       type.setInitialState();
       type.uiGroup = QString::fromStdString(meGroupName(algorithm));
       data.addStatType(type);
+      changed = true;
     }
 
     if (!hasType(data, costId))
@@ -194,6 +203,7 @@ void syncMeStatTypes(stats::StatisticsData  &data,
       type.setInitialState();
       type.uiGroup = QString::fromStdString(meGroupName(algorithm));
       data.addStatType(type);
+      changed = true;
     }
 
     if (!hasType(data, commonId))
@@ -206,8 +216,10 @@ void syncMeStatTypes(stats::StatisticsData  &data,
       type.setInitialState();
       type.uiGroup = QString::fromStdString(meGroupName(algorithm));
       data.addStatType(type);
+      changed = true;
     }
   }
+  return changed;
 }
 
 void clearMeStatTypes(stats::StatisticsData &data)

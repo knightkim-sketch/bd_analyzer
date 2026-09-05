@@ -58,8 +58,8 @@ int meCommonSadTypeId(me::Algorithm algorithm, me::BlockSize size);
  * two places, and a user turning a size off in one place and on in the other could not tell which
  * one won.
  */
-void syncMeStatTypes(stats::StatisticsData &data,
-                     me::Algorithm          algorithm,
+bool syncMeStatTypes(stats::StatisticsData  &data,
+                     me::Algorithm           algorithm,
                      const me::BlockSizeSet &sizes);
 
 /* Remove every ME type of every algorithm, cached data included. For switching algorithms or

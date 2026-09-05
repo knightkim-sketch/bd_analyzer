@@ -329,7 +329,7 @@ diff --git a/YUViewLib/src/ui/Mainwindow.cpp b/YUViewLib/src/ui/Mainwindow.cpp
    connect(ui.playlistTreeWidget,
            &PlaylistTreeWidget::selectedItemChanged,
            ui.playbackController,
-@@ -809,6 +836,164 @@
+@@ -809,6 +836,172 @@
    settings.setValue("recentFileList", files);
  }
  
@@ -423,6 +423,17 @@ diff --git a/YUViewLib/src/ui/Mainwindow.cpp b/YUViewLib/src/ui/Mainwindow.cpp
 +  params.cancel  = this->meCancel.get();
 +  request.params = params;
 +
++  /* Register the overlay types now, not when the result arrives.
++   *
++   * The statistics panel builds its rows from the registered types, so leaving registration until
++   * the first estimate finished meant the "draw" checkboxes simply were not there while the user
++   * was looking for them. Registering up front also makes the block-size checkboxes visibly drive
++   * the panel, which is what they are for.
++   */
++  if (bda::integration::syncMeStatTypes(item->getStatisticsData(), params.algorithm, params.blockSizes))
++    if (auto *handler = item->getStatisticsUIHandler())
++      handler->updateStatisticsHandlerControls();
++
 +  panel->setStatus(tr("Estimating frame %1 against %2...").arg(this->meFrameIdx).arg(refIdx));
 +
 +  /* The token is captured by value so the worker keeps it alive: params.cancel points into it, and
@@ -465,10 +476,7 @@ diff --git a/YUViewLib/src/ui/Mainwindow.cpp b/YUViewLib/src/ui/Mainwindow.cpp
 +   */
 +  auto &data = item->getStatisticsData();
 +  data.setFrameIndex(result.frameIdx);
-+  bda::integration::syncMeStatTypes(
-+      data,
-+      result.algorithm,
-+      result.blocks.empty() ? bda::me::BlockSizeSet() : panel->params().blockSizes);
++  bda::integration::syncMeStatTypes(data, result.algorithm, panel->params().blockSizes);
 +  bda::integration::fillMeStatistics(data, result);
 +
 +  /* No updateStatisticsHandlerControls() here: it rebuilds the panel's rows, and doing that from
@@ -494,3 +502,33 @@ diff --git a/YUViewLib/src/ui/Mainwindow.cpp b/YUViewLib/src/ui/Mainwindow.cpp
  void MainWindow::closeEvent(QCloseEvent *event)
  {
    // Stop playback
+@@ -860,21 +1053,14 @@
+    */
+   if (const auto cacheUsage = BDCachePaths::usage(); cacheUsage.fileCount > 0)
+   {
+-    const auto answer = QMessageBox::question(
+-        this,
+-        "Delete analysis cache",
+-        tr("Delete the %1 cached analysis file(s) (%2) in\n%3 ?\n\n"
+-           "They can be recreated from the source files at any time.")
+-            .arg(cacheUsage.fileCount)
+-            .arg(QLocale().formattedDataSize(cacheUsage.totalBytes))
+-            .arg(BDCachePaths::root()),
+-        QMessageBox::Yes | QMessageBox::No,
+-        QMessageBox::No);
+-    if (answer == QMessageBox::Yes && !BDCachePaths::clear())
+-      QMessageBox::warning(this,
+-                           "Delete analysis cache",
+-                           tr("The cache in\n%1\ncould not be removed completely.")
+-                               .arg(BDCachePaths::root()));
++    /* Deleted without asking.
++     *
++     * This used to be a question with No as the default. Everything in the cache can be recreated
++     * from the source files, so the answer was never interesting - it was a dialog standing between
++     * the user and quitting. A failure to remove it is not worth a second dialog either: the files
++     * are inert, and the next run rebuilds what it needs.
++     */
++    BDCachePaths::clear();
+   }
+ 
+   event->accept();

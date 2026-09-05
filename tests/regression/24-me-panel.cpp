@@ -171,8 +171,26 @@ int main(int argc, char **argv)
       check(!item->getStatisticsData().hasDataForTypeID(vecId),
             "moving the frame with the box unchecked computes nothing");
 
-      // --- checked: a result arrives and reaches the overlay --------------------------------
+      /* --- the draw checkbox has to exist before the first result ----------------------
+       *
+       * The statistics panel builds its rows from the registered types. Registering only once an
+       * estimate had finished meant the user ticked "compute", looked for a way to draw the
+       * vectors, and found nothing there yet.
+       */
       enable->setChecked(true);
+      settle(300);
+      const auto *earlyType = [&]() -> const stats::StatisticsType * {
+        for (const auto &t : item->getStatisticsData().getStatisticsTypes())
+          if (t.typeID == vecId)
+            return &t;
+        return nullptr;
+      }();
+      check(earlyType != nullptr, "the overlay type is registered as soon as the estimate starts");
+      check(earlyType != nullptr && earlyType->render,
+            "and it draws by default - the box was already ticked to ask for it");
+      check(earlyType != nullptr && earlyType->renderVectorData,
+            "as vector data");
+
       // 128x128 with one 64x64 size is small, but the estimate is still a real search.
       settle(15000);
 
