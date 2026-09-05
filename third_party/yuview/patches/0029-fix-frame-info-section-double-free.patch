@@ -1,0 +1,113 @@
+diff --git a/YUViewLib/src/ui/widgets/FrameInfoWidget.cpp b/YUViewLib/src/ui/widgets/FrameInfoWidget.cpp
+index 3d28dac1..5bb8b601 100644
+--- a/YUViewLib/src/ui/widgets/FrameInfoWidget.cpp
++++ b/YUViewLib/src/ui/widgets/FrameInfoWidget.cpp
+@@ -83,23 +83,26 @@ FrameInfoWidget::FrameInfoWidget(QWidget *parent) : QWidget(parent)
+   this->histogramLabel.setText("Image attribute - luma histogram");
+   this->histogram.setPlaceholderText("No luma data");
+ 
+-  this->blockTree.setColumnCount(2);
+-  this->blockTree.setHeaderLabels({"Value", "Y"});
+-  this->blockTree.setRootIsDecorated(false);
+-  this->blockTree.setUniformRowHeights(true);
+-  this->blockTree.setSelectionMode(QAbstractItemView::NoSelection);
+-  this->blockTree.setFocusPolicy(Qt::NoFocus);
+-  this->blockTree.header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+-
+   /* The block statistics go into their own widget. The main window re-parents it under the block
+    * syntax table, which is where one looks when inspecting a block; this pane keeps the frame level
+    * view (the grid toggle and the histogram). Nothing about the updating changes - the label and the
+    * tree are still members of this widget and are filled by updateBlockStatistics().
+    */
+-  auto *blockLayout = new QVBoxLayout(&this->blockSection);
++  this->blockSection = new QWidget(this);
++  this->blockLabel   = new QLabel(this->blockSection);
++  this->blockTree    = new QTreeWidget(this->blockSection);
++  this->blockTree->setColumnCount(2);
++  this->blockTree->setHeaderLabels({"Value", "Y"});
++  this->blockTree->setRootIsDecorated(false);
++  this->blockTree->setUniformRowHeights(true);
++  this->blockTree->setSelectionMode(QAbstractItemView::NoSelection);
++  this->blockTree->setFocusPolicy(Qt::NoFocus);
++  this->blockTree->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
++
++  auto *blockLayout  = new QVBoxLayout(this->blockSection);
+   blockLayout->setContentsMargins(0, 0, 0, 0);
+-  blockLayout->addWidget(&this->blockLabel);
+-  blockLayout->addWidget(&this->blockTree, 1);
++  blockLayout->addWidget(this->blockLabel);
++  blockLayout->addWidget(this->blockTree, 1);
+ 
+   /* The histogram stays in this pane, which sits at the bottom right. Kept in a section widget of
+    * its own anyway, so it can be placed elsewhere without touching how it is filled.
+@@ -228,8 +231,8 @@ void FrameInfoWidget::updateHistogram()
+ 
+ void FrameInfoWidget::showBlockMessage(const QString &text)
+ {
+-  this->blockTree.clear();
+-  this->blockLabel.setText(text);
++  this->blockTree->clear();
++  this->blockLabel->setText(text);
+ }
+ 
+ void FrameInfoWidget::updateBlockStatistics()
+@@ -260,14 +263,14 @@ void FrameInfoWidget::updateBlockStatistics()
+                                       .arg(blockSize));
+   }
+ 
+-  this->blockLabel.setText(
++  this->blockLabel->setText(
+       QString("Block (%1,%2) %3x%3, frame %4").arg(blockX).arg(blockY).arg(blockSize).arg(
+           this->selectedFrameIdx));
+ 
+-  this->blockTree.clear();
++  this->blockTree->clear();
+   for (const auto &row : STATISTIC_ROWS)
+   {
+-    auto *treeItem = new QTreeWidgetItem(&this->blockTree);
++    auto *treeItem = new QTreeWidgetItem(this->blockTree);
+     treeItem->setText(0, row.name);
+     treeItem->setText(1, row.format(*values));
+     treeItem->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
+diff --git a/YUViewLib/src/ui/widgets/FrameInfoWidget.h b/YUViewLib/src/ui/widgets/FrameInfoWidget.h
+index b7f6bc51..6c14ab45 100644
+--- a/YUViewLib/src/ui/widgets/FrameInfoWidget.h
++++ b/YUViewLib/src/ui/widgets/FrameInfoWidget.h
+@@ -68,9 +68,11 @@ public:
+   /* The clicked block's pixel statistics, as a widget of its own so the main window can put it next
+    * to the block syntax table instead of under the histogram - the two describe the same block and
+    * are read together. This widget keeps filling it either way; only where it is shown changes.
+-   * Never null, and owned by this widget whether or not it was re-parented.
++   *
++   * Never null. Ownership follows Qt's parent chain: re-parenting this into another widget hands
++   * it over, which is why it is heap allocated - see the member declaration.
+    */
+-  QWidget *getBlockStatisticsSection() { return &this->blockSection; }
++  QWidget *getBlockStatisticsSection() { return this->blockSection; }
+ 
+   /* The frame's luma histogram, likewise as a widget of its own so it can be shown above the
+    * statistics overlay list in the properties panel. Same deal as above: this widget keeps owning and
+@@ -117,11 +119,18 @@ private:
+   QWidget         histogramSection;
+   QLabel          histogramLabel;
+   HistogramWidget histogram;
+-  // blockLabel and blockTree live inside blockSection, not in `layout`, so the section can be shown
+-  // somewhere else in the window. Declared after it so they are destroyed first.
+-  QWidget         blockSection;
+-  QLabel          blockLabel;
+-  QTreeWidget     blockTree;
++  /* blockLabel and blockTree live inside blockSection, not in `layout`, so the section can be shown
++   * somewhere else in the window.
++   *
++   * Heap allocated, unlike the histogram section above, and that is forced: the block section is
++   * re-parented into the caching pane, and QWidget::setParent() hands ownership to the new parent.
++   * As value members they were destroyed twice - once by Qt deleting its child, once by this
++   * widget's own destruction - which aborted with "free(): invalid pointer" on every quit.
++   * Qt's parent chain owns all three now, so whichever widget they end up under deletes them.
++   */
++  QWidget     *blockSection{};
++  QLabel      *blockLabel{};
++  QTreeWidget *blockTree{};
+ 
+   QPointer<playlistItem>  selectedItem;
+   int                     selectedFrameIdx{-1};

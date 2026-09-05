@@ -239,6 +239,10 @@ run_test "$ROOT/tests/regression/20-raw-yuv-unknown-format.cpp"
 # 히스토그램/블록 통계가 표시 중인 프레임을 따라가는지 (전체 창을 띄워서 검사한다).
 run_test "$ROOT/tests/regression/17-frame-info-follows-frame.cpp"      "$STREAM"
 
+# 창을 실제로 파괴한다. 종료 시 "free(): invalid pointer" 로 abort 하던 회귀 + 모든 dock 이
+# View 메뉴에서 다시 켜지는지. 다른 MainWindow 테스트는 창을 일부러 leak 하므로 여기서만 잡힌다.
+run_test "$ROOT/tests/regression/25-mainwindow-teardown.cpp"
+
 echo
 echo "== 프레임 비트스트림 덤프 (hexdump 패널) =="
 # annexB 쪽 검사는 B 프레임이 있는 스트림이 필요하다. display order 와 coding order 가

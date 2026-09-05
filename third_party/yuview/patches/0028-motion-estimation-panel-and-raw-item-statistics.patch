@@ -1,48 +1,8 @@
-diff --git a/YUViewLib/ui/mainwindow.ui b/YUViewLib/ui/mainwindow.ui
---- a/YUViewLib/ui/mainwindow.ui
-+++ b/YUViewLib/ui/mainwindow.ui
-@@ -380,6 +380,24 @@
-    </attribute>
-    <widget class="FrameInfoWidget" name="frameInfoWidget"/>
-   </widget>
-+  <widget class="QDockWidget" name="motionEstimationDock">
-+   <property name="visible">
-+    <bool>false</bool>
-+   </property>
-+   <property name="minimumSize">
-+    <size>
-+     <width>220</width>
-+     <height>200</height>
-+    </size>
-+   </property>
-+   <property name="windowTitle">
-+    <string>Motion Estimation</string>
-+   </property>
-+   <attribute name="dockWidgetArea">
-+    <number>2</number>
-+   </attribute>
-+   <widget class="MotionEstimationWidget" name="motionEstimationWidget"/>
-+  </widget>
-   <action name="actionOpen">
-    <property name="text">
-     <string>Open...</string>
-@@ -401,6 +419,12 @@
-    <container>1</container>
-   </customwidget>
-   <customwidget>
-+   <class>MotionEstimationWidget</class>
-+   <extends>QWidget</extends>
-+   <header>integration/MotionEstimationWidget.h</header>
-+   <container>1</container>
-+  </customwidget>
-+  <customwidget>
-    <class>PlaylistTreeWidget</class>
-    <extends>QTreeWidget</extends>
-    <header>ui/widgets/PlaylistTreeWidget.h</header>
 diff --git a/YUViewLib/src/playlistitem/playlistItem.h b/YUViewLib/src/playlistitem/playlistItem.h
+index cff36eb2..4f55556b 100644
 --- a/YUViewLib/src/playlistitem/playlistItem.h
 +++ b/YUViewLib/src/playlistitem/playlistItem.h
-@@ -245,6 +245,18 @@
+@@ -245,6 +245,18 @@ public:
     */
    virtual bool supportsPixelStatistics() const { return false; }
  
@@ -61,74 +21,8 @@ diff --git a/YUViewLib/src/playlistitem/playlistItem.h b/YUViewLib/src/playlisti
    //!< Edge length of the blocks getPixelBlockStats() reports on. 0 when unsupported.
    virtual unsigned getPixelStatisticsBlockSize() const { return 0; }
  
-diff --git a/YUViewLib/src/playlistitem/playlistItemRawFile.h b/YUViewLib/src/playlistitem/playlistItemRawFile.h
---- a/YUViewLib/src/playlistitem/playlistItemRawFile.h
-+++ b/YUViewLib/src/playlistitem/playlistItemRawFile.h
-@@ -34,6 +34,8 @@
- 
- #include <common/Typedef.h>
- #include <filesource/FileSource.h>
-+#include <statistics/StatisticUIHandler.h>
-+#include <statistics/StatisticsData.h>
- 
- #include <QFuture>
- #include <QString>
-@@ -49,6 +51,44 @@
-   Q_OBJECT
- 
- public:
-+  /* Raw data of an arbitrary frame, read straight from the file into a fresh buffer.
-+   *
-+   * Deliberately not loadRawData(): that one writes into the video handler's buffer and moves
-+   * rawData_frameIndex, which would fight with whatever the viewer is displaying. The offset
-+   * arithmetic is shared with it, Y4M frame index table included.
-+   */
-+  bool       supportsMotionEstimation() const override;
-+  QByteArray readRawFrame(int frameIdx) override;
-+
-+  /* Statistics on a raw item.
-+   *
-+   * A raw YUV file has no bitstream to describe, so upstream gives it no statistics container -
-+   * only the compressed and the statistics-file items have one. The motion estimation overlay
-+   * needs one anyway: it draws through the same statistics machinery as the bitstream's own
-+   * vectors, which is what lets the two be compared on one canvas instead of through a second
-+   * drawer that would drift on zoom and style.
-+   *
-+   * Owned and wired exactly as playlistItemCompressedVideo owns its pair, so there is one pattern
-+   * in the codebase rather than two.
-+   */
-+  stats::StatisticUIHandler *getStatisticsUIHandler() override { return &this->statisticsUIHandler; }
-+  stats::StatisticsData     &getStatisticsData() { return this->statisticsData; }
-+
-+  void drawItem(QPainter *painter, int frameIdx, double zoomFactor, bool drawRawValues) override;
-+
-+  /* Public because the main window assembles the motion estimation request: it needs the pixel
-+   * format and the frame size alongside the frames themselves, and the video handler that holds
-+   * them is protected.
-+   */
-+  video::yuv::PixelFormatYUV getRawPixelFormat() const
-+  {
-+    return this->getYUVVideo() ? this->getYUVVideo()->getPixelFormatYUV()
-+                               : video::yuv::PixelFormatYUV();
-+  }
-+  Size getRawFrameSize() const
-+  {
-+    return this->getYUVVideo() ? this->getYUVVideo()->getFrameSize() : Size();
-+  }
-   // Create a new raw file. The format (RGB or YUV) will be gotten from the extension. If the
-   // extension is not one of the supported extensions (getSupportedFileExtensions), set the format
-   // "fmt" to either "rgb" or "yuv". If you already know the frame size and/or sourcePixelFormat,
-@@ -114,6 +154,9 @@
- 
-   FileSource dataSource;
- 
-+  stats::StatisticUIHandler statisticsUIHandler;
-+  stats::StatisticsData     statisticsData;
-+
-   void updateStartEndRange() override;
- 
-   // A y4m file is a raw YUV file but it adds a header (which has information about the YUV format)
 diff --git a/YUViewLib/src/playlistitem/playlistItemRawFile.cpp b/YUViewLib/src/playlistitem/playlistItemRawFile.cpp
+index d0896e1b..464a1007 100644
 --- a/YUViewLib/src/playlistitem/playlistItemRawFile.cpp
 +++ b/YUViewLib/src/playlistitem/playlistItemRawFile.cpp
 @@ -31,6 +31,7 @@
@@ -139,7 +33,7 @@ diff --git a/YUViewLib/src/playlistitem/playlistItemRawFile.cpp b/YUViewLib/src/
  
  #include <QCryptographicHash>
  #include <QPainter>
-@@ -171,6 +172,23 @@
+@@ -171,6 +172,23 @@ playlistItemRawFile::playlistItemRawFile(const QString &rawFilePath,
            this,
            &playlistItemRawFile::slotVideoPropertiesChanged);
  
@@ -163,7 +57,7 @@ diff --git a/YUViewLib/src/playlistitem/playlistItemRawFile.cpp b/YUViewLib/src/
    this->pixelFormatAfterLoading = this->video->getFormatAsString();
  
    // A raw file can be cached.
-@@ -493,6 +511,9 @@
+@@ -493,6 +511,9 @@ void playlistItemRawFile::createPropertiesWidget()
    vAllLaout->addWidget(line);
    vAllLaout->addLayout(this->video->createVideoHandlerControls());
  
@@ -173,7 +67,7 @@ diff --git a/YUViewLib/src/playlistitem/playlistItemRawFile.cpp b/YUViewLib/src/
    vAllLaout->insertStretch(-1, 1); // Push controls up
  }
  
-@@ -541,6 +562,55 @@
+@@ -541,6 +562,55 @@ playlistItemRawFile *playlistItemRawFile::newplaylistItemRawFile(const YUViewDom
    return newFile;
  }
  
@@ -229,63 +123,76 @@ diff --git a/YUViewLib/src/playlistitem/playlistItemRawFile.cpp b/YUViewLib/src/
  void playlistItemRawFile::loadRawData(int frameIdx)
  {
    if (!this->video->isFormatValid())
-diff --git a/YUViewLib/src/ui/Mainwindow.h b/YUViewLib/src/ui/Mainwindow.h
---- a/YUViewLib/src/ui/Mainwindow.h
-+++ b/YUViewLib/src/ui/Mainwindow.h
-@@ -33,9 +33,15 @@
- #pragma once
+diff --git a/YUViewLib/src/playlistitem/playlistItemRawFile.h b/YUViewLib/src/playlistitem/playlistItemRawFile.h
+index c9fc4597..592034ad 100644
+--- a/YUViewLib/src/playlistitem/playlistItemRawFile.h
++++ b/YUViewLib/src/playlistitem/playlistItemRawFile.h
+@@ -34,6 +34,8 @@
  
- #include <QDesktopServices>
-+#include <QFutureWatcher>
- #include <QMainWindow>
-+#include <QPointer>
- #include <QSettings>
+ #include <common/Typedef.h>
+ #include <filesource/FileSource.h>
++#include <statistics/StatisticUIHandler.h>
++#include <statistics/StatisticsData.h>
  
-+#include <memory>
-+
-+#include <integration/MeRunner.h>
-+
- #include <handler/UpdateHandler.h>
- #include <ui/SeparateWindow.h>
- #include <video/caching/VideoCache.h>
-@@ -88,6 +94,16 @@
-   //!< Make that selector show what the currently selected item is actually doing.
-   void updateDisplaySourceComboBox();
-   void resetWindowLayout();
-+
-+  /* Motion estimation, run in the background when the panel's checkbox is on.
+ #include <QFuture>
+ #include <QString>
+@@ -49,6 +51,44 @@ class playlistItemRawFile : public playlistItemWithVideo
+   Q_OBJECT
+ 
+ public:
++  /* Raw data of an arbitrary frame, read straight from the file into a fresh buffer.
 +   *
-+   * Three entry points because there are three ways the answer can go stale: the displayed frame
-+   * moves, a control changes, or a run finishes. All three funnel into restart, which cancels
-+   * whatever is in flight first.
++   * Deliberately not loadRawData(): that one writes into the video handler's buffer and moves
++   * rawData_frameIndex, which would fight with whatever the viewer is displaying. The offset
++   * arithmetic is shared with it, Y4M frame index table included.
 +   */
-+  void motionEstimationTargetChanged(playlistItem *item, int frameIdx);
-+  void restartMotionEstimation();
-+  void takeMotionEstimation();
-   void closeAndClearSettings();
- 
-   void onMenuResetView(bool checked)
-@@ -179,6 +195,19 @@
-   std::unique_ptr<updateHandler>     updater;
-   ViewStateHandler                   stateHandler;
-   SeparateWindow                     separateViewWindow;
-+  void cancelMotionEstimation();
++  bool       supportsMotionEstimation() const override;
++  QByteArray readRawFrame(int frameIdx) override;
 +
-+  /* A fresh token per run rather than one that gets reset.
++  /* Statistics on a raw item.
 +   *
-+   * Cancelling and then resetting a shared token races: the worker that was told to stop may not
-+   * have looked yet, and the reset would revive it. Handing each run its own token - held alive by
-+   * the worker's own copy of the shared_ptr - means a cancelled run stays cancelled.
++   * A raw YUV file has no bitstream to describe, so upstream gives it no statistics container -
++   * only the compressed and the statistics-file items have one. The motion estimation overlay
++   * needs one anyway: it draws through the same statistics machinery as the bitstream's own
++   * vectors, which is what lets the two be compared on one canvas instead of through a second
++   * drawer that would drift on zoom and style.
++   *
++   * Owned and wired exactly as playlistItemCompressedVideo owns its pair, so there is one pattern
++   * in the codebase rather than two.
 +   */
-+  std::shared_ptr<bda::me::CancelToken>            meCancel;
-+  QFutureWatcher<bda::me::MeFrameResult>           meWatcher;
-+  QPointer<playlistItem>                           meItem;
-+  int                                              meFrameIdx{-1};
++  stats::StatisticUIHandler *getStatisticsUIHandler() override { return &this->statisticsUIHandler; }
++  stats::StatisticsData     &getStatisticsData() { return this->statisticsData; }
 +
-   bool showNormalMaximized;     // When going to full screen: Was this windows maximized?
-   bool panelsVisible[7]{false}; // Which panels are visible when going to full-screen mode?
- };
++  void drawItem(QPainter *painter, int frameIdx, double zoomFactor, bool drawRawValues) override;
++
++  /* Public because the main window assembles the motion estimation request: it needs the pixel
++   * format and the frame size alongside the frames themselves, and the video handler that holds
++   * them is protected.
++   */
++  video::yuv::PixelFormatYUV getRawPixelFormat() const
++  {
++    return this->getYUVVideo() ? this->getYUVVideo()->getPixelFormatYUV()
++                               : video::yuv::PixelFormatYUV();
++  }
++  Size getRawFrameSize() const
++  {
++    return this->getYUVVideo() ? this->getYUVVideo()->getFrameSize() : Size();
++  }
+   // Create a new raw file. The format (RGB or YUV) will be gotten from the extension. If the
+   // extension is not one of the supported extensions (getSupportedFileExtensions), set the format
+   // "fmt" to either "rgb" or "yuv". If you already know the frame size and/or sourcePixelFormat,
+@@ -114,6 +154,9 @@ private:
+ 
+   FileSource dataSource;
+ 
++  stats::StatisticUIHandler statisticsUIHandler;
++  stats::StatisticsData     statisticsData;
++
+   void updateStartEndRange() override;
+ 
+   // A y4m file is a raw YUV file but it adds a header (which has information about the YUV format)
 diff --git a/YUViewLib/src/ui/Mainwindow.cpp b/YUViewLib/src/ui/Mainwindow.cpp
+index 1ca62fff..46f084b2 100644
 --- a/YUViewLib/src/ui/Mainwindow.cpp
 +++ b/YUViewLib/src/ui/Mainwindow.cpp
 @@ -31,6 +31,12 @@
@@ -301,7 +208,7 @@ diff --git a/YUViewLib/src/ui/Mainwindow.cpp b/YUViewLib/src/ui/Mainwindow.cpp
  
  #include <QByteArray>
  #include <QFileDialog>
-@@ -318,6 +324,27 @@
+@@ -318,6 +324,27 @@ MainWindow::MainWindow(bool useAlternativeSources, QWidget *parent) : QMainWindo
            &PlaylistTreeWidget::selectedItemChanged,
            ui.rateDistortionPlot,
            &RateDistortionPlotWidget::refresh);
@@ -329,7 +236,18 @@ diff --git a/YUViewLib/src/ui/Mainwindow.cpp b/YUViewLib/src/ui/Mainwindow.cpp
    connect(ui.playlistTreeWidget,
            &PlaylistTreeWidget::selectedItemChanged,
            ui.playbackController,
-@@ -809,6 +836,172 @@
+@@ -680,6 +707,10 @@ void MainWindow::createMenusAndActions()
+   addDockViewAction(ui.cachingInfoDock, "Show Caching Info");
+   addDockViewAction(ui.blockInfoDock, "Show &Block Info", Qt::CTRL | Qt::Key_B);
+   addDockViewAction(ui.frameInfoDock, "Show &Frame Info", Qt::CTRL | Qt::Key_F);
++  /* The panel starts hidden (mainwindow.ui), so without this entry there is no way to bring it up
++   * at all - which is exactly how it shipped the first time.
++   */
++  addDockViewAction(ui.motionEstimationDock, "Show &Motion Estimation", Qt::CTRL | Qt::Key_M);
+   viewMenu->addSeparator();
+   addDockViewAction(ui.playbackControllerDock, "Show Playback &Controls", Qt::CTRL | Qt::Key_D);
+ 
+@@ -809,6 +840,172 @@ void MainWindow::updateRecentFileActions()
    settings.setValue("recentFileList", files);
  }
  
@@ -502,7 +420,7 @@ diff --git a/YUViewLib/src/ui/Mainwindow.cpp b/YUViewLib/src/ui/Mainwindow.cpp
  void MainWindow::closeEvent(QCloseEvent *event)
  {
    // Stop playback
-@@ -860,21 +1053,14 @@
+@@ -860,21 +1057,14 @@ void MainWindow::closeEvent(QCloseEvent *event)
     */
    if (const auto cacheUsage = BDCachePaths::usage(); cacheUsage.fileCount > 0)
    {
@@ -532,3 +450,120 @@ diff --git a/YUViewLib/src/ui/Mainwindow.cpp b/YUViewLib/src/ui/Mainwindow.cpp
    }
  
    event->accept();
+@@ -1043,6 +1233,8 @@ void MainWindow::toggleFullscreen()
+       ui.blockInfoDock->show();
+     if (panelsVisible[6])
+       ui.frameInfoDock->show();
++    if (panelsVisible[7])
++      ui.motionEstimationDock->show();
+ 
+     if (!is_Q_OS_MAC)
+       ui.menuBar->show();
+@@ -1065,6 +1257,7 @@ void MainWindow::toggleFullscreen()
+     panelsVisible[4] = ui.cachingInfoDock->isVisible();
+     panelsVisible[5] = ui.blockInfoDock->isVisible();
+     panelsVisible[6] = ui.frameInfoDock->isVisible();
++    panelsVisible[7] = ui.motionEstimationDock->isVisible();
+ 
+     // Hide panels
+     ui.propertiesDock->hide();
+diff --git a/YUViewLib/src/ui/Mainwindow.h b/YUViewLib/src/ui/Mainwindow.h
+index 0ea63aff..99ce244f 100644
+--- a/YUViewLib/src/ui/Mainwindow.h
++++ b/YUViewLib/src/ui/Mainwindow.h
+@@ -33,9 +33,15 @@
+ #pragma once
+ 
+ #include <QDesktopServices>
++#include <QFutureWatcher>
+ #include <QMainWindow>
++#include <QPointer>
+ #include <QSettings>
+ 
++#include <memory>
++
++#include <integration/MeRunner.h>
++
+ #include <handler/UpdateHandler.h>
+ #include <ui/SeparateWindow.h>
+ #include <video/caching/VideoCache.h>
+@@ -88,6 +94,16 @@ private slots:
+   //!< Make that selector show what the currently selected item is actually doing.
+   void updateDisplaySourceComboBox();
+   void resetWindowLayout();
++
++  /* Motion estimation, run in the background when the panel's checkbox is on.
++   *
++   * Three entry points because there are three ways the answer can go stale: the displayed frame
++   * moves, a control changes, or a run finishes. All three funnel into restart, which cancels
++   * whatever is in flight first.
++   */
++  void motionEstimationTargetChanged(playlistItem *item, int frameIdx);
++  void restartMotionEstimation();
++  void takeMotionEstimation();
+   void closeAndClearSettings();
+ 
+   void onMenuResetView(bool checked)
+@@ -179,6 +195,19 @@ private:
+   std::unique_ptr<updateHandler>     updater;
+   ViewStateHandler                   stateHandler;
+   SeparateWindow                     separateViewWindow;
++  void cancelMotionEstimation();
++
++  /* A fresh token per run rather than one that gets reset.
++   *
++   * Cancelling and then resetting a shared token races: the worker that was told to stop may not
++   * have looked yet, and the reset would revive it. Handing each run its own token - held alive by
++   * the worker's own copy of the shared_ptr - means a cancelled run stays cancelled.
++   */
++  std::shared_ptr<bda::me::CancelToken>            meCancel;
++  QFutureWatcher<bda::me::MeFrameResult>           meWatcher;
++  QPointer<playlistItem>                           meItem;
++  int                                              meFrameIdx{-1};
++
+   bool showNormalMaximized;     // When going to full screen: Was this windows maximized?
+-  bool panelsVisible[7]{false}; // Which panels are visible when going to full-screen mode?
++  bool panelsVisible[8]{false}; // Which panels are visible when going to full-screen mode?
+ };
+diff --git a/YUViewLib/ui/mainwindow.ui b/YUViewLib/ui/mainwindow.ui
+index 22464075..935a95cd 100644
+--- a/YUViewLib/ui/mainwindow.ui
++++ b/YUViewLib/ui/mainwindow.ui
+@@ -380,6 +380,24 @@
+    </attribute>
+    <widget class="FrameInfoWidget" name="frameInfoWidget"/>
+   </widget>
++  <widget class="QDockWidget" name="motionEstimationDock">
++   <property name="visible">
++    <bool>false</bool>
++   </property>
++   <property name="minimumSize">
++    <size>
++     <width>220</width>
++     <height>200</height>
++    </size>
++   </property>
++   <property name="windowTitle">
++    <string>Motion Estimation</string>
++   </property>
++   <attribute name="dockWidgetArea">
++    <number>2</number>
++   </attribute>
++   <widget class="MotionEstimationWidget" name="motionEstimationWidget"/>
++  </widget>
+   <action name="actionOpen">
+    <property name="text">
+     <string>Open...</string>
+@@ -400,6 +418,12 @@
+    <header>ui/widgets/BlockInfoWidget.h</header>
+    <container>1</container>
+   </customwidget>
++  <customwidget>
++   <class>MotionEstimationWidget</class>
++   <extends>QWidget</extends>
++   <header>integration/MotionEstimationWidget.h</header>
++   <container>1</container>
++  </customwidget>
+   <customwidget>
+    <class>PlaylistTreeWidget</class>
+    <extends>QTreeWidget</extends>
