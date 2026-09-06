@@ -4,9 +4,9 @@ status: implemented (1차 범위)
 created: 2026-09-03
 updated: 2026-09-06
 author: claude-opus-5
-verified: "빌드·회귀 30/30·헤드리스 프로브(오버레이 픽셀 카운트, 클릭 질의) 확인. 실제 X 화면 렌더링은 미검증"
+verified: "빌드·회귀 31/31·헤드리스 프로브(오버레이 픽셀 카운트, 클릭 질의) 확인. 실제 X 화면 렌더링은 미검증"
 upstream: IENT/YUView @ a72eb3488097313511e60ed70db4af6071cbe9fe
-patches: 0026, 0027, 0028, 0029, 0030
+patches: 0026, 0027, 0028, 0029, 0030, 0031
 confluence: IT space — "Motion Estimation 분석 기능" 하위 3페이지 (알고리즘 정리)
 ---
 
@@ -181,6 +181,11 @@ row 수 불일치 → 재생성 branch → 달아 본 적 없는 spacer 제거 �
   같은 이름에 해상도가 없는 파일을 열면 `bad_alloc` abort (패치 `0024`).
 - `loadAutosavedPlaylist()` 가 파일 경로 자리에 디렉토리를 넘겨 복원이 한 번도 동작한
   적이 없었다 (패치 `0025`).
+- playlist 에 같은 파일이 중복으로 쌓였다 (패치 `0031`). 복원된 목록 + 커맨드라인에 같은
+  이름 → 시작할 때마다 한 벌씩 늘어난다. 앱 시작 로드와 종료 스냅샷 두 지점에서 제거한다.
+  식별자는 `canonicalFilePath()`, 없어진 파일은 `absoluteFilePath()` 로 폴백한다
+  (canonical 은 빈 문자열이라 없어진 파일들이 하나로 뭉친다). container 의 자식과
+  파일 소스가 아닌 item 은 건드리지 않는다 — 같은 파일의 difference/overlay 는 의도된 구성이다.
 - `StatisticsData::setFrameIndex()` 가 `accessMutex` 를 스스로 잠근다. 이미 잡은 채로
   부르면 **비재귀 뮤텍스 자기 교착**. 락을 걷어내고, 대신 `setFrameIndex()` 가 프레임
   캐시를 비우므로 **채우기 전에** 부르도록 순서를 고정했다.
@@ -215,11 +220,12 @@ Qt 없이 도는 단위 테스트 3개 + MainWindow 를 구동하는 회귀 5개
 | `26-me-overlay-item-switch` | C-3 abort, C-4 두 원인, **화살표가 실제로 칠해지는지** |
 | `27-me-block-info-on-click` | 클릭 → Block Info 행, 체크된 크기만, 크기당 1행, lag 가드 |
 | `25-mainwindow-teardown` | C-1 이중 해제, 모든 dock 의 메뉴 항목 |
+| `28-playlist-no-duplicate-files` | 같은 파일 중복 제거, 경로 철자 접기, 스냅샷 정리 |
 
 `26`/`27` 은 자기 클립(패닝 텍스처)을 만든다. **정지 패턴으로는 프레임 전체에서 non-zero
 MV 가 하나뿐**이라 "화살표가 보인다" 를 걸기에 약하다.
 
-현재: **30/30 PASS**.
+현재: **31/31 PASS**.
 
 ---
 

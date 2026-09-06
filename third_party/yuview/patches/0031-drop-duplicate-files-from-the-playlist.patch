@@ -1,0 +1,149 @@
+diff --git a/YUViewLib/src/ui/Mainwindow.cpp b/YUViewLib/src/ui/Mainwindow.cpp
+index 400a2ee0..2a240191 100644
+--- a/YUViewLib/src/ui/Mainwindow.cpp
++++ b/YUViewLib/src/ui/Mainwindow.cpp
+@@ -481,6 +481,11 @@ MainWindow::MainWindow(bool useAlternativeSources, QWidget *parent) : QMainWindo
+         ui.playlistTreeWidget->dropAutosavedPlaylist();
+     }
+   }
++  /* A restored playlist can carry duplicates from a session that predates this check, and it is
++   * the first thing the user sees. Clean it here rather than leaving it to the next quit.
++   */
++  ui.playlistTreeWidget->removeDuplicateItems();
++
+   // Start the timer now (and not in the constructor of rht playlistTreeWidget) so that the autosave
+   // is not accidetly overwritten.
+   ui.playlistTreeWidget->startAutosaveTimer();
+@@ -573,6 +578,14 @@ void MainWindow::revealItemDumpPane()
+ void MainWindow::loadFiles(const QStringList &files)
+ {
+   ui.playlistTreeWidget->loadFiles(files);
++
++  /* This is the startup path - YUViewApplication hands the command line here after the playlist
++   * has been restored - so it is where a restored item and a named file collide. Also reached when
++   * a second instance passes its files to this one, and from the open dialog, where the outcome is
++   * the same and is what one would want: opening a file that is already open selects it instead of
++   * listing it twice.
++   */
++  ui.playlistTreeWidget->removeDuplicateItems();
+ }
+ 
+ void MainWindow::createMenusAndActions()
+diff --git a/YUViewLib/src/ui/widgets/PlaylistTreeWidget.cpp b/YUViewLib/src/ui/widgets/PlaylistTreeWidget.cpp
+index 57404251..09af69c8 100644
+--- a/YUViewLib/src/ui/widgets/PlaylistTreeWidget.cpp
++++ b/YUViewLib/src/ui/widgets/PlaylistTreeWidget.cpp
+@@ -37,8 +37,10 @@
+ #include <QBuffer>
+ #include <QDragMoveEvent>
+ #include <QFileDialog>
++#include <QFileInfo>
+ #include <QHeaderView>
+ #include <QInputDialog>
++#include <QMap>
+ #include <QMenu>
+ #include <QMessageBox>
+ #include <QMimeData>
+@@ -177,8 +179,78 @@ PlaylistTreeWidget::~PlaylistTreeWidget()
+  * window would call autoSavePlaylist() on an empty playlist, and that removes the snapshot instead
+  * of writing one.
+  */
++int PlaylistTreeWidget::removeDuplicateItems()
++{
++  /* Identity is the file on disk, resolved through canonicalFilePath() so that a symlink and its
++   * target, or two spellings of the same path, count as one item. A file that is no longer there
++   * has no canonical path, and falling back to the absolute one matters: canonicalFilePath()
++   * returns an empty string for a missing file, and keying on that would collapse every missing
++   * file in the playlist into a single "duplicate".
++   */
++  const auto keyOf = [](playlistItem *item) -> QString {
++    if (!item || !item->properties().isFileSource)
++      return {};
++    // A container is a construction over other items, not a file, even where its name looks like one.
++    if (dynamic_cast<playlistItemContainer *>(item))
++      return {};
++    const auto name = item->properties().name;
++    if (name.isEmpty())
++      return {};
++    const QFileInfo info(name);
++    const auto      canonical = info.canonicalFilePath();
++    return canonical.isEmpty() ? info.absoluteFilePath() : canonical;
++  };
++
++  QMap<QString, playlistItem *>       firstSeen;
++  QList<QPair<playlistItem *, playlistItem *>> doomed; // (duplicate, the original it repeats)
++
++  for (int i = 0; i < this->topLevelItemCount(); ++i)
++  {
++    auto      *item = dynamic_cast<playlistItem *>(this->topLevelItem(i));
++    const auto key  = keyOf(item);
++    if (key.isEmpty())
++      continue;
++    if (const auto it = firstSeen.find(key); it != firstSeen.end())
++      doomed.append(qMakePair(item, it.value()));
++    else
++      firstSeen.insert(key, item);
++  }
++
++  if (doomed.empty())
++    return 0;
++
++  // Which original to end up on, if the item being removed is the one currently selected.
++  playlistItem *selectInstead = nullptr;
++  for (const auto &[duplicate, original] : doomed)
++    if (duplicate->isSelected())
++      selectInstead = original;
++
++  /* The same removal protocol deletePlaylistItems() uses: tag, take out of the tree, then announce.
++   * The announcement is what actually destroys the item - VideoCache::itemAboutToBeDeleted() does
++   * it once nothing is loading from it - so taking it out without emitting would leak, and
++   * deleting it here would race the caching threads.
++   */
++  for (const auto &[duplicate, original] : doomed)
++  {
++    duplicate->tagItemForDeletion();
++    if (const auto topIdx = this->indexOfTopLevelItem(duplicate); topIdx != -1)
++      this->takeTopLevelItem(topIdx);
++    emit itemAboutToBeDeleted(duplicate);
++  }
++
++  if (selectInstead)
++    this->setCurrentItem(selectInstead);
++
++  emit playlistChanged();
++  return int(doomed.size());
++}
++
+ void PlaylistTreeWidget::savePlaylistForNextSession()
+ {
++  // Before the snapshot, so that a session that collected duplicates does not hand them to the next
++  // one - which would then restore them and collect more.
++  this->removeDuplicateItems();
++
+   this->autosaveTimer.stop();
+   this->autoSavePlaylist();
+ }
+diff --git a/YUViewLib/src/ui/widgets/PlaylistTreeWidget.h b/YUViewLib/src/ui/widgets/PlaylistTreeWidget.h
+index 8021a240..bec2a4cc 100644
+--- a/YUViewLib/src/ui/widgets/PlaylistTreeWidget.h
++++ b/YUViewLib/src/ui/widgets/PlaylistTreeWidget.h
+@@ -89,6 +89,19 @@ public:
+   // Update the caching status of all items
+   void updateCachingStatus() { emit dataChanged(QModelIndex(), QModelIndex()); };
+ 
++  /* Drop file-backed items whose file is already in the playlist, keeping the first one.
++   *
++   * The same file ending up in the list twice is easy to arrange and never useful: a restored
++   * playlist plus the same name on the command line is the common way in. Returns how many were
++   * removed, and selects the surviving original if the removed item was the selected one - opening
++   * a file that is already open should take you to it, not leave the selection on nothing.
++   *
++   * Only top level items are considered, and only those that are a file source. A container's
++   * children belong to the container - an overlay or a difference of a file against itself is a
++   * deliberate construction, not an accident.
++   */
++  int removeDuplicateItems();
++
+   bool isAutosaveAvailable();
+   void loadAutosavedPlaylist();
+   void dropAutosavedPlaylist();

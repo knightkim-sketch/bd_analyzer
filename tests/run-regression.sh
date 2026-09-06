@@ -236,6 +236,10 @@ fi
 # 테스트가 자기 파일을 만들므로 RAWYUV 유무와 무관하다.
 run_test "$ROOT/tests/regression/20-raw-yuv-unknown-format.cpp"
 
+# 같은 파일이 playlist 에 두 번 담기지 않는지 (앱 시작 시 로드 + 종료 시 스냅샷).
+# 자기 클립을 만들므로 RAWYUV 유무와 무관하다.
+run_test "$ROOT/tests/regression/28-playlist-no-duplicate-files.cpp"
+
 # 히스토그램/블록 통계가 표시 중인 프레임을 따라가는지 (전체 창을 띄워서 검사한다).
 run_test "$ROOT/tests/regression/17-frame-info-follows-frame.cpp"      "$STREAM"
 
