@@ -72,14 +72,20 @@ echo "== 3. 라이선스 / 문서 =="
 # GPLv3 §6 대비 — upstream CI 도 배포물에 동봉한다.
 install -m644 "$UPSTREAM/LICENSE.GPL3" "$STAGE/LICENSE.GPL3"
 install -m644 "$ROOT/docs/deploy/package-README.md" "$STAGE/README.md"
+install -m644 "$ROOT/packaging/rpm/ReleaseNote.md" "$STAGE/ReleaseNote.md"
 
 TARBALL="$DIST/$NAME-linux-x86_64.tar.gz"
 echo "== 4. tar.gz =="
 tar czf "$TARBALL" -C "$WORK" "$NAME"
 echo "   $TARBALL ($(du -h "$TARBALL" | cut -f1))"
 
+# 산출물 폴더에도 그대로 둔다. 패키지 파일만 골라 다른 머신으로 옮기는 경우가 많고,
+# 그때 무엇이 바뀌었는지가 tar 안에만 있으면 열어봐야 알 수 있다.
+install -m644 "$ROOT/packaging/rpm/ReleaseNote.md" "$DIST/ReleaseNote.md"
+
 if [[ "$what" == "tar" ]]; then
     echo; echo "완료: $TARBALL"
+    echo "        $DIST/ReleaseNote.md"
     exit 0
 fi
 
@@ -98,3 +104,4 @@ find "$TOP/RPMS" -name '*.rpm' -exec cp {} "$DIST/" \;
 echo
 echo "완료:"
 for f in "$DIST/$NAME"*; do echo "   $f ($(du -h "$f" | cut -f1))"; done
+echo "   $DIST/ReleaseNote.md"

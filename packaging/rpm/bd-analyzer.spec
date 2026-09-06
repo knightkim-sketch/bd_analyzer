@@ -115,7 +115,7 @@ fi
 
 %files
 %license LICENSE.GPL3
-%doc README.md
+%doc README.md ReleaseNote.md
 %dir %{bda_home}
 %{bda_home}/YUView
 %{bda_home}/bd-analyzer
