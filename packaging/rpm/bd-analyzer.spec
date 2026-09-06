@@ -33,7 +33,7 @@
 %global __requires_exclude ^(%{__requires_exclude_bundled}|%{__requires_exclude_optional})$
 
 Name:           bd-analyzer
-Version:        %{?bda_version}%{!?bda_version:0.1.0}
+Version:        %{?bda_version}%{!?bda_version:0.2.0}
 Release:        %{?bda_release}%{!?bda_release:1}%{?dist}
 Summary:        Video bitstream and YUV analysis toolset
 Summary(ko):    비디오 비트스트림·YUV 분석 도구
@@ -131,5 +131,14 @@ fi
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Sun Sep 06 2026 knight.kim <knight.kim@blue-dot.io> - 0.2.0-1
+- Motion estimation analysis: SVT-AV1 integer ME and odyssey open-loop ME reproduced,
+  drawn through the statistics overlay and readable per block in the Block Info pane.
+  Works on raw YUV items and on compressed streams with an original YUV attached.
+- The playlist is kept across sessions, with a File menu switch, and no longer collects
+  duplicates of the same file.
+- Fixes: abort on quit, abort when switching items with the overlay on, a raw YUV whose
+  name carries no resolution, and Y4M originals being read at the wrong offsets.
+
 * Wed Aug 20 2026 knight.kim <knight.kim@blue-dot.io> - 0.1.0-1
 - First packaged release: RPM and tar.gz built from the bin/ deployment bundle.

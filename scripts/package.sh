@@ -21,7 +21,7 @@ WORK="${WORK:-$ROOT/build/pkg}"
 DIST="${DIST:-$ROOT/build/dist}"
 UPSTREAM="$ROOT/third_party/yuview/upstream"
 
-VERSION="${BDA_VERSION:-0.1.0}"
+VERSION="${BDA_VERSION:-0.2.0}"
 RELEASE="${BDA_RELEASE:-1.git$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 
 what="all"; refresh=0
