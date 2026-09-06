@@ -1,12 +1,12 @@
 ---
 title: TASK-0009 Motion Estimation 분석 기능
-status: implemented (1차 범위)
+status: implemented (1차 + compressed stream)
 created: 2026-09-03
 updated: 2026-09-06
 author: claude-opus-5
-verified: "빌드·회귀 31/31·헤드리스 프로브(오버레이 픽셀 카운트, 클릭 질의) 확인. 실제 X 화면 렌더링은 미검증"
+verified: "빌드·회귀 32/32·헤드리스 프로브(오버레이 픽셀 카운트, 클릭 질의) 확인. 실제 X 화면 렌더링은 미검증"
 upstream: IENT/YUView @ a72eb3488097313511e60ed70db4af6071cbe9fe
-patches: 0026, 0027, 0028, 0029, 0030, 0031
+patches: 0026, 0027, 0028, 0029, 0030, 0031, 0032
 confluence: IT space — "Motion Estimation 분석 기능" 하위 3페이지 (알고리즘 정리)
 ---
 
@@ -221,11 +221,12 @@ Qt 없이 도는 단위 테스트 3개 + MainWindow 를 구동하는 회귀 5개
 | `27-me-block-info-on-click` | 클릭 → Block Info 행, 체크된 크기만, 크기당 1행, lag 가드 |
 | `25-mainwindow-teardown` | C-1 이중 해제, 모든 dock 의 메뉴 항목 |
 | `28-playlist-no-duplicate-files` | 같은 파일 중복 제거, 경로 철자 접기, 스냅샷 정리 |
+| `29-me-on-compressed-stream` | org YUV/Y4M 첨부, 디코더 컨테이너와 분리, 디코드 루프 없음, 두 MV 동시 표시 |
 
 `26`/`27` 은 자기 클립(패닝 텍스처)을 만든다. **정지 패턴으로는 프레임 전체에서 non-zero
 MV 가 하나뿐**이라 "화살표가 보인다" 를 걸기에 약하다.
 
-현재: **31/31 PASS**.
+현재: **32/32 PASS**.
 
 ---
 
@@ -233,7 +234,7 @@ MV 가 하나뿐**이라 "화살표가 보인다" 를 걸기에 약하다.
 
 | 항목 | 상태 |
 |---|---|
-| 2차: compressed stream 지원 | 미착수. reference 프레임을 디코딩해야 한다. **이게 되면 비트스트림의 실제 MV 와 재현 MV 를 겹쳐 볼 수 있다 — 이 기능의 최종 목적** |
+| 2차: compressed stream 지원 | **구현 완료** (패치 `0032`). 아래 G 절 |
 | odyssey closed-loop ME | 조사 완료(Confluence), 구현 미착수. open-loop 결과를 center 로 받고 recon 참조가 필요 |
 | bi-prediction | 미착수. `RefList` 로 자료구조만 열어 둠 |
 | `ods_me_construct_candidates` | 복사가 아니라 **모델링**이다. HW 후보 순서는 고정 8x8=64 로 재현했으나 동치 증명은 없음 |
@@ -241,3 +242,51 @@ MV 가 하나뿐**이라 "화살표가 보인다" 를 걸기에 약하다.
 | playlist `absolutePath` | `file://` URL 로 저장돼 매칭되지 않는다. 미수정, 기록만 |
 | 블록 하이라이트 렌더링 | 코드 경로상 동작해야 하나 **화면 확인 안 함** |
 | 실제 X 화면 검증 전반 | 전부 offscreen 검증이다 |
+
+---
+
+## G. compressed stream 위의 ME (2차)
+
+reference 프레임을 디코딩하지 않는다. **PSNR 비교용으로 붙인 org YUV 가 곧 그 스트림이
+인코딩된 source 이고, 두 encoder 의 open-loop ME 가 검색하는 대상이 바로 그 그림**이다.
+`readOriginalYUVFrame()` 이 임의 프레임 랜덤 접근을 이미 제공하므로 디코더는 관여하지 않는다.
+
+`supportsMotionEstimation()` 의 조건은 "org YUV 가 붙어 있다" 하나다.
+
+### 디코더 컨테이너를 공유하지 않는다 — 세 가지 모두 실측했다
+
+착수 전 프로브로 확인한 것 (`scripts` 아님, 일회성 진단):
+
+| 문제 | 관측 |
+|---|---|
+| **디코드 루프** | `needsLoading()` 은 render=true 인데 이번 프레임 데이터가 없는 타입에 `LoadingNeeded` 를 준다. ME 타입을 넣자 `loadFrame()` 을 5라운드 돌려도 계속 `LoadingNeeded` → 수렴하지 않는다 |
+| **데이터 레이스** | `setFrameIndex` 는 항상 `0x14648f0` 에서 호출됐고 GUI 스레드는 `0x11d36d0` 이었다. `at()`/`operator[]` 는 락을 걸지 않는다 (`accessMutex` 는 호출자 책임) |
+| **프레임 이동 시 소멸** | 다음 프레임을 로드하자 `hasDataForTypeID(203) = 0` |
+
+→ `playlistItemCompressedVideo` 에 **ME 전용 `StatisticsData` + `StatisticUIHandler`** 를 둔다.
+아무도 로드하지 않고, 아무도 비우지 않고, GUI 스레드만 만진다. 회귀 테스트 `29` 가 세 성질을
+전부 고정한다.
+
+그리기는 `drawItem` 에서 `paintStatisticsData` 를 한 번 더 부르는 것뿐이다. 같은 painter 를
+지나므로 스트림 MV 와 재현 MV 가 같은 좌표·같은 줌에 놓인다. 클릭 질의는 두 컨테이너 결과를
+합치되 **비트스트림 항목을 먼저** 둔다 — 이건 stream analyzer 이고 추정은 그 위의 주석이다.
+
+### Y4M org 첨부는 원래 깨져 있었다
+
+`readOriginalYUVFrame()` 은 오프셋을 `frameIdx * bytesPerFrame` 으로 계산했다. Y4M 은 파일
+헤더와 프레임마다 `FRAME\n` 마커가 있어 **이전 프레임 한가운데를 읽는다.** 에러가 아니라
+그럴듯한 그림이 나오므로 SSE·PSNR·ME 가 조용히 틀린다. ME 와 무관하게 존재하던 버그다.
+
+실측: 같은 내용을 `.yuv` 와 `.y4m` 으로 주면 수정 전 `(0,-2) SAD 10221` vs `(-6,-2) SAD 3218`,
+수정 후 둘 다 `(0,-2) SAD 10221`.
+
+`indexY4M()` 으로 프레임 오프셋 표를 만들고, 헤더의 W/H 와 프레임당 바이트 수가 item 과 다르면
+사유를 붙여 거절한다. `playlistItemRawFile::parseY4MFile()` 을 재사용하지 않은 이유는 그것이
+Y4M *item* 의 로더 — 헤더의 크기·포맷·프레임레이트를 item 의 것으로 채택한다 — 이기 때문이다.
+여기서 Y4M 은 첨부물이고 item 은 이미 기하를 갖고 있다.
+
+### 남은 것
+
+- ME 패널의 알고리즘 선택은 여전히 SVT + odyssey open-loop 뿐 (closed-loop 미구현)
+- compressed item 의 ME 오버레이 렌더링을 **실제 X 화면에서 보지 않았다**
+- properties 패널에 통계 체크박스 블록이 둘이 된다 (Bitstream / ME). 실사용 가독성 미검증

@@ -203,6 +203,10 @@ else
 fi
 run_test "$ROOT/tests/regression/06-ffmpeg-library-unload.cpp"        "$STREAM"
 
+# compressed stream 위의 ME: org YUV/Y4M 첨부, 디코더 컨테이너와의 분리, 디코드 루프 없음,
+# 스트림 MV 와 재현 MV 가 한 pane 에. org 파일은 테스트가 직접 만든다.
+run_test_bda "$ROOT/tests/regression/29-me-on-compressed-stream.cpp"  "$STREAM"
+
 echo
 echo "== raw YUV 픽셀 분석 (블록 통계 / 캐시 / 히스토그램 / convolution) =="
 # 이 테스트는 raw YUV 파일을 쓴다. 없으면 ffmpeg 로 만든다.

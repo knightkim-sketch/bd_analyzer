@@ -1,0 +1,568 @@
+diff --git a/YUViewLib/src/playlistitem/playlistItem.h b/YUViewLib/src/playlistitem/playlistItem.h
+index 4f55556b..5cf7c5a7 100644
+--- a/YUViewLib/src/playlistitem/playlistItem.h
++++ b/YUViewLib/src/playlistitem/playlistItem.h
+@@ -39,6 +39,8 @@
+ #include <statistics/BlockInfo.h>
+ #include <statistics/PixelStatistics.h>
+ #include <statistics/StatisticUIHandler.h>
++#include <statistics/StatisticsData.h>
++#include <video/yuv/PixelFormatYUV.h>
+ 
+ #include <QByteArray>
+ #include <QDir>
+@@ -245,18 +247,45 @@ public:
+    */
+   virtual bool supportsPixelStatistics() const { return false; }
+ 
+-  /* Motion estimation needs two arbitrary frames of raw luma, which only a raw file can hand over
+-   * cheaply - a compressed item would have to decode the reference, and this decoder is built
+-   * around sequential access. Answering false here is what greys the ME panel out with a reason
+-   * instead of leaving it to produce nothing.
++  /* Motion estimation needs two arbitrary frames of raw luma in one geometry.
++   *
++   * A raw file hands them over from its own file. A compressed item can too, but only once an
++   * original YUV has been attached for the PSNR comparison: that file is the source the stream was
++   * coded from, which is exactly the picture both encoders' open-loop ME searches - so no reference
++   * frame has to be decoded. Without it there is nothing to search, and answering false is what
++   * greys the ME panel out with a reason instead of leaving it to produce nothing.
+    */
+   virtual bool supportsMotionEstimation() const { return false; }
+ 
+   /* One frame of raw data, read without disturbing what the viewer is showing. Empty when the item
+-   * cannot serve it.
++   * cannot serve it. Whatever this returns must match getRawPixelFormat()/getRawFrameSize().
+    */
+   virtual QByteArray readRawFrame(int) { return {}; }
+ 
++  //!< The format and size readRawFrame() delivers. Meaningless unless supportsMotionEstimation().
++  virtual video::yuv::PixelFormatYUV getRawPixelFormat() const { return {}; }
++  virtual Size                       getRawFrameSize() const { return {}; }
++
++  /* Where a motion estimate is stored, and the controls that toggle it.
++   *
++   * Deliberately separate from getStatisticsUIHandler() rather than reusing it. On a compressed
++   * item that handler's container belongs to the decoder, and putting the estimate in it goes
++   * wrong three ways, all of them measured:
++   *
++   *   - StatisticsData::needsLoading() reports LoadingNeeded for any rendered type with no data
++   *     this frame. An estimate that has not finished yet keeps saying that, and the item keeps
++   *     re-decoding the frame to satisfy it - a loop that never converges.
++   *   - The decoder calls setFrameIndex() from its loading thread while the finished estimate is
++   *     written from the GUI thread, and frameCache is an unguarded std::map on that path.
++   *   - setFrameIndex() clears the cache on every frame change, so the decoder catching up would
++   *     silently drop the estimate that had just been drawn.
++   *
++   * A container of its own has none of those: nothing else loads it, nothing else clears it, and
++   * it is only ever touched from the GUI thread. Null when the item cannot be estimated.
++   */
++  virtual stats::StatisticsData     *getMotionEstimationData() { return nullptr; }
++  virtual stats::StatisticUIHandler *getMotionEstimationUIHandler() { return nullptr; }
++
+   //!< Edge length of the blocks getPixelBlockStats() reports on. 0 when unsupported.
+   virtual unsigned getPixelStatisticsBlockSize() const { return 0; }
+ 
+diff --git a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+index 0b6a6038..9e27eb52 100644
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+@@ -53,6 +53,7 @@
+ #include <parser/HEVC/ParserAnnexBHEVC.h>
+ #include <parser/VVC/ParserAnnexBVVC.h>
+ #include <parser/common/SubByteReaderLogging.h>
++#include <integration/MeStatisticsAdapter.h>
+ #include <statistics/StatisticsDataPainting.h>
+ #include <ui/Mainwindow.h>
+ #include <ui_playlistItemCompressedFile_logDialog.h>
+@@ -321,6 +322,13 @@ playlistItemCompressedVideo::playlistItemCompressedVideo(const QString &compress
+   playlistItemWithVideo::connectVideo();
+   this->statisticsData.setFrameSize(this->video->getFrameSize());
+ 
++  /* The motion estimate's own container. Wired exactly as the raw item wires its one, and for the
++   * same reason it is deliberately NOT connected to StatisticUIHandler::updateItem: a repaint that
++   * leads back to rebuilding the statistics rows closes a loop.
++   */
++  this->meStatisticsData.setFrameSize(this->video->getFrameSize());
++  this->meStatisticsUIHandler.setStatisticsData(&this->meStatisticsData);
++
+   if (codec == Codec::HEVC)
+     this->possibleDecoders = DecodersHEVC;
+   else if (codec == Codec::VVC)
+@@ -645,6 +653,10 @@ void playlistItemCompressedVideo::drawItem(QPainter *painter,
+     // describes the bitstream either way and stays on top.
+     this->videoToDisplay(frameIdx)->drawFrame(painter, frameIdx, zoomFactor, drawRawData);
+     stats::paintStatisticsData(painter, this->statisticsData, frameIdx, zoomFactor);
++    /* The reproduced vectors on top of the stream's own, which is the whole point: the two are in
++     * the same coordinates at the same zoom because they go through the same painter.
++     */
++    stats::paintStatisticsData(painter, this->meStatisticsData, frameIdx, zoomFactor);
+   }
+ }
+ 
+@@ -1033,6 +1045,12 @@ void playlistItemCompressedVideo::createPropertiesWidget()
+   ui.verticalLayout->insertWidget(5, lineTwo.release());
+   ui.verticalLayout->insertLayout(
+     6, this->statisticsUIHandler.createStatisticsHandlerControls(), 1);
++  /* A second block of checkboxes, for the reproduced vectors. Two blocks rather than one list,
++   * because the two describe different things - what the stream says, and what an estimator would
++   * have chosen - and mixing them into one column would make that distinction invisible.
++   */
++  ui.verticalLayout->insertLayout(
++    7, this->meStatisticsUIHandler.createStatisticsHandlerControls(), 1);
+ 
+   // Set the components that we can display
+   if (loadingDecoder)
+@@ -1263,9 +1281,42 @@ stats::BlockInfo playlistItemCompressedVideo::getBlockInfoAt(const QPoint &pixel
+   if (info.frameIndex != frameIdx)
+     return {};
+ 
++  /* Append the reproduced vectors for the same pixel. Two containers, one pane: the reader is
++   * comparing the stream's decision against the estimator's, so the two have to be side by side
++   * rather than in two places. The bitstream's own entries stay first and keep the highlight -
++   * this is a stream analyzer, and the estimate is the annotation on top of it.
++   */
++  auto meInfo = this->meStatisticsData.getBlockInfoAt(pixelPos);
++  if (meInfo.isValid && meInfo.frameIndex == frameIdx)
++  {
++    bda::integration::mergeMeBlockInfoEntries(meInfo);
++    for (auto &entry : meInfo.entries)
++    {
++      entry.isPrimaryRect = (entry.rect == info.codingBlockRect);
++      info.entries.push_back(entry);
++      if (std::find(info.allRects.begin(), info.allRects.end(), entry.rect) == info.allRects.end())
++        info.allRects.push_back(entry.rect);
++    }
++  }
++
+   return info;
+ }
+ 
++bool playlistItemCompressedVideo::supportsMotionEstimation() const
++{
++  /* An attached original is the whole requirement. It is read with this item's geometry, so once it
++   * is there the two frames the estimator needs are a file read away - no decoding, and no
++   * dependence on the decoder having reached the reference frame.
++   */
++  return !this->getOriginalYUVSource().isEmpty() && this->supportsPixelStatistics();
++}
++
++QByteArray playlistItemCompressedVideo::readRawFrame(int frameIdx)
++{
++  // The source, not the reconstruction: that is what an open-loop estimator searches.
++  return this->readOriginalYUVFrame(frameIdx);
++}
++
+ std::vector<playlistItem::SuperblockBits>
+ playlistItemCompressedVideo::getSuperblockBits(int frameIdx)
+ {
+diff --git a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
+index 419ea293..3e398c08 100644
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
+@@ -84,6 +84,20 @@ public:
+   virtual ValuePairListSets getPixelValues(const QPoint &pixelPos, int frameIdx) override;
+ 
+   stats::BlockInfo getBlockInfoAt(const QPoint &pixelPos, int frameIdx) override;
++
++  /* Motion estimation on a compressed stream, over the original YUV attached for the PSNR
++   * comparison. That file is the source this stream was coded from, which is the picture both
++   * encoders' open-loop ME searches, so nothing has to be decoded to answer this - and the
++   * reproduced vectors can be laid over the stream's own on one canvas.
++   */
++  bool       supportsMotionEstimation() const override;
++  QByteArray readRawFrame(int frameIdx) override;
++
++  stats::StatisticsData     *getMotionEstimationData() override { return &this->meStatisticsData; }
++  stats::StatisticUIHandler *getMotionEstimationUIHandler() override
++  {
++    return &this->meStatisticsUIHandler;
++  }
+   void             setBlockInfoRequested(bool requested) override;
+   unsigned         getMaxBlockSize() const override;
+   //!< The coding block grid: for AV1 the superblock size from the sequence header.
+@@ -202,6 +216,14 @@ protected:
+   stats::StatisticUIHandler statisticsUIHandler;
+   stats::StatisticsData     statisticsData;
+ 
++  /* The motion estimate, kept apart from the decoder's container above. The reasons are spelled out
++   * at playlistItem::getMotionEstimationData(); the short version is that the decoder loads,
++   * clears and re-indexes its own container from a loading thread, and an estimate living in there
++   * is by turns re-decoded in a loop, raced and thrown away.
++   */
++  stats::StatisticUIHandler meStatisticsUIHandler;
++  stats::StatisticsData     meStatisticsData;
++
+   void fillStatisticList();
+   void loadStatistics(int frameIdx);
+ 
+diff --git a/YUViewLib/src/playlistitem/playlistItemRawFile.h b/YUViewLib/src/playlistitem/playlistItemRawFile.h
+index 517a0b6c..2b216f7e 100644
+--- a/YUViewLib/src/playlistitem/playlistItemRawFile.h
++++ b/YUViewLib/src/playlistitem/playlistItemRawFile.h
+@@ -74,6 +74,16 @@ public:
+   stats::StatisticUIHandler *getStatisticsUIHandler() override { return &this->statisticsUIHandler; }
+   stats::StatisticsData     &getStatisticsData() { return this->statisticsData; }
+ 
++  /* A raw item has no decoder, so nothing else ever loads or clears this container - the same one
++   * serves as the motion estimate's. See playlistItem::getMotionEstimationData() for why a
++   * compressed item cannot do that.
++   */
++  stats::StatisticsData     *getMotionEstimationData() override { return &this->statisticsData; }
++  stats::StatisticUIHandler *getMotionEstimationUIHandler() override
++  {
++    return &this->statisticsUIHandler;
++  }
++
+   void drawItem(QPainter *painter, int frameIdx, double zoomFactor, bool drawRawValues) override;
+ 
+   /* The reproduced motion vector (and its costs) under a clicked pixel.
+@@ -90,12 +100,12 @@ public:
+    * format and the frame size alongside the frames themselves, and the video handler that holds
+    * them is protected.
+    */
+-  video::yuv::PixelFormatYUV getRawPixelFormat() const
++  video::yuv::PixelFormatYUV getRawPixelFormat() const override
+   {
+     return this->getYUVVideo() ? this->getYUVVideo()->getPixelFormatYUV()
+                                : video::yuv::PixelFormatYUV();
+   }
+-  Size getRawFrameSize() const
++  Size getRawFrameSize() const override
+   {
+     return this->getYUVVideo() ? this->getYUVVideo()->getFrameSize() : Size();
+   }
+diff --git a/YUViewLib/src/playlistitem/playlistItemWithVideo.cpp b/YUViewLib/src/playlistitem/playlistItemWithVideo.cpp
+index 09ab128d..67bb6b08 100644
+--- a/YUViewLib/src/playlistitem/playlistItemWithVideo.cpp
++++ b/YUViewLib/src/playlistitem/playlistItemWithVideo.cpp
+@@ -46,6 +46,128 @@
+ #define DEBUG_PLVIDEO(fmt, ...) ((void)0)
+ #endif
+ 
++namespace
++{
++
++/* Index the frames of a Y4M file: the byte offset of each frame's sample data, and how many bytes
++ * one frame carries according to the header.
++ *
++ * Deliberately not playlistItemRawFile::parseY4MFile(). That one is the loader for a Y4M *item* -
++ * it adopts the header's size, format and frame rate as the item's own, and reports through the
++ * item's error state. Here the file is an attachment: the item already has a geometry, and what is
++ * wanted is the frame offsets plus enough of the header to refuse a file that does not match. The
++ * two would have to be pulled apart to share, and the shared part is this function.
++ *
++ * A Y4M frame is "FRAME", optional parameters, 0x0A, then the samples - so the payload is not at a
++ * fixed stride and cannot be reached by multiplying, which is exactly why the flat path is wrong
++ * for these files.
++ */
++struct Y4MIndex
++{
++  std::vector<int64_t> frameOffsets;
++  int64_t              bytesPerFrame{};
++  unsigned             width{};
++  unsigned             height{};
++  bool                 isY4M{};
++};
++
++Y4MIndex indexY4M(FileSource &file)
++{
++  Y4MIndex index;
++
++  QByteArray header;
++  // The header may be arbitrarily long in theory; 512 bytes covers it in practice, as upstream's
++  // own parser assumes.
++  if (file.readBytes(header, 0, 512) < 16 || header.left(10) != "YUV4MPEG2 ")
++    return index;
++
++  int      offset        = 9;
++  unsigned bitsPerSample = 8;
++  QByteArray subsampling = "420"; // the Y4M default when no C parameter is present
++
++  while (offset < header.size() && header.at(offset) == ' ')
++  {
++    ++offset;
++    if (offset >= header.size())
++      return index;
++    const char parameter = header.at(offset++);
++    const auto readNumber = [&header, &offset]() {
++      QByteArray digits;
++      while (offset < header.size() && QChar(header.at(offset)).isDigit())
++        digits.append(header.at(offset++));
++      return digits.toUInt();
++    };
++
++    if (parameter == 'W')
++      index.width = readNumber();
++    else if (parameter == 'H')
++      index.height = readNumber();
++    else if (parameter == 'C')
++    {
++      subsampling = header.mid(offset, 3);
++      offset += 3;
++      if (offset < header.size() && header.at(offset) == 'p')
++      {
++        ++offset;
++        QByteArray digits;
++        while (offset < header.size() && QChar(header.at(offset)).isDigit())
++          digits.append(header.at(offset++));
++        const auto depth = digits.toUInt();
++        if (depth >= 8 && depth <= 16)
++          bitsPerSample = depth;
++      }
++    }
++
++    // Skip whatever is left of this parameter; 0x0A ends the header.
++    while (offset < header.size() && header.at(offset) != ' ' && header.at(offset) != 10)
++      ++offset;
++    if (offset < header.size() && header.at(offset) == 10)
++    {
++      ++offset;
++      break;
++    }
++  }
++
++  if (index.width == 0 || index.height == 0)
++    return index;
++
++  auto samplesPerFrame = int64_t(index.width) * index.height * 3 / 2;
++  if (subsampling == "422")
++    samplesPerFrame = int64_t(index.width) * index.height * 2;
++  else if (subsampling == "444")
++    samplesPerFrame = int64_t(index.width) * index.height * 3;
++  else if (subsampling == "mon" || subsampling == "400")
++    samplesPerFrame = int64_t(index.width) * index.height;
++  index.bytesPerFrame = bitsPerSample > 8 ? samplesPerFrame * 2 : samplesPerFrame;
++  index.isY4M         = true;
++
++  const auto fileSize = int64_t(file.getFileSize().value_or(0));
++  int64_t    pos      = offset;
++  while (pos + 6 < fileSize)
++  {
++    QByteArray marker;
++    if (file.readBytes(marker, pos, 32) < 6)
++      break;
++    if (marker.left(5) != "FRAME")
++      break;
++    // Frame parameters run to the next 0x0A. They carry nothing this needs.
++    int headerEnd = 5;
++    while (headerEnd < marker.size() && marker.at(headerEnd) != 10)
++      ++headerEnd;
++    if (headerEnd >= marker.size())
++      break;
++    const auto dataStart = pos + headerEnd + 1;
++    if (dataStart + index.bytesPerFrame > fileSize)
++      break;
++    index.frameOffsets.push_back(dataStart);
++    pos = dataStart + index.bytesPerFrame;
++  }
++
++  return index;
++}
++
++} // namespace
++
+ playlistItemWithVideo::playlistItemWithVideo(const QString &itemNameOrFileName)
+     : playlistItem(itemNameOrFileName, Type::Indexed)
+ {
+@@ -347,6 +469,7 @@ bool playlistItemWithVideo::setOriginalYUVSource(const QString &filePath, QStrin
+      * keep drawing the frame of a file that is no longer attached.
+      */
+     this->originalVideo.reset();
++    this->originalY4MFrameOffsets.clear();
+     if (this->displaySource != DisplaySource::Reconstruction)
+     {
+       this->displaySource = DisplaySource::Reconstruction;
+@@ -398,6 +521,45 @@ bool playlistItemWithVideo::setOriginalYUVSource(const QString &filePath, QStrin
+                         .arg(bytesPerFrame));
+   }
+ 
++  /* A Y4M carries a file header and a per-frame marker, so its samples are not at a fixed stride.
++   * Reading one by multiplying - which is what this did for every file - lands in the middle of the
++   * previous frame, and every number computed from it (the SSE, the PSNR, a motion estimate) is
++   * quietly wrong rather than obviously broken.
++   */
++  this->originalY4MFrameOffsets.clear();
++  if (const auto y4m = indexY4M(this->originalYUVFile); y4m.isY4M)
++  {
++    const auto size = this->getYUVVideo()->getFrameSize();
++    if (y4m.width != size.width || y4m.height != size.height)
++    {
++      forget();
++      return setError(QString("%1 is %2x%3, but this item is %4x%5.")
++                          .arg(filePath)
++                          .arg(y4m.width)
++                          .arg(y4m.height)
++                          .arg(size.width)
++                          .arg(size.height));
++    }
++    /* Compared as bytes per frame rather than by naming the formats: that is the quantity every
++     * read depends on, and it catches a subsampling or a bit depth difference in one check.
++     */
++    if (y4m.bytesPerFrame != bytesPerFrame)
++    {
++      forget();
++      return setError(QString("%1 has %2 bytes per frame, this item has %3 - the pixel formats do "
++                              "not match.")
++                          .arg(filePath)
++                          .arg(y4m.bytesPerFrame)
++                          .arg(bytesPerFrame));
++    }
++    if (y4m.frameOffsets.empty())
++    {
++      forget();
++      return setError(QString("%1 is a Y4M file with no readable frames.").arg(filePath));
++    }
++    this->originalY4MFrameOffsets = y4m.frameOffsets;
++  }
++
+   this->originalYUVPath = filePath;
+ 
+   /* A handler of its own so the original can be shown in the view without touching the item's own
+@@ -427,9 +589,16 @@ QByteArray playlistItemWithVideo::readOriginalYUVFrame(int frameIdx)
+   if (bytesPerFrame <= 0)
+     return {};
+ 
++  int64_t offset = int64_t(frameIdx) * bytesPerFrame;
++  if (!this->originalY4MFrameOffsets.empty())
++  {
++    if (std::size_t(frameIdx) >= this->originalY4MFrameOffsets.size())
++      return {};
++    offset = this->originalY4MFrameOffsets[std::size_t(frameIdx)];
++  }
++
+   QByteArray frame;
+-  if (this->originalYUVFile.readBytes(frame, int64_t(frameIdx) * bytesPerFrame, bytesPerFrame) <
+-      bytesPerFrame)
++  if (this->originalYUVFile.readBytes(frame, offset, bytesPerFrame) < bytesPerFrame)
+     // The original is shorter than this item, so this frame has nothing to compare against.
+     return {};
+   return frame;
+diff --git a/YUViewLib/src/playlistitem/playlistItemWithVideo.h b/YUViewLib/src/playlistitem/playlistItemWithVideo.h
+index 52cd08ac..f02b880f 100644
+--- a/YUViewLib/src/playlistitem/playlistItemWithVideo.h
++++ b/YUViewLib/src/playlistitem/playlistItemWithVideo.h
+@@ -81,6 +81,19 @@ public:
+   std::vector<uint32_t>                 getLumaHistogram(int frameIdx) override;
+   bool          setOriginalYUVSource(const QString &filePath, QString *error = nullptr) override;
+   QString       getOriginalYUVSource() const override { return this->originalYUVPath; }
++
++  /* The attached original is read with this item's own geometry - it is the source this item was
++   * coded from - so these are the item's format and size, and they describe readRawFrame() too.
++   */
++  video::yuv::PixelFormatYUV getRawPixelFormat() const override
++  {
++    return this->getYUVVideo() ? this->getYUVVideo()->getPixelFormatYUV()
++                               : video::yuv::PixelFormatYUV();
++  }
++  Size getRawFrameSize() const override
++  {
++    return this->getYUVVideo() ? this->getYUVVideo()->getFrameSize() : Size();
++  }
+   bool          setDisplaySource(DisplaySource source) override;
+   DisplaySource getDisplaySource() const override { return this->displaySource; }
+   DataDump getItemDataDump(const QPoint &pixelPos, int frameIdx, const stats::BlockInfo &) override;
+@@ -181,13 +194,23 @@ private:
+   void     openPixelStatsCacheIfNeeded();
+   //!< Runs on the GUI thread, the only thread that touches the cache.
+   void     takeComputedPixelStatistics();
+-  //!< One frame of the attached original YUV, or empty when there is none / it is not that long.
++protected:
++  /* One frame of the attached original YUV, or empty when there is none / it is not that long.
++   * Protected rather than private because the compressed item serves it as its readRawFrame() -
++   * the motion estimate searches the source, not the reconstruction.
++   */
+   QByteArray readOriginalYUVFrame(int frameIdx);
+ 
++private:
++
+   //!< The original (source) sequence this item's pixels are compared against. See the SSE in
+   //!< stats::PixelBlockStats.
+   QString    originalYUVPath;
+   FileSource originalYUVFile;
++  /* Byte offset of each frame's samples when the attached original is a Y4M. Empty for a flat raw
++   * file, where the offset is a multiplication - see readOriginalYUVFrame().
++   */
++  std::vector<int64_t> originalY4MFrameOffsets;
+ 
+   /* A handler of its own for the original, so that showing it changes nothing about the item's own
+    * buffer: the statistics, the histogram and the SSE all read that one and must keep describing the
+diff --git a/YUViewLib/src/ui/Mainwindow.cpp b/YUViewLib/src/ui/Mainwindow.cpp
+index 2a240191..bbdade09 100644
+--- a/YUViewLib/src/ui/Mainwindow.cpp
++++ b/YUViewLib/src/ui/Mainwindow.cpp
+@@ -37,6 +37,7 @@
+ #include <integration/MeStatisticsAdapter.h>
+ #include <integration/MotionEstimationWidget.h>
+ #include <playlistitem/playlistItemRawFile.h>
++#include <playlistitem/playlistItemWithVideo.h>
+ 
+ #include <QByteArray>
+ #include <QFileDialog>
+@@ -925,7 +926,7 @@ void MainWindow::restartMotionEstimation()
+     this->meFrameIdx = currentFrame;
+ 
+   auto *panel = ui.motionEstimationWidget;
+-  auto *item  = qobject_cast<playlistItemRawFile *>(this->meItem.data());
++  auto *item  = this->meItem.data();
+ 
+   /* Whatever the last run left on the bar describes a frame that is no longer on screen. Clearing
+    * it here covers every early return below at once; a run that actually starts overwrites it.
+@@ -937,14 +938,19 @@ void MainWindow::restartMotionEstimation()
+     panel->setUnavailable(tr("No item selected."));
+     return;
+   }
+-  if (item == nullptr || !item->supportsMotionEstimation())
++  if (item == nullptr || !item->supportsMotionEstimation() ||
++      item->getMotionEstimationData() == nullptr)
+   {
+-    /* Compressed streams are the second phase: the reference frame would have to be decoded, and
+-     * this decoder is built around sequential access. Saying so beats a panel that quietly does
+-     * nothing.
++    /* A raw file estimates from its own frames. A compressed stream estimates from the original YUV
++     * attached for the PSNR comparison - that file is the source it was coded from, so nothing has
++     * to be decoded. Without one there is nothing to search, and saying so beats a panel that
++     * quietly does nothing.
+      */
+-    panel->setUnavailable(tr("Raw YUV items only, for now. A compressed stream would have to decode "
+-                             "the reference frame."));
++    panel->setUnavailable(
++        dynamic_cast<playlistItemWithVideo *>(item) != nullptr
++            ? tr("Attach the original YUV first (Load Org YUV). The estimate runs on the source "
++                 "pictures, the same ones the encoder searched.")
++            : tr("This item has no raw frames to estimate from."));
+     return;
+   }
+ 
+@@ -1004,8 +1010,9 @@ void MainWindow::restartMotionEstimation()
+    * was looking for them. Registering up front also makes the block-size checkboxes visibly drive
+    * the panel, which is what they are for.
+    */
+-  if (bda::integration::syncMeStatTypes(item->getStatisticsData(), params.algorithm, params.blockSizes))
+-    if (auto *handler = item->getStatisticsUIHandler())
++  if (bda::integration::syncMeStatTypes(
++          *item->getMotionEstimationData(), params.algorithm, params.blockSizes))
++    if (auto *handler = item->getMotionEstimationUIHandler())
+       handler->updateStatisticsHandlerControls();
+ 
+   panel->setStatus(tr("Estimating frame %1 against %2...").arg(this->meFrameIdx).arg(refIdx));
+@@ -1039,8 +1046,9 @@ void MainWindow::takeMotionEstimation()
+     return;
+   }
+ 
+-  auto *item = qobject_cast<playlistItemRawFile *>(this->meItem.data());
+-  if (item == nullptr || result.frameIdx != this->meFrameIdx)
++  auto *item = this->meItem.data();
++  if (item == nullptr || item->getMotionEstimationData() == nullptr ||
++      result.frameIdx != this->meFrameIdx)
+     // The selection or the frame moved on while this was running.
+     return;
+ 
+@@ -1054,7 +1062,7 @@ void MainWindow::takeMotionEstimation()
+    * The order below matters instead. setFrameIndex() clears the frame cache when the index moves,
+    * so it has to run *before* the results are filled in, or the fill would be thrown away.
+    */
+-  auto &data = item->getStatisticsData();
++  auto &data = *item->getMotionEstimationData();
+   data.setFrameIndex(result.frameIdx);
+   bda::integration::syncMeStatTypes(data, result.algorithm, panel->params().blockSizes);
+   bda::integration::fillMeStatistics(data, result);
