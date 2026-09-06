@@ -192,7 +192,7 @@ index c9fc4597..592034ad 100644
  
    // A y4m file is a raw YUV file but it adds a header (which has information about the YUV format)
 diff --git a/YUViewLib/src/ui/Mainwindow.cpp b/YUViewLib/src/ui/Mainwindow.cpp
-index 1ca62fff..46f084b2 100644
+index 1ca62fff..f0415090 100644
 --- a/YUViewLib/src/ui/Mainwindow.cpp
 +++ b/YUViewLib/src/ui/Mainwindow.cpp
 @@ -31,6 +31,12 @@
@@ -208,7 +208,7 @@ index 1ca62fff..46f084b2 100644
  
  #include <QByteArray>
  #include <QFileDialog>
-@@ -318,6 +324,27 @@ MainWindow::MainWindow(bool useAlternativeSources, QWidget *parent) : QMainWindo
+@@ -318,6 +324,45 @@ MainWindow::MainWindow(bool useAlternativeSources, QWidget *parent) : QMainWindo
            &PlaylistTreeWidget::selectedItemChanged,
            ui.rateDistortionPlot,
            &RateDistortionPlotWidget::refresh);
@@ -233,10 +233,28 @@ index 1ca62fff..46f084b2 100644
 +          &QFutureWatcher<bda::me::MeFrameResult>::finished,
 +          this,
 +          &MainWindow::takeMotionEstimation);
++
++  /* Poll the running estimate's superblock counter. 100 ms is well under what a person reads as a
++   * stalled bar and far above the cost of two atomic loads.
++   */
++  this->meProgressTimer.setInterval(100);
++  connect(&this->meProgressTimer,
++          &QTimer::timeout,
++          this,
++          [this]()
++          {
++            if (!this->meProgress)
++            {
++              this->meProgressTimer.stop();
++              return;
++            }
++            ui.motionEstimationWidget->setProgressRunning(this->meProgress->done(),
++                                                          this->meProgress->total());
++          });
    connect(ui.playlistTreeWidget,
            &PlaylistTreeWidget::selectedItemChanged,
            ui.playbackController,
-@@ -680,6 +707,10 @@ void MainWindow::createMenusAndActions()
+@@ -680,6 +725,10 @@ void MainWindow::createMenusAndActions()
    addDockViewAction(ui.cachingInfoDock, "Show Caching Info");
    addDockViewAction(ui.blockInfoDock, "Show &Block Info", Qt::CTRL | Qt::Key_B);
    addDockViewAction(ui.frameInfoDock, "Show &Frame Info", Qt::CTRL | Qt::Key_F);
@@ -247,12 +265,16 @@ index 1ca62fff..46f084b2 100644
    viewMenu->addSeparator();
    addDockViewAction(ui.playbackControllerDock, "Show Playback &Controls", Qt::CTRL | Qt::Key_D);
  
-@@ -809,6 +840,172 @@ void MainWindow::updateRecentFileActions()
+@@ -809,6 +858,192 @@ void MainWindow::updateRecentFileActions()
    settings.setValue("recentFileList", files);
  }
  
 +void MainWindow::cancelMotionEstimation()
 +{
++  this->meProgressTimer.stop();
++  // Dropped with the token: the abandoned worker keeps counting into its own copy, and that count
++  // must not reach a bar that now belongs to a different run.
++  this->meProgress.reset();
 +  if (this->meCancel)
 +  {
 +    this->meCancel->cancel();
@@ -284,6 +306,11 @@ index 1ca62fff..46f084b2 100644
 +
 +  auto *panel = ui.motionEstimationWidget;
 +  auto *item  = qobject_cast<playlistItemRawFile *>(this->meItem.data());
++
++  /* Whatever the last run left on the bar describes a frame that is no longer on screen. Clearing
++   * it here covers every early return below at once; a run that actually starts overwrites it.
++   */
++  panel->setProgressIdle(tr("No estimate yet"));
 +
 +  if (this->meItem.isNull())
 +  {
@@ -337,9 +364,11 @@ index 1ca62fff..46f084b2 100644
 +    return;
 +  }
 +
-+  this->meCancel = std::make_shared<bda::me::CancelToken>();
-+  params.cancel  = this->meCancel.get();
-+  request.params = params;
++  this->meCancel   = std::make_shared<bda::me::CancelToken>();
++  this->meProgress = std::make_shared<bda::me::ProgressToken>();
++  params.cancel    = this->meCancel.get();
++  params.progress  = this->meProgress.get();
++  request.params   = params;
 +
 +  /* Register the overlay types now, not when the result arrives.
 +   *
@@ -353,12 +382,15 @@ index 1ca62fff..46f084b2 100644
 +      handler->updateStatisticsHandlerControls();
 +
 +  panel->setStatus(tr("Estimating frame %1 against %2...").arg(this->meFrameIdx).arg(refIdx));
++  panel->setProgressRunning(0, 0);
++  this->meProgressTimer.start();
 +
-+  /* The token is captured by value so the worker keeps it alive: params.cancel points into it, and
-+   * this thread drops its own copy the moment the next restart happens.
++  /* Both tokens are captured by value so the worker keeps them alive: params.cancel and
++   * params.progress point into them, and this thread drops its own copies on the next restart.
 +   */
-+  this->meWatcher.setFuture(QtConcurrent::run(
-+      [request, token = this->meCancel]() { return bda::integration::runMe(request); }));
++  this->meWatcher.setFuture(
++      QtConcurrent::run([request, token = this->meCancel, progress = this->meProgress]()
++                        { return bda::integration::runMe(request); }));
 +}
 +
 +void MainWindow::takeMotionEstimation()
@@ -371,9 +403,12 @@ index 1ca62fff..46f084b2 100644
 +  if (result.cancelled)
 +    return;
 +
++  this->meProgressTimer.stop();
++
 +  if (!result.error.empty())
 +  {
 +    panel->setStatus(QString::fromStdString(result.error));
++    panel->setProgressIdle(tr("Failed"));
 +    return;
 +  }
 +
@@ -406,6 +441,9 @@ index 1ca62fff..46f084b2 100644
 +                       .arg(result.frameIdx)
 +                       .arg(result.refFrameIdx)
 +                       .arg(int(result.blocks.size())));
++  // The whole point of the bar: this is what tells the user the overlay they are looking at is the
++  // finished search and not a partial one.
++  panel->setProgressComplete(tr("Frame %1 complete").arg(result.frameIdx));
 +
 +  /* Repaint the view, nothing more.
 +   *
@@ -420,7 +458,7 @@ index 1ca62fff..46f084b2 100644
  void MainWindow::closeEvent(QCloseEvent *event)
  {
    // Stop playback
-@@ -860,21 +1057,14 @@ void MainWindow::closeEvent(QCloseEvent *event)
+@@ -860,21 +1095,14 @@ void MainWindow::closeEvent(QCloseEvent *event)
     */
    if (const auto cacheUsage = BDCachePaths::usage(); cacheUsage.fileCount > 0)
    {
@@ -450,7 +488,7 @@ index 1ca62fff..46f084b2 100644
    }
  
    event->accept();
-@@ -1043,6 +1233,8 @@ void MainWindow::toggleFullscreen()
+@@ -1043,6 +1271,8 @@ void MainWindow::toggleFullscreen()
        ui.blockInfoDock->show();
      if (panelsVisible[6])
        ui.frameInfoDock->show();
@@ -459,7 +497,7 @@ index 1ca62fff..46f084b2 100644
  
      if (!is_Q_OS_MAC)
        ui.menuBar->show();
-@@ -1065,6 +1257,7 @@ void MainWindow::toggleFullscreen()
+@@ -1065,6 +1295,7 @@ void MainWindow::toggleFullscreen()
      panelsVisible[4] = ui.cachingInfoDock->isVisible();
      panelsVisible[5] = ui.blockInfoDock->isVisible();
      panelsVisible[6] = ui.frameInfoDock->isVisible();
@@ -468,10 +506,10 @@ index 1ca62fff..46f084b2 100644
      // Hide panels
      ui.propertiesDock->hide();
 diff --git a/YUViewLib/src/ui/Mainwindow.h b/YUViewLib/src/ui/Mainwindow.h
-index 0ea63aff..99ce244f 100644
+index 0ea63aff..930f45c4 100644
 --- a/YUViewLib/src/ui/Mainwindow.h
 +++ b/YUViewLib/src/ui/Mainwindow.h
-@@ -33,9 +33,15 @@
+@@ -33,8 +33,15 @@
  #pragma once
  
  #include <QDesktopServices>
@@ -479,15 +517,15 @@ index 0ea63aff..99ce244f 100644
  #include <QMainWindow>
 +#include <QPointer>
  #include <QSettings>
- 
++#include <QTimer>
++
 +#include <memory>
 +
 +#include <integration/MeRunner.h>
-+
+ 
  #include <handler/UpdateHandler.h>
  #include <ui/SeparateWindow.h>
- #include <video/caching/VideoCache.h>
-@@ -88,6 +94,16 @@ private slots:
+@@ -88,6 +95,16 @@ private slots:
    //!< Make that selector show what the currently selected item is actually doing.
    void updateDisplaySourceComboBox();
    void resetWindowLayout();
@@ -504,7 +542,7 @@ index 0ea63aff..99ce244f 100644
    void closeAndClearSettings();
  
    void onMenuResetView(bool checked)
-@@ -179,6 +195,19 @@ private:
+@@ -179,6 +196,25 @@ private:
    std::unique_ptr<updateHandler>     updater;
    ViewStateHandler                   stateHandler;
    SeparateWindow                     separateViewWindow;
@@ -517,6 +555,12 @@ index 0ea63aff..99ce244f 100644
 +   * the worker's own copy of the shared_ptr - means a cancelled run stays cancelled.
 +   */
 +  std::shared_ptr<bda::me::CancelToken>            meCancel;
++  /* Progress is polled rather than pushed, for the same reason the token is shared: the estimator
++   * is Qt-free and runs on a worker thread, so it counts into an atomic and this timer reads it.
++   * Held per run alongside the token, so a stale worker cannot move a newer run's bar.
++   */
++  std::shared_ptr<bda::me::ProgressToken>          meProgress;
++  QTimer                                           meProgressTimer;
 +  QFutureWatcher<bda::me::MeFrameResult>           meWatcher;
 +  QPointer<playlistItem>                           meItem;
 +  int                                              meFrameIdx{-1};

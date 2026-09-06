@@ -155,6 +155,9 @@ MeFrameResult OdysseyOpenLoopMe::estimateFrame(const MePictureSet &pictures, con
   NeighbourState neighbours;
   neighbours.lineBuffer.assign(static_cast<std::size_t>(sbCols), MotionVector{});
 
+  if (params.progress != nullptr)
+    params.progress->begin(sbCols * sbRows);
+
   for (int sbY = 0; sbY < sbRows; ++sbY)
   {
     neighbours.resetRow();
@@ -169,6 +172,14 @@ MeFrameResult OdysseyOpenLoopMe::estimateFrame(const MePictureSet &pictures, con
         result.cancelled = true;
         return result;
       }
+
+      /* Counted on entry rather than on exit, so that a superblock which takes an early exit lower
+       * down still counts. The consequence is that the counter reaches the total while the last
+       * superblock is still being worked on - which is why "finished" is the arrival of the result,
+       * not the counter hitting its total.
+       */
+      if (params.progress != nullptr)
+        params.progress->advance();
 
       const int orgX = sbX * kSb;
       const int orgY = sbY * kSb;

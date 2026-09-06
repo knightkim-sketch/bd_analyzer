@@ -119,9 +119,33 @@ int meCommonSadTypeId(Algorithm algorithm, BlockSize size)
   return kMeStatTypeBase + algorithmSlot(algorithm) * 16 + 8 + sizeSlot(size);
 }
 
+/* One row per kind, not one row per algorithm.
+ *
+ * The panel gives every uiGroup a single checkbox that sets `render` on every type in it. Putting
+ * the vectors and the two cost overlays in one group meant ticking "show the vectors" also
+ * switched on two block-value overlays, which paint a filled rectangle over every block - the
+ * arrows were still drawn, underneath a colour-mapped blanket. Splitting by kind keeps the block
+ * sizes collapsed into one row each, which is what the grouping is for, and leaves each row doing
+ * one thing.
+ */
+std::string meGroupName(Algorithm algorithm, MeStatKind kind)
+{
+  const std::string base = std::string("ME ") + algorithmShortName(algorithm) + " - ";
+  switch (kind)
+  {
+  case MeStatKind::NativeCost:
+    return base + nativeCostName(algorithm);
+  case MeStatKind::CommonSad:
+    return base + "common SAD";
+  case MeStatKind::Vector:
+    break;
+  }
+  return base + "MV";
+}
+
 std::string meGroupName(Algorithm algorithm)
 {
-  return std::string("ME (") + algorithmShortName(algorithm) + ")";
+  return meGroupName(algorithm, MeStatKind::Vector);
 }
 
 std::string meVectorTypeName(Algorithm algorithm, BlockSize size)
@@ -176,8 +200,13 @@ bool syncMeStatTypes(stats::StatisticsData  &data,
       stats::StatisticsType type(vectorId, QString::fromStdString(meVectorTypeName(algorithm, size)), 8);
       type.description = QString::fromStdString(
           std::string("Reproduced ") + algorithmShortName(algorithm) + " motion vector");
-      type.vectorStyle       = stats::LineDrawStyle({algorithmColor(algorithm), 2.0, stats::Pattern::Solid});
-      type.scaleVectorToZoom = true;
+      /* Width 2 and NOT scaled to zoom, which is how the decoder registers the bitstream's own
+       * motion vectors (decoderDav1d.cpp:803). The painter reads scaleVectorToZoom as
+       * `width * zoomFactor / 8`, so at the 1:1 zoom this is normally viewed at it turned a 2 pixel
+       * line into a quarter of a pixel - drawn, antialiased away to nothing, and reported as "the
+       * MV lines are not visible".
+       */
+      type.vectorStyle = stats::LineDrawStyle({algorithmColor(algorithm), 2.0, stats::Pattern::Solid});
       /* Drawn as soon as it exists. The base StatisticsType leaves `render` false, which is right
        * for a decoder that registers thirty types at once - but here the user asked for exactly
        * this overlay by ticking the box, and making them find a second checkbox to actually see it
@@ -185,7 +214,7 @@ bool syncMeStatTypes(stats::StatisticsData  &data,
        */
       type.render = true;
       type.setInitialState();
-      type.uiGroup = QString::fromStdString(meGroupName(algorithm));
+      type.uiGroup = QString::fromStdString(meGroupName(algorithm, MeStatKind::Vector));
       data.addStatType(type);
       changed = true;
     }
@@ -201,7 +230,7 @@ bool syncMeStatTypes(stats::StatisticsData  &data,
           std::string("Native cost (") + nativeCostName(algorithm) +
           ") of the reproduced vector. Not comparable across algorithms - the common SAD is.");
       type.setInitialState();
-      type.uiGroup = QString::fromStdString(meGroupName(algorithm));
+      type.uiGroup = QString::fromStdString(meGroupName(algorithm, MeStatKind::NativeCost));
       data.addStatType(type);
       changed = true;
     }
@@ -214,7 +243,7 @@ bool syncMeStatTypes(stats::StatisticsData  &data,
                          "rate, no subsampling. Recomputed identically for every algorithm, so "
                          "this is the column to compare across them.";
       type.setInitialState();
-      type.uiGroup = QString::fromStdString(meGroupName(algorithm));
+      type.uiGroup = QString::fromStdString(meGroupName(algorithm, MeStatKind::CommonSad));
       data.addStatType(type);
       changed = true;
     }

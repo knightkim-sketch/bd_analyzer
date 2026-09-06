@@ -13,6 +13,7 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QProgressBar>
 #include <QSettings>
 #include <QSpinBox>
 #include <iostream>
@@ -161,6 +162,9 @@ int main(int argc, char **argv)
     {
       check(!enable->isChecked(), "and it is off by default");
 
+      if (auto *bar = panel->findChild<QProgressBar *>())
+        check(bar->value() == 0, "and the progress bar shows nothing has run");
+
       auto *playback = w->findChild<PlaybackController *>();
       if (playback)
         playback->setCurrentFrameAndUpdate(2);
@@ -206,6 +210,21 @@ int main(int argc, char **argv)
       check(vecType != nullptr, "and the vector type is registered on the item");
       if (vecType)
         check(vecType->vectorScale == 8, "with the eighth-pel vector scale");
+
+      /* --- the progress bar says whether the search finished ---------------------------
+       *
+       * Without it, "the estimate is still running" and "there is no overlay for this frame" look
+       * the same: an empty picture and a line of text that has not changed yet.
+       */
+      auto *bar = panel->findChild<QProgressBar *>();
+      check(bar != nullptr, "the panel has a progress bar");
+      if (bar)
+      {
+        check(bar->maximum() > 0 && bar->value() == bar->maximum(),
+              "and it reads complete once the result is in");
+        check(bar->format().contains(QString::number(2)),
+              "naming the frame it finished: " + bar->format().toStdString());
+      }
 
       const int size8Id = bda::integration::meVectorTypeId(bda::me::Algorithm::SvtIntegerMe,
                                                            bda::me::BlockSize::Blk8);

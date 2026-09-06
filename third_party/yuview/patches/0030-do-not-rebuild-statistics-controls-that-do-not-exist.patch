@@ -1,0 +1,66 @@
+diff --git a/YUViewLib/src/statistics/StatisticUIHandler.cpp b/YUViewLib/src/statistics/StatisticUIHandler.cpp
+index f2acd909..9a66d307 100644
+--- a/YUViewLib/src/statistics/StatisticUIHandler.cpp
++++ b/YUViewLib/src/statistics/StatisticUIHandler.cpp
+@@ -359,6 +359,21 @@ void StatisticUIHandler::updateStatisticsHandlerControls()
+     return;
+   }
+ 
++  /* Nothing to update while the panel does not exist yet.
++   *
++   * The controls are built lazily, by createStatisticsHandlerControls() when the item's properties
++   * widget is first needed. An item whose types change before that - a raw file that gets its
++   * motion estimation overlays the moment it is selected, before the properties dock has asked it
++   * for anything - used to come through here and walk into the else branch below, which removes a
++   * spacer that was never added and asserted. Returning is right rather than merely safe: the
++   * controls will be created from the current types whenever they are finally asked for.
++   */
++  if (!ui.created())
++  {
++    DEBUG_STATUI("StatisticUIHandler::updateStatisticsHandlerControls controls not created yet");
++    return;
++  }
++
+   /* First run a check if all statisticsTypes are identical. Compared against the control rows rather
+    * than the types, because grouped types share a row (see rebuildUiRows).
+    */
+@@ -414,11 +429,15 @@ void StatisticUIHandler::updateStatisticsHandlerControls()
+       }
+     }
+ 
+-    // Delete the spacer items at the bottom.
+-    assert(spacerItems[0] != nullptr);
+-    ui.gridLayout->removeItem(spacerItems[0]);
+-    delete spacerItems[0];
+-    spacerItems[0] = nullptr;
++    /* Delete the spacer item at the bottom. It is absent when the controls were created while
++     * statisticsData was still unset, which returns early before adding it.
++     */
++    if (spacerItems[0] != nullptr)
++    {
++      ui.gridLayout->removeItem(spacerItems[0]);
++      delete spacerItems[0];
++      spacerItems[0] = nullptr;
++    }
+ 
+     // Delete all pointers to the widgets. The layout has the ownership and removing the
+     // widget should delete it.
+@@ -434,11 +453,13 @@ void StatisticUIHandler::updateStatisticsHandlerControls()
+       itemOpacitySliders[1].clear();
+       itemStyleButtons[1].clear();
+ 
+-      // Delete the spacer items at the bottom.
+-      assert(spacerItems[1] != nullptr);
+-      ui2.gridLayout->removeItem(spacerItems[1]);
+-      delete spacerItems[1];
+-      spacerItems[1] = nullptr;
++      // Delete the spacer item at the bottom. Absent for the same reason as the primary one.
++      if (spacerItems[1] != nullptr)
++      {
++        ui2.gridLayout->removeItem(spacerItems[1]);
++        delete spacerItems[1];
++        spacerItems[1] = nullptr;
++      }
+     }
+ 
+     // We have a backup of the old statistics types. Maybe some of the old types (with the same

@@ -82,6 +82,18 @@ void fillMeStatistics(stats::StatisticsData &data, const me::MeFrameResult &resu
 std::string meVectorTypeName(me::Algorithm algorithm, me::BlockSize size);
 std::string meCostTypeName(me::Algorithm algorithm, me::BlockSize size);
 std::string meCommonSadTypeName(me::Algorithm algorithm, me::BlockSize size);
+/* The three kinds of overlay an estimate produces. Each gets its own row in the statistics panel:
+ * a row's checkbox sets `render` on every type it covers, so a row has to mean one thing.
+ */
+enum class MeStatKind
+{
+  Vector,
+  NativeCost,
+  CommonSad
+};
+
+std::string meGroupName(me::Algorithm algorithm, MeStatKind kind);
+//!< The vector group, which is the one worth naming on its own.
 std::string meGroupName(me::Algorithm algorithm);
 
 } // namespace bda::integration

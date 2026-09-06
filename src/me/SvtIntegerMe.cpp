@@ -145,6 +145,9 @@ MeFrameResult SvtIntegerMe::estimateFrame(const MePictureSet &pictures, const Me
   const int blocksX = (src.width() + kB64 - 1) / kB64;
   const int blocksY = (src.height() + kB64 - 1) / kB64;
 
+  if (params.progress != nullptr)
+    params.progress->begin(blocksX * blocksY);
+
   for (int by = 0; by < blocksY; ++by)
     for (int bx = 0; bx < blocksX; ++bx)
     {
@@ -156,6 +159,14 @@ MeFrameResult SvtIntegerMe::estimateFrame(const MePictureSet &pictures, const Me
         result.cancelled = true;
         return result;
       }
+
+      /* Counted on entry rather than on exit, so that a superblock which takes an early exit lower
+       * down still counts. The consequence is that the counter reaches the total while the last
+       * superblock is still being worked on - which is why "finished" is the arrival of the result,
+       * not the counter hitting its total.
+       */
+      if (params.progress != nullptr)
+        params.progress->advance();
 
       const int b64X = bx * kB64;
       const int b64Y = by * kB64;

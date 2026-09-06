@@ -184,6 +184,35 @@ private:
   std::atomic<bool> flag_{false};
 };
 
+/* How far a running estimate has got, in superblocks.
+ *
+ * A plain atomic pair rather than a callback or a signal, for the same reason CancelToken above is
+ * one: the estimators are deliberately Qt-free and run on a worker thread, so whatever the GUI
+ * uses to show progress has to be readable from another thread without a lock and without the core
+ * knowing who is watching. The panel polls this on a timer.
+ *
+ * Superblocks rather than blocks, because that is the granularity both estimators already loop at
+ * and already check cancellation at - the count is exact and costs nothing.
+ */
+class ProgressToken
+{
+public:
+  //!< Called once, before the loop, with the number of superblocks the estimate will walk.
+  void begin(int totalSuperblocks)
+  {
+    this->done_.store(0, std::memory_order_relaxed);
+    this->total_.store(totalSuperblocks, std::memory_order_release);
+  }
+  void advance() { this->done_.fetch_add(1, std::memory_order_relaxed); }
+
+  int total() const { return this->total_.load(std::memory_order_acquire); }
+  int done() const { return this->done_.load(std::memory_order_relaxed); }
+
+private:
+  std::atomic<int> total_{0};
+  std::atomic<int> done_{0};
+};
+
 struct MeParams
 {
   /* Signed on purpose. A positive interval takes the reference from the past
@@ -210,6 +239,11 @@ struct MeParams
    * enough not to cost anything in the inner loops.
    */
   const CancelToken *cancel = nullptr;
+
+  /* Borrowed, may be null. Written from the worker thread and read from the GUI thread, which is
+   * what makes it atomic rather than a plain counter.
+   */
+  ProgressToken *progress = nullptr;
 };
 
 } // namespace bda::me

@@ -5,9 +5,11 @@
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QProgressBar>
 #include <QSpinBox>
 #include <QStandardItemModel>
 #include <QVBoxLayout>
+#include <algorithm>
 
 namespace bda::integration
 {
@@ -78,6 +80,16 @@ MotionEstimationWidget::MotionEstimationWidget(QWidget *parent) : QWidget(parent
   this->staticBypass_->setChecked(true);
   outer->addWidget(this->staticBypass_);
 
+  /* Superblocks, not percent, as the underlying unit: the estimators count in superblocks and the
+   * number is worth showing - it says how much work a frame actually is. Shown at all times rather
+   * than only while running, because "no estimate for this frame" is exactly the state that needs
+   * saying out loud.
+   */
+  this->progress_ = new QProgressBar(this);
+  this->progress_->setTextVisible(true);
+  outer->addWidget(this->progress_);
+  this->setProgressIdle(tr("No estimate yet"));
+
   this->status_ = new QLabel(this);
   this->status_->setWordWrap(true);
   outer->addWidget(this->status_);
@@ -131,8 +143,9 @@ void MotionEstimationWidget::setUnavailable(const QString &reason)
   if (!this->controlsEnabled_)
     return;
   this->controlsEnabled_ = false;
+  // The status text and the progress bar stay readable: they are what explains the grey controls.
   for (auto *w : this->findChildren<QWidget *>())
-    if (w != this->status_)
+    if (w != this->status_ && w != this->progress_)
       w->setEnabled(false);
 }
 
@@ -148,6 +161,37 @@ void MotionEstimationWidget::setAvailable()
 void MotionEstimationWidget::setStatus(const QString &text)
 {
   this->status_->setText(text);
+}
+
+void MotionEstimationWidget::setProgressIdle(const QString &text)
+{
+  this->progress_->setRange(0, 1);
+  this->progress_->setValue(0);
+  this->progress_->setFormat(text);
+}
+
+void MotionEstimationWidget::setProgressRunning(int doneSuperblocks, int totalSuperblocks)
+{
+  if (totalSuperblocks <= 0)
+  {
+    /* The worker has not reached its own loop yet, so the total is not known. A busy indicator
+     * (range 0..0) says "started, no idea how far" without inventing a percentage.
+     */
+    this->progress_->setRange(0, 0);
+    this->progress_->setFormat(tr("Starting..."));
+    return;
+  }
+  this->progress_->setRange(0, totalSuperblocks);
+  this->progress_->setValue(qBound(0, doneSuperblocks, totalSuperblocks));
+  this->progress_->setFormat(tr("%p%  (%v/%m superblocks)"));
+}
+
+void MotionEstimationWidget::setProgressComplete(const QString &text)
+{
+  const int max = std::max(1, this->progress_->maximum());
+  this->progress_->setRange(0, max);
+  this->progress_->setValue(max);
+  this->progress_->setFormat(text);
 }
 
 } // namespace bda::integration

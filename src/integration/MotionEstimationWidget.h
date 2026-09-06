@@ -12,6 +12,7 @@
 class QCheckBox;
 class QComboBox;
 class QLabel;
+class QProgressBar;
 class QSpinBox;
 
 namespace bda::integration
@@ -51,6 +52,16 @@ public:
   // Progress or outcome, shown under the controls.
   void setStatus(const QString &text);
 
+  /* How far the current estimate has got, and whether there is one.
+   *
+   * A whole-frame search on a large picture takes long enough that "nothing has appeared yet" and
+   * "there is no overlay for this frame" look identical without it. The bar answers that
+   * regardless of how the run was started.
+   */
+  void setProgressIdle(const QString &text);
+  void setProgressRunning(int doneSuperblocks, int totalSuperblocks);
+  void setProgressComplete(const QString &text);
+
 signals:
   /* Any control changed. The window responds by cancelling whatever estimate is in flight and
    * starting a new one - which is why this is one signal rather than one per control: every change
@@ -68,8 +79,9 @@ private:
   QCheckBox *size16_{};
   QCheckBox *size32_{};
   QCheckBox *size64_{};
-  QCheckBox *staticBypass_{};
-  QLabel    *status_{};
+  QCheckBox    *staticBypass_{};
+  QProgressBar *progress_{};
+  QLabel       *status_{};
 
   //!< Tracks what the controls are already showing, so a repeated call does nothing.
   bool controlsEnabled_{true};
