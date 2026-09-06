@@ -192,7 +192,7 @@ index c9fc4597..592034ad 100644
  
    // A y4m file is a raw YUV file but it adds a header (which has information about the YUV format)
 diff --git a/YUViewLib/src/ui/Mainwindow.cpp b/YUViewLib/src/ui/Mainwindow.cpp
-index 1ca62fff..f0415090 100644
+index 1ca62fff..400a2ee0 100644
 --- a/YUViewLib/src/ui/Mainwindow.cpp
 +++ b/YUViewLib/src/ui/Mainwindow.cpp
 @@ -31,6 +31,12 @@
@@ -265,7 +265,7 @@ index 1ca62fff..f0415090 100644
    viewMenu->addSeparator();
    addDockViewAction(ui.playbackControllerDock, "Show Playback &Controls", Qt::CTRL | Qt::Key_D);
  
-@@ -809,6 +858,192 @@ void MainWindow::updateRecentFileActions()
+@@ -809,6 +858,217 @@ void MainWindow::updateRecentFileActions()
    settings.setValue("recentFileList", files);
  }
  
@@ -304,6 +304,24 @@ index 1ca62fff..f0415090 100644
 +{
 +  this->cancelMotionEstimation();
 +
++  /* Take the target from the window rather than trusting what the last view notification left
++   * behind.
++   *
++   * meItem and meFrameIdx used to be written only by motionEstimationTargetChanged(), which hangs
++   * off splitViewWidget::viewFrameChanged - and that does not fire when a file is simply opened.
++   * So opening a file and ticking the box ran the estimate for meFrameIdx's initial -1, said
++   * "frame -1 is outside the sequence" and stopped. Nothing appeared until the user happened to
++   * move the frame, which is exactly the "no MV, no progress" this was reported as.
++   *
++   * The change notification is still where the loop guard lives; this only makes sure that a
++   * restart from anywhere else - the checkbox, a parameter, a selection - starts from what is on
++   * screen right now.
++   */
++  if (const auto selected = ui.playlistTreeWidget->getSelectedItems(); selected[0] != nullptr)
++    this->meItem = selected[0];
++  if (const auto currentFrame = ui.playbackController->getCurrentFrame(); currentFrame >= 0)
++    this->meFrameIdx = currentFrame;
++
 +  auto *panel = ui.motionEstimationWidget;
 +  auto *item  = qobject_cast<playlistItemRawFile *>(this->meItem.data());
 +
@@ -332,6 +350,7 @@ index 1ca62fff..f0415090 100644
 +  if (!panel->autoComputeEnabled())
 +  {
 +    panel->setStatus(tr("Off. Check the box above to estimate in the background."));
++    panel->setProgressIdle(tr("Off"));
 +    return;
 +  }
 +
@@ -343,6 +362,11 @@ index 1ca62fff..f0415090 100644
 +  if (!bda::integration::meFrameRangeOk(this->meFrameIdx, params.frameInterval, frameCount, &reason))
 +  {
 +    panel->setStatus(QString::fromStdString(reason));
++    /* On the bar as well as in the status line. The bar is what gets watched while waiting for an
++     * estimate, and leaving it on "No estimate yet" while the reason sat in a label below was
++     * read - correctly - as the feature doing nothing at all.
++     */
++    panel->setProgressIdle(tr("Frame %1: no reference").arg(this->meFrameIdx));
 +    return;
 +  }
 +
@@ -361,6 +385,7 @@ index 1ca62fff..f0415090 100644
 +    panel->setStatus(tr("Could not read frame %1 or %2 from the file.")
 +                         .arg(this->meFrameIdx)
 +                         .arg(refIdx));
++    panel->setProgressIdle(tr("Could not read the frames"));
 +    return;
 +  }
 +
@@ -458,7 +483,7 @@ index 1ca62fff..f0415090 100644
  void MainWindow::closeEvent(QCloseEvent *event)
  {
    // Stop playback
-@@ -860,21 +1095,14 @@ void MainWindow::closeEvent(QCloseEvent *event)
+@@ -860,21 +1120,14 @@ void MainWindow::closeEvent(QCloseEvent *event)
     */
    if (const auto cacheUsage = BDCachePaths::usage(); cacheUsage.fileCount > 0)
    {
@@ -488,7 +513,7 @@ index 1ca62fff..f0415090 100644
    }
  
    event->accept();
-@@ -1043,6 +1271,8 @@ void MainWindow::toggleFullscreen()
+@@ -1043,6 +1296,8 @@ void MainWindow::toggleFullscreen()
        ui.blockInfoDock->show();
      if (panelsVisible[6])
        ui.frameInfoDock->show();
@@ -497,7 +522,7 @@ index 1ca62fff..f0415090 100644
  
      if (!is_Q_OS_MAC)
        ui.menuBar->show();
-@@ -1065,6 +1295,7 @@ void MainWindow::toggleFullscreen()
+@@ -1065,6 +1320,7 @@ void MainWindow::toggleFullscreen()
      panelsVisible[4] = ui.cachingInfoDock->isVisible();
      panelsVisible[5] = ui.blockInfoDock->isVisible();
      panelsVisible[6] = ui.frameInfoDock->isVisible();

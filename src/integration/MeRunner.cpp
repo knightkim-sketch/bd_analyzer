@@ -29,8 +29,15 @@ bool meFrameRangeOk(int frameIdx, int frameInterval, int frameCount, std::string
     /* Both ends matter because the interval is signed: a positive one runs off the start of the
      * sequence, a negative one off the end.
      */
+    /* Named after the frame the user is looking at, not after the reference index it computed.
+     * "frame -1 is outside the sequence" is true and unreadable: there is no frame -1 on screen,
+     * and it does not say what to do about it. This is the state every freshly opened file starts
+     * in - frame 0 with a backward interval - so it is the message that gets read most.
+     */
     if (reason)
-      *reason = "frame " + std::to_string(refIdx) + " is outside the sequence";
+      *reason = "frame " + std::to_string(frameIdx) + " has no reference at interval " +
+                std::to_string(frameInterval) + " (that would be frame " + std::to_string(refIdx) +
+                "). Move to another frame, or change the interval.";
     return false;
   }
   return true;

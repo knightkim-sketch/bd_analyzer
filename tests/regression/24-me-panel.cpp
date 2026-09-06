@@ -226,6 +226,26 @@ int main(int argc, char **argv)
               "naming the frame it finished: " + bar->format().toStdString());
       }
 
+      /* --- the first frame of a file has no backward reference ---------------------------
+       *
+       * Which is the state every newly opened file starts in, so it is the one the user meets
+       * first. It used to leave the bar on "No estimate yet" with the reason in a label below,
+       * and that reads as the feature being broken rather than as a boundary.
+       */
+      if (playback)
+      {
+        playback->setCurrentFrameAndUpdate(0);
+        settle(1000);
+        check(bar != nullptr && bar->format().contains("no reference"),
+              "at frame 0 the bar says why nothing ran: " +
+                  (bar ? bar->format().toStdString() : std::string("(no bar)")));
+
+        playback->setCurrentFrameAndUpdate(2);
+        settle(15000);
+        check(bar != nullptr && bar->value() == bar->maximum() && bar->maximum() > 0,
+              "and moving to a frame that has one runs the estimate again");
+      }
+
       const int size8Id = bda::integration::meVectorTypeId(bda::me::Algorithm::SvtIntegerMe,
                                                            bda::me::BlockSize::Blk8);
       bool      has8    = false;
