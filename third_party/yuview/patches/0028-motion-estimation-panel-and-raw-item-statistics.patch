@@ -22,18 +22,20 @@ index cff36eb2..4f55556b 100644
    virtual unsigned getPixelStatisticsBlockSize() const { return 0; }
  
 diff --git a/YUViewLib/src/playlistitem/playlistItemRawFile.cpp b/YUViewLib/src/playlistitem/playlistItemRawFile.cpp
-index d0896e1b..464a1007 100644
+index d0896e1b..7dd09d40 100644
 --- a/YUViewLib/src/playlistitem/playlistItemRawFile.cpp
 +++ b/YUViewLib/src/playlistitem/playlistItemRawFile.cpp
-@@ -31,6 +31,7 @@
+@@ -31,6 +31,9 @@
   */
  
  #include "playlistItemRawFile.h"
++#include <integration/MeStatisticsAdapter.h>
++#include <statistics/BlockInfo.h>
 +#include <statistics/StatisticsDataPainting.h>
  
  #include <QCryptographicHash>
  #include <QPainter>
-@@ -171,6 +172,23 @@ playlistItemRawFile::playlistItemRawFile(const QString &rawFilePath,
+@@ -171,6 +174,23 @@ playlistItemRawFile::playlistItemRawFile(const QString &rawFilePath,
            this,
            &playlistItemRawFile::slotVideoPropertiesChanged);
  
@@ -57,7 +59,7 @@ index d0896e1b..464a1007 100644
    this->pixelFormatAfterLoading = this->video->getFormatAsString();
  
    // A raw file can be cached.
-@@ -493,6 +511,9 @@ void playlistItemRawFile::createPropertiesWidget()
+@@ -493,6 +513,9 @@ void playlistItemRawFile::createPropertiesWidget()
    vAllLaout->addWidget(line);
    vAllLaout->addLayout(this->video->createVideoHandlerControls());
  
@@ -67,7 +69,7 @@ index d0896e1b..464a1007 100644
    vAllLaout->insertStretch(-1, 1); // Push controls up
  }
  
-@@ -541,6 +562,55 @@ playlistItemRawFile *playlistItemRawFile::newplaylistItemRawFile(const YUViewDom
+@@ -541,6 +564,73 @@ playlistItemRawFile *playlistItemRawFile::newplaylistItemRawFile(const YUViewDom
    return newFile;
  }
  
@@ -85,6 +87,24 @@ index d0896e1b..464a1007 100644
 +  const auto range = this->properties().startEndRange;
 +  if (frameIdx >= range.first && frameIdx <= range.second)
 +    stats::paintStatisticsData(painter, this->statisticsData, frameIdx, zoomFactor);
++}
++
++stats::BlockInfo playlistItemRawFile::getBlockInfoAt(const QPoint &pixelPos, int frameIdx)
++{
++  auto info = this->statisticsData.getBlockInfoAt(pixelPos);
++
++  /* The estimate lags the displayed frame: it runs in the background, and while it is running the
++   * container still holds the previous frame's vectors. Reporting those as this frame's would put
++   * a plausible wrong vector in the pane, which is worse than an empty one - the whole point of
++   * the feature is to compare vectors against what the encoder did.
++   */
++  if (info.frameIndex != frameIdx)
++    return {};
++
++  // One row per block size instead of three - see mergeMeBlockInfoEntries().
++  bda::integration::mergeMeBlockInfoEntries(info);
++
++  return info;
 +}
 +
 +bool playlistItemRawFile::supportsMotionEstimation() const
@@ -124,7 +144,7 @@ index d0896e1b..464a1007 100644
  {
    if (!this->video->isFormatValid())
 diff --git a/YUViewLib/src/playlistitem/playlistItemRawFile.h b/YUViewLib/src/playlistitem/playlistItemRawFile.h
-index c9fc4597..592034ad 100644
+index c9fc4597..517a0b6c 100644
 --- a/YUViewLib/src/playlistitem/playlistItemRawFile.h
 +++ b/YUViewLib/src/playlistitem/playlistItemRawFile.h
 @@ -34,6 +34,8 @@
@@ -136,7 +156,7 @@ index c9fc4597..592034ad 100644
  
  #include <QFuture>
  #include <QString>
-@@ -49,6 +51,44 @@ class playlistItemRawFile : public playlistItemWithVideo
+@@ -49,6 +51,54 @@ class playlistItemRawFile : public playlistItemWithVideo
    Q_OBJECT
  
  public:
@@ -165,6 +185,16 @@ index c9fc4597..592034ad 100644
 +
 +  void drawItem(QPainter *painter, int frameIdx, double zoomFactor, bool drawRawValues) override;
 +
++  /* The reproduced motion vector (and its costs) under a clicked pixel.
++   *
++   * Same query the compressed item answers from the bitstream's statistics, over the same
++   * container - which is the point of having put the estimate into stats::StatisticsData in the
++   * first place. Clicking a block therefore reads the same way whether the vectors came out of a
++   * stream or out of the estimator, and only the block sizes ticked in the ME panel are listed,
++   * because those are the only ones that have a type.
++   */
++  stats::BlockInfo getBlockInfoAt(const QPoint &pixelPos, int frameIdx) override;
++
 +  /* Public because the main window assembles the motion estimation request: it needs the pixel
 +   * format and the frame size alongside the frames themselves, and the video handler that holds
 +   * them is protected.
@@ -181,7 +211,7 @@ index c9fc4597..592034ad 100644
    // Create a new raw file. The format (RGB or YUV) will be gotten from the extension. If the
    // extension is not one of the supported extensions (getSupportedFileExtensions), set the format
    // "fmt" to either "rgb" or "yuv". If you already know the frame size and/or sourcePixelFormat,
-@@ -114,6 +154,9 @@ private:
+@@ -114,6 +164,9 @@ private:
  
    FileSource dataSource;
  

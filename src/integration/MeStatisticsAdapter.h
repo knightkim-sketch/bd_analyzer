@@ -25,6 +25,7 @@
 namespace stats
 {
 class StatisticsData;
+struct BlockInfo;
 }
 
 namespace bda::integration
@@ -91,6 +92,20 @@ enum class MeStatKind
   NativeCost,
   CommonSad
 };
+
+/* Fold an ME block's rows into one per block size.
+ *
+ * The query returns a row per statistics type, so a block covered by four checked sizes comes back
+ * as twelve rows - vector, native cost and common SAD for each - and the reader has to line them up
+ * by name. They describe one decision of one estimator on one block, so they belong together, the
+ * same way the pane already folds the L0/L1 motion vector pair of a bitstream into a single row.
+ *
+ * Only ME types are touched; anything else in the info is left exactly as it was.
+ */
+void mergeMeBlockInfoEntries(stats::BlockInfo &info);
+
+//!< The merged row's label: algorithm and block size, without the kind.
+std::string meBlockRowName(me::Algorithm algorithm, me::BlockSize size);
 
 std::string meGroupName(me::Algorithm algorithm, MeStatKind kind);
 //!< The vector group, which is the one worth naming on its own.

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 
+#include "statistics/BlockInfo.h"
 #include "statistics/StatisticsData.h"
 #include "statistics/StatisticsType.h"
 
@@ -262,6 +263,56 @@ void clearMeStatTypes(stats::StatisticsData &data)
 
   for (const auto id : doomed)
     eraseType(data, id);
+}
+
+std::string meBlockRowName(Algorithm algorithm, BlockSize size)
+{
+  const int px = me::blockSizeInPixels(size);
+  return std::string("ME ") + algorithmShortName(algorithm) + " " + std::to_string(px) + "x" +
+         std::to_string(px);
+}
+
+void mergeMeBlockInfoEntries(stats::BlockInfo &info)
+{
+  const auto find = [&info](int typeId) {
+    return std::find_if(info.entries.begin(),
+                        info.entries.end(),
+                        [typeId](const stats::BlockInfoEntry &e) { return e.typeID == typeId; });
+  };
+
+  for (int a = 0; a < 3; ++a)
+  {
+    const auto algorithm = static_cast<Algorithm>(a);
+    for (int s = 0; s < me::kBlockSizeCount; ++s)
+    {
+      const auto size = static_cast<BlockSize>(s);
+
+      /* The vector row is the one that survives: it is what the feature is for, and it is the only
+       * one of the three that is drawn on the picture, so the pane and the overlay agree on which
+       * row the arrow belongs to.
+       */
+      auto vector = find(meVectorTypeId(algorithm, size));
+      if (vector == info.entries.end())
+        continue;
+      vector->typeName = QString::fromStdString(meBlockRowName(algorithm, size));
+
+      /* Named in the text rather than left as a bare number, because the two are not on the same
+       * scale - the native cost is whatever that estimator minimised, the common SAD is the
+       * comparable one. A row reading "477  477" would invite exactly the wrong conclusion.
+       */
+      if (auto cost = find(meCostTypeId(algorithm, size)); cost != info.entries.end())
+      {
+        vector->valueText += "   " + QString::fromStdString(nativeCostName(algorithm)) + " " +
+                             cost->valueText;
+        info.entries.erase(cost);
+      }
+      if (auto common = find(meCommonSadTypeId(algorithm, size)); common != info.entries.end())
+      {
+        vector->valueText += "   common SAD " + common->valueText;
+        info.entries.erase(common);
+      }
+    }
+  }
 }
 
 void fillMeStatistics(stats::StatisticsData &data, const me::MeFrameResult &result)

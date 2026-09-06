@@ -243,6 +243,10 @@ run_test "$ROOT/tests/regression/17-frame-info-follows-frame.cpp"      "$STREAM"
 # 나뉘는지. 테스트가 자기 클립을 만들므로 RAWYUV 유무와 무관하다.
 run_test_bda "$ROOT/tests/regression/26-me-overlay-item-switch.cpp"
 
+# raw item 위의 블록을 클릭했을 때 그 블록의 재현 MV 가 Block Info 패널에 뜨는지.
+# 자기 클립을 만들므로 RAWYUV 유무와 무관하다.
+run_test_bda "$ROOT/tests/regression/27-me-block-info-on-click.cpp"
+
 # 창을 실제로 파괴한다. 종료 시 "free(): invalid pointer" 로 abort 하던 회귀 + 모든 dock 이
 # View 메뉴에서 다시 켜지는지. 다른 MainWindow 테스트는 창을 일부러 leak 하므로 여기서만 잡힌다.
 run_test "$ROOT/tests/regression/25-mainwindow-teardown.cpp"
