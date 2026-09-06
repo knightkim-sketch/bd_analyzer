@@ -75,3 +75,5 @@ verified: yes | partial | no      # 도구 출력으로 교차검증했는가
 - [TASK-0005](40-tasks/TASK-0005-block-info-on-click.md) — 클릭 시 블록 경계 하이라이트 + 블록 모드 정보 pane (**구현 완료**, GUI 확인)
 - [TASK-0006](40-tasks/TASK-0006-av1-syntax-consolidation.md) — AV1 syntax 항목 통합 + OBU 목록에서 YUV frame 이동 (**구현 완료** — GUI 직접 클릭 확인만 남음)
 - [TASK-0007](40-tasks/TASK-0007-block-bitstream-hexdump.md) — 블록/프레임 비트스트림 hexdump + 슈퍼블록 통계(`sb_qindex`, `sb_bitcount`) + dav1d 소스 빌드 + 오버레이 체크박스 그룹화 (**구현 완료** — 회귀 17/17, 배포본 실행 확인)
+- [TASK-0008](40-tasks/TASK-0008-installable-package.md) — 설치형 패키지 RPM + tar.gz, Rocky 8 (**구현 완료** — 정리된 환경 실행 확인)
+- [TASK-0009](40-tasks/TASK-0009-motion-estimation.md) — Motion Estimation 분석 기능: SVT-AV1 정수 ME + odyssey open-loop ME 재현, 통계 오버레이 통합, ME dock, 클릭 시 블록 MV (**1차 범위 구현 완료** — 회귀 30/30. 알고리즘 정리는 Confluence)
