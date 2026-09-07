@@ -1,0 +1,130 @@
+diff --git a/YUViewLib/src/common/BDCachePaths.cpp b/YUViewLib/src/common/BDCachePaths.cpp
+index bca737d6..1e879668 100644
+--- a/YUViewLib/src/common/BDCachePaths.cpp
++++ b/YUViewLib/src/common/BDCachePaths.cpp
+@@ -32,14 +32,12 @@
+ 
+ #include "BDCachePaths.h"
+ 
+-#include <QCoreApplication>
+ #include <QCryptographicHash>
+ #include <QDir>
+ #include <QDirIterator>
+ #include <QFileInfo>
+ #include <QRegularExpression>
+ #include <QSettings>
+-#include <QStandardPaths>
+ #include <QTemporaryFile>
+ 
+ namespace BDCachePaths
+@@ -47,7 +45,7 @@ namespace BDCachePaths
+ namespace
+ {
+ 
+-const QString CACHE_DIR_NAME = QStringLiteral(".YUViewBD");
++const QString CACHE_DIR_NAME = QStringLiteral(".bd_analyzer");
+ 
+ bool isWritable(const QString &path)
+ {
+@@ -69,16 +67,25 @@ QString resolveRoot()
+   if (const auto configured = settings.value("BDCache/directory").toString(); !configured.isEmpty())
+     return isWritable(configured) ? configured : QString();
+ 
+-  const auto preferred = QCoreApplication::applicationDirPath() + "/" + CACHE_DIR_NAME;
+-  if (isWritable(preferred))
+-    return preferred;
+-
+-  // Deployed read-only (AppImage, system prefix). Keep working, just somewhere else.
+-  const auto fallbackBase = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+-  if (fallbackBase.isEmpty())
+-    return {};
+-  const auto fallback = fallbackBase + QStringLiteral("/YUViewBD");
+-  return isWritable(fallback) ? fallback : QString();
++  /* The working directory, and nowhere else.
++   *
++   * It used to be the executable's directory with a fallback to the user cache directory, and both
++   * are wrong for how this is deployed. From an RPM the executable lives in /opt/bd-analyzer, owned
++   * by root, so the preferred location always failed the write probe and every run silently landed
++   * in ~/.cache - a path nobody looks at, on a partition that is small on these machines. Decoded
++   * YUV is measured in gigabytes; where it goes must be predictable rather than discovered.
++   *
++   * So it follows the user instead: start the analyzer from the volume that has the room, and the
++   * cache is there, visible next to the material being analysed. Nothing in the application changes
++   * the working directory (no QDir::setCurrent anywhere), so resolving this lazily still gives the
++   * directory the process was started in.
++   *
++   * No fallback on purpose. Somewhere the user did not choose is what this is replacing, and a read
++   * only working directory is a clear "no caching here" rather than a reason to guess again -
++   * callers already treat an empty root as caching being unavailable.
++   */
++  const auto preferred = QDir::currentPath() + "/" + CACHE_DIR_NAME;
++  return isWritable(preferred) ? preferred : QString();
+ }
+ 
+ } // namespace
+diff --git a/YUViewLib/src/common/BDCachePaths.h b/YUViewLib/src/common/BDCachePaths.h
+index 5af0a31e..b42d5fdd 100644
+--- a/YUViewLib/src/common/BDCachePaths.h
++++ b/YUViewLib/src/common/BDCachePaths.h
+@@ -37,12 +37,17 @@
+ /* Where YUView puts the data it derives from a source file and can recreate at any time: decoded YUV
+  * and per-block analysis statistics.
+  *
+- * The requested location is ".YUViewBD" next to the executable, so a portable install keeps its
+- * cache with it. That directory is not writable in every deployment (an AppImage mount, a read-only
+- * install prefix), so the first call probes it once and falls back to the user cache directory. The
+- * fallback can be overridden with the setting "BDCache/directory".
++ * The location is ".bd_analyzer" in the working directory - where the analyzer was started, not
++ * where its binary lives. Decoded YUV runs to gigabytes, so it has to land on a volume the user
++ * picked; an RPM install puts the binary under a root-owned /opt, and anything derived from that
++ * path ends up somewhere small and unexpected. Start the analyzer from the volume with the room.
+  *
+- * Everything under the root is disposable. The user is asked on exit whether to delete it.
++ * The setting "BDCache/directory" overrides it with a fixed path. There is no other fallback: a
++ * working directory that cannot be written to means no caching, and every caller already handles
++ * an empty root that way.
++ *
++ * Everything under the root is disposable, and MainWindow::closeEvent deletes it on exit without
++ * asking - it can all be recreated from the source files.
+  */
+ namespace BDCachePaths
+ {
+diff --git a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
+index 3e398c08..1b6b5c43 100644
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
+@@ -142,7 +142,7 @@ public:
+   InputFormat getInputFormat() const { return this->inputFormat; }
+ 
+ protected:
+-  /* The decoded frames are cached under .YUViewBD keyed on the compressed file, so the pixel
++  /* The decoded frames are cached under .bd_analyzer keyed on the compressed file, so the pixel
+    * statistics of an AV1 stream survive a restart just like a raw file's do.
+    */
+   QString pixelStatsSourcePath() const override;
+diff --git a/YUViewLib/src/statistics/PixelStatistics.h b/YUViewLib/src/statistics/PixelStatistics.h
+index a2225514..ee138378 100644
+--- a/YUViewLib/src/statistics/PixelStatistics.h
++++ b/YUViewLib/src/statistics/PixelStatistics.h
+@@ -135,7 +135,7 @@ std::vector<uint32_t> computeLumaHistogram(const QByteArray                 &raw
+                                            const Size                       &frameSize);
+ 
+ /* The per-frame block statistics of one source file, held in memory and backed by a file under
+- * .YUViewBD so it survives a restart and fills up as frames are visited.
++ * .bd_analyzer so it survives a restart and fills up as frames are visited.
+  *
+  * Not thread safe. Use it from one thread only (the GUI thread); computeLumaBlockStats() is the part
+  * that is meant to run in the background.
+diff --git a/YUViewLib/src/ui/Mainwindow.cpp b/YUViewLib/src/ui/Mainwindow.cpp
+index bbdade09..f3c3149e 100644
+--- a/YUViewLib/src/ui/Mainwindow.cpp
++++ b/YUViewLib/src/ui/Mainwindow.cpp
+@@ -1134,7 +1134,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
+   // processes.
+   ui.playlistTreeWidget->deletePlaylistItems(true);
+ 
+-  /* Offer to delete the derived-data cache (.YUViewBD: decoded YUV, per block statistics). Only
++  /* Offer to delete the derived-data cache (.bd_analyzer: decoded YUV, per block statistics). Only
+    * after deletePlaylistItems() above, because that is what stops the workers that write into it.
+    * Everything in there can be recreated from the source files, so deleting is always safe; keeping
+    * it makes the next session start warm.

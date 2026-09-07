@@ -255,6 +255,9 @@ run_test_bda "$ROOT/tests/regression/26-me-overlay-item-switch.cpp"
 # 자기 클립을 만들므로 RAWYUV 유무와 무관하다.
 run_test_bda "$ROOT/tests/regression/27-me-block-info-on-click.cpp"
 
+# 디코딩 캐시가 실행한 디렉토리에 생기는지 (바이너리 옆이 아니라). 자식 프로세스를 띄운다.
+run_test "$ROOT/tests/regression/30-cache-in-working-directory.cpp"
+
 # 창을 실제로 파괴한다. 종료 시 "free(): invalid pointer" 로 abort 하던 회귀 + 모든 dock 이
 # View 메뉴에서 다시 켜지는지. 다른 MainWindow 테스트는 창을 일부러 leak 하므로 여기서만 잡힌다.
 run_test "$ROOT/tests/regression/25-mainwindow-teardown.cpp"

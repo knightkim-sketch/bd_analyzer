@@ -1,5 +1,5 @@
 // Regression: the raw YUV pixel analysis - per 64x64 block luma statistics, their disk cache under
-// .YUViewBD, the luma histogram, and the 3x3 convolution filter.
+// .bd_analyzer, the luma histogram, and the 3x3 convolution filter.
 //
 // What this pins down:
 //   * The statistics must equal an independent computation over the same samples. They are stored as
