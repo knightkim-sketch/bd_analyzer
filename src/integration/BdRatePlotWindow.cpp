@@ -6,6 +6,8 @@
 #include <QLabel>
 #include <QPainter>
 #include <QPainterPath>
+#include <QProgressBar>
+#include <QPushButton>
 #include <QRadioButton>
 #include <QTableWidget>
 #include <QVBoxLayout>
@@ -134,7 +136,7 @@ void BdRateCurvePanel::paintEvent(QPaintEvent *)
   painter.drawLine(plot.topLeft(), plot.bottomLeft());
   painter.drawText(QRect(plot.left(), plot.bottom() + 2, plot.width(), 14),
                    Qt::AlignCenter,
-                   "bits (log)");
+                   "bits + 1 (log)");
   painter.save();
   painter.translate(12, plot.center().y());
   painter.rotate(-90);
@@ -224,14 +226,19 @@ BdRatePlotWindow::BdRatePlotWindow(QWidget *parent) : QDialog(parent)
   this->showFrame->setChecked(true);
   this->showSb->setToolTip("Rate-distortion of the clicked superblock, on the displayed frame.");
   this->showFrame->setToolTip("Rate-distortion of the whole displayed frame.");
-  /* The sequence sweep is the next phase: it walks every frame of every stream, which is a
-   * different job from reading the frame that is already decoded. Shown disabled so the plan is
-   * visible rather than the checkbox being missing.
-   */
-  this->showSequence->setEnabled(false);
-  this->showSequence->setToolTip("Not yet: this walks every frame of every stream.");
+  this->showSequence->setToolTip(
+      "Rate-distortion accumulated over every frame of every stream. Checking this starts the "
+      "sweep; unchecking cancels it.");
   for (auto *box : {this->showSb, this->showFrame, this->showSequence})
     switches->addWidget(box);
+
+  this->sweepProgress = new QProgressBar(this);
+  this->sweepProgress->setVisible(false);
+  this->sweepProgress->setMaximumWidth(240);
+  switches->addWidget(this->sweepProgress);
+  this->sweepCancel = new QPushButton("Cancel sweep", this);
+  this->sweepCancel->setVisible(false);
+  switches->addWidget(this->sweepCancel);
   switches->addStretch();
   outer->addLayout(switches);
 
@@ -239,7 +246,7 @@ BdRatePlotWindow::BdRatePlotWindow(QWidget *parent) : QDialog(parent)
   this->sbPanel       = new BdRateCurvePanel("Superblock", this);
   this->framePanel    = new BdRateCurvePanel("Frame", this);
   this->sequencePanel = new BdRateCurvePanel("Sequence", this);
-  this->sequencePanel->setMessage("Not yet implemented.");
+  this->sequencePanel->setMessage("Check \"Sequence\" to sweep every frame.");
   for (auto *panel : {this->sbPanel, this->framePanel, this->sequencePanel})
     this->panelRow->addWidget(panel, 1);
   outer->addLayout(this->panelRow, 3);
@@ -262,8 +269,39 @@ BdRatePlotWindow::BdRatePlotWindow(QWidget *parent) : QDialog(parent)
   this->valueTable->verticalHeader()->setVisible(false);
   outer->addWidget(this->valueTable, 2);
 
-  for (auto *box : {this->showSb, this->showFrame, this->showSequence})
+  this->sweeper = new BdRateSequenceSweeper(this);
+  connect(this->sweeper, &BdRateSequenceSweeper::progressed, this, [this]() {
+    this->updatePanels();
+  });
+  connect(this->sweeper, &BdRateSequenceSweeper::finished, this, [this]() {
+    /* The frame and superblock panels describe the frame on screen, and the sweep just walked
+     * every stream past it. Re-collect so those two do not keep showing whatever the last swept
+     * frame happened to leave behind.
+     */
+    this->refresh();
+  });
+
+  for (auto *box : {this->showSb, this->showFrame})
     connect(box, &QCheckBox::toggled, this, [this]() { this->updatePanels(); });
+
+  /* Checking Sequence is what starts the sweep - the user asked for the checkbox to be the switch.
+   * Unchecking cancels it, which is the only way to stop a minute of work that is no longer
+   * wanted.
+   */
+  connect(this->showSequence, &QCheckBox::toggled, this, [this](bool on) {
+    if (on)
+    {
+      if (!this->groups.empty())
+        this->sweeper->start(this->groups);
+    }
+    else
+      this->sweeper->cancel();
+    this->updatePanels();
+  });
+  connect(this->sweepCancel, &QPushButton::clicked, this, [this]() {
+    this->sweeper->cancel();
+    this->updatePanels();
+  });
 
   // The group name is editable in place; anything else in that table is read only.
   connect(this->groupTable, &QTableWidget::itemChanged, this, [this](QTableWidgetItem *item) {
@@ -452,6 +490,31 @@ void BdRatePlotWindow::updatePanels()
     }
   }
 
+  // --- Sequence ---------------------------------------------------------------------------------
+  const auto &sequence = this->sweeper->data();
+  const bool  sweeping = this->sweeper->running();
+  this->sweepProgress->setVisible(sweeping);
+  this->sweepCancel->setVisible(sweeping);
+  if (sweeping)
+    this->sweepProgress->setValue(int(this->sweeper->progress() * 100.0));
+
+  std::vector<BdRateCurvePanel::Curve> sequenceCurves;
+  std::vector<std::vector<BdRateSample>> sequenceSb;
+  if (!this->showSequence->isChecked())
+    this->sequencePanel->setMessage("Check \"Sequence\" to sweep every frame.");
+  else if (!sequence.error.isEmpty())
+    this->sequencePanel->setMessage(sequence.error);
+  else if (!sequence.usable())
+    this->sequencePanel->setMessage("Sweeping...");
+  else
+  {
+    /* Partial results are drawn while the sweep runs. The curve moves as frames accumulate, which
+     * is more useful than an empty box for a minute - and the status line says it is not final.
+     */
+    sequenceCurves = buildCurves(sequence.totals);
+    this->sequencePanel->setCurves(sequenceCurves);
+  }
+
   // --- status -----------------------------------------------------------------------------------
   QString text = QString("Frame %1").arg(this->frameIdx);
   if (this->selectedPos)
@@ -474,6 +537,9 @@ void BdRatePlotWindow::updatePanels()
     text += QString(" %1 of the superblock's curves have no BD-rate (too few points, or no "
                     "overlapping PSNR range).")
                 .arg(undefined);
+  if (this->showSequence->isChecked())
+    text += "  |  " + this->sweeper->statusText() +
+            (sweeping ? " (the sequence curve is still filling in)" : "");
   this->status->setText(text);
 
   // --- numbers ----------------------------------------------------------------------------------
@@ -504,6 +570,13 @@ void BdRatePlotWindow::updatePanels()
     if (const auto it = this->collected.perSuperblock.find(sbKey);
         it != this->collected.perSuperblock.end())
       addRows(QString("SB (%1,%2)").arg(sbKey.first).arg(sbKey.second), it->second);
+  if (this->showSequence->isChecked() && sequence.usable())
+  {
+    addRows(QString("seq %1-%2").arg(sequence.firstFrame).arg(sequence.lastFrame), sequence.totals);
+    if (this->selectedPos)
+      if (const auto it = sequence.perSuperblock.find(sbKey); it != sequence.perSuperblock.end())
+        addRows(QString("seq SB (%1,%2)").arg(sbKey.first).arg(sbKey.second), it->second);
+  }
 }
 
 } // namespace bda::integration

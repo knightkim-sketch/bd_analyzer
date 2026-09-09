@@ -21,6 +21,8 @@
 class QCheckBox;
 class QHBoxLayout;
 class QLabel;
+class QProgressBar;
+class QPushButton;
 class QTableWidget;
 
 namespace bda::integration
@@ -127,6 +129,13 @@ private:
    */
   QTimer retryTimer;
   int    retriesLeft{};
+
+  /* The sequence sweep. Owned here rather than by the collector, because it is a long running
+   * thing with a progress bar and a cancel - it belongs to the window that shows both.
+   */
+  BdRateSequenceSweeper *sweeper{};
+  QProgressBar          *sweepProgress{};
+  QPushButton           *sweepCancel{};
 };
 
 } // namespace bda::integration

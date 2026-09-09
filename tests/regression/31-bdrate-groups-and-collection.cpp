@@ -95,7 +95,9 @@ int main(int argc, char **argv)
           "while the split view's two-item accessor still works");
   }
 
-  std::vector<bda::integration::BdRateGroup> groups;
+  std::vector<bda::integration::BdRateGroup>  groups;
+  //!< Kept so the sequence checks below can compare against the single frame.
+  std::vector<bda::integration::BdRateSample> collectedFrameTotals;
 
   // --- the selection becomes a group ------------------------------------------------------------
   {
@@ -163,6 +165,7 @@ int main(int argc, char **argv)
     /* The regression: every point of the group has to contribute, not just the stream the view
      * happens to be showing.
      */
+    collectedFrameTotals  = data.frameTotals.front();
     const auto frameCurve = bda::integration::curveFor(data.frameTotals.front());
     check(int(frameCurve.size()) == nStreams,
           "the frame curve has a point per stream (" + std::to_string(frameCurve.size()) + " of " +
@@ -220,6 +223,108 @@ int main(int argc, char **argv)
     else
       std::cout << "        (the picture is a multiple of the superblock grid - no edge case here)"
                 << std::endl;
+  }
+
+  /* --- bits + 1 on the rate axis ---------------------------------------------------------------
+   *
+   * A skipped superblock costs 0 bits and log10(0) has no value, so without the convention every
+   * skipped block drops out of its curve - and "reached that quality for nothing" is the most
+   * interesting thing such a block has to say. Applied to every point, not only the zeros, so the
+   * axis has no step in it.
+   */
+  {
+    check(bda::integration::bdRateAxisRate(0.0) == 1.0, "zero bits sit at 1 on the rate axis");
+    check(bda::integration::bdRateAxisRate(1000.0) == 1001.0, "and every other point shifts too");
+
+    std::vector<bda::integration::BdRateSample> samples;
+    samples.push_back({0.0, 4096.0, 64 * 64});    // skipped, but coded to some quality
+    samples.push_back({500.0, 1024.0, 64 * 64});
+    const auto curve = bda::integration::curveFor(samples);
+    check(curve.size() == 2, "a zero-bit sample stays on the curve");
+    check(!curve.empty() && curve.front().rate == 1.0, "at rate 1");
+
+    // A slot that was never filled is not a superblock that cost nothing.
+    std::vector<bda::integration::BdRateSample> untouched(2);
+    check(bda::integration::curveFor(untouched).empty(),
+          "while an untouched slot contributes nothing");
+
+    // Lossless has no finite PSNR and cannot be placed on the axis at all.
+    std::vector<bda::integration::BdRateSample> lossless;
+    lossless.push_back({100.0, 0.0, 64 * 64});
+    check(bda::integration::curveFor(lossless).empty(), "and a lossless block is dropped");
+  }
+
+  /* --- the sequence sweep ------------------------------------------------------------------------
+   *
+   * Every frame of every stream, sliced over the event loop rather than run on a worker: a frame
+   * costs about 25 ms at 1080p (measured), so slicing keeps the window responsive without a second
+   * thread driving the same decoders the view drives.
+   */
+  {
+    bda::integration::BdRateSequenceSweeper sweeper;
+    bool                                    finished = false;
+    QObject::connect(&sweeper,
+                     &bda::integration::BdRateSequenceSweeper::finished,
+                     [&finished]() { finished = true; });
+
+    sweeper.start(groups);
+    check(sweeper.running() || finished, "the sweep starts");
+    for (int i = 0; i < 600 && !finished; ++i)
+      settle(100);
+    check(finished, "and finishes");
+    check(!sweeper.running(), "leaving nothing running");
+
+    const auto &sequence = sweeper.data();
+    check(sequence.error.isEmpty(), "with no error: " + sequence.error.toStdString());
+    check(sequence.usable(), "and something to plot");
+    check(sequence.lastFrame > sequence.firstFrame,
+          "over a range of frames (" + std::to_string(sequence.firstFrame) + "-" +
+              std::to_string(sequence.lastFrame) + ")");
+
+    const auto seqCurve = bda::integration::curveFor(sequence.totals.front());
+    check(int(seqCurve.size()) == nStreams, "a point per stream");
+    for (const auto &point : seqCurve)
+      std::cout << "        seq bits " << point.rate << "  psnr " << point.psnr << " dB"
+                << std::endl;
+
+    /* Accumulated, so the sequence total has to exceed any single frame of it - this is what
+     * catches an accumulator that was reset per frame, or a sweep that only ever did one.
+     */
+    const auto frameCurve = bda::integration::curveFor(collectedFrameTotals);
+    if (!frameCurve.empty() && !seqCurve.empty())
+    {
+      auto seqSorted = seqCurve;
+      std::sort(seqSorted.begin(), seqSorted.end(), [](const auto &a, const auto &b) {
+        return a.rate < b.rate;
+      });
+      auto frameSorted = frameCurve;
+      std::sort(frameSorted.begin(), frameSorted.end(), [](const auto &a, const auto &b) {
+        return a.rate < b.rate;
+      });
+      check(seqSorted.back().rate > frameSorted.back().rate,
+            "the sequence costs more bits than the single frame inside it");
+    }
+
+    bool monotone = true;
+    auto sorted   = seqCurve;
+    std::sort(sorted.begin(), sorted.end(), [](const auto &a, const auto &b) {
+      return a.rate < b.rate;
+    });
+    for (std::size_t i = 1; i < sorted.size(); ++i)
+      if (sorted[i].psnr < sorted[i - 1].psnr)
+        monotone = false;
+    check(monotone, "and it rises, like the frame curve does");
+
+    check(!sequence.perSuperblock.empty(),
+          "superblocks accumulated too (" + std::to_string(sequence.perSuperblock.size()) + ")");
+
+    // Cancelling has to stop it rather than leave a timer running behind the window.
+    sweeper.start(groups);
+    sweeper.cancel();
+    check(!sweeper.running(), "cancelling stops the sweep");
+    const auto doneAfterCancel = sweeper.progress();
+    settle(400);
+    check(sweeper.progress() == doneAfterCancel, "and nothing advances afterwards");
   }
 
   QSettings().clear();

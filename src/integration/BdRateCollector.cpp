@@ -1,6 +1,7 @@
 #include "BdRateCollector.h"
 
 #include <QPoint>
+#include <limits>
 #include <QRect>
 
 #include "playlistitem/playlistItemCompressedVideo.h"
@@ -13,8 +14,13 @@ std::vector<bdrate::RatePoint> curveFor(const std::vector<BdRateSample> &points)
   std::vector<bdrate::RatePoint> curve;
   curve.reserve(points.size());
   for (const auto &sample : points)
-    if (const auto psnr = sample.psnr(); psnr && sample.bits > 0.0)
-      curve.push_back({sample.bits, *psnr});
+  {
+    // sampleCount is what tells an untouched slot apart from a superblock that really cost nothing.
+    if (sample.sampleCount <= 0)
+      continue;
+    if (const auto psnr = sample.psnr())
+      curve.push_back({bdRateAxisRate(sample.bits), *psnr});
+  }
   return curve;
 }
 
@@ -135,6 +141,236 @@ BdRateFrameData collectBdRateFrame(const std::vector<BdRateGroup> &groups, int f
   }
 
   return data;
+}
+
+// ---------------------------------------------------------------------------------------------
+// BdRateSequenceSweeper
+// ---------------------------------------------------------------------------------------------
+
+BdRateSequenceSweeper::BdRateSequenceSweeper(QObject *parent) : QObject(parent)
+{
+  /* Zero interval: the slice runs whenever the event loop is otherwise idle, so the sweep goes as
+   * fast as it can while the window stays responsive. One frame per tick keeps the longest block
+   * of work at about 25 ms, which is below what reads as a freeze.
+   */
+  this->timer.setInterval(0);
+  connect(&this->timer, &QTimer::timeout, this, &BdRateSequenceSweeper::step);
+}
+
+void BdRateSequenceSweeper::start(const std::vector<BdRateGroup> &groups)
+{
+  this->cancel();
+
+  this->groups = groups;
+  this->result = {};
+  if (this->groups.empty())
+  {
+    this->result.error = "No groups to sweep.";
+    emit this->finished();
+    return;
+  }
+
+  /* The range every stream has in common. They are encodes of one clip so they should agree, but a
+   * truncated encode would otherwise be read as "this stream cost nothing" for the missing frames.
+   */
+  int first = std::numeric_limits<int>::min();
+  int last  = std::numeric_limits<int>::max();
+  int points = 0;
+  for (const auto &group : this->groups)
+    for (const auto &point : group.points)
+    {
+      if (!point.item)
+      {
+        this->result.error =
+            QString("\"%1\" lost one of its streams.").arg(group.name);
+        emit this->finished();
+        return;
+      }
+      const auto range = point.item->properties().startEndRange;
+      first            = std::max(first, range.first);
+      last             = std::min(last, range.second);
+      ++points;
+    }
+
+  if (points == 0 || last < first)
+  {
+    this->result.error = "The selected streams have no frames in common.";
+    emit this->finished();
+    return;
+  }
+
+  this->frameFirst        = first;
+  this->frameLast         = last;
+  this->result.firstFrame = first;
+  this->result.lastFrame  = last;
+  this->result.totals.assign(this->groups.size(), {});
+  for (std::size_t g = 0; g < this->groups.size(); ++g)
+    this->result.totals[g].assign(this->groups[g].points.size(), {});
+
+  this->groupCursor  = 0;
+  this->pointCursor  = 0;
+  this->frameCursor  = first;
+  this->frameRetries = 0;
+  this->totalSteps   = points * (last - first + 1);
+  this->stepsDone    = 0;
+  this->active       = true;
+  this->timer.start();
+}
+
+void BdRateSequenceSweeper::cancel()
+{
+  this->timer.stop();
+  this->active = false;
+}
+
+double BdRateSequenceSweeper::progress() const
+{
+  if (this->totalSteps <= 0)
+    return 0.0;
+  return std::min(1.0, double(this->stepsDone) / double(this->totalSteps));
+}
+
+QString BdRateSequenceSweeper::statusText() const
+{
+  if (!this->result.error.isEmpty())
+    return this->result.error;
+  if (this->totalSteps <= 0)
+    return "Nothing swept yet.";
+  if (this->active)
+  {
+    const auto &group = this->groups[std::min(this->groupCursor, this->groups.size() - 1)];
+    return QString("Sweeping frames %1-%2: %3%, on \"%4\"")
+        .arg(this->frameFirst)
+        .arg(this->frameLast)
+        .arg(int(this->progress() * 100.0))
+        .arg(group.name);
+  }
+  return QString("Swept frames %1-%2 (%3 of %4 stream-frames).")
+      .arg(this->frameFirst)
+      .arg(this->frameLast)
+      .arg(this->stepsDone)
+      .arg(this->totalSteps);
+}
+
+void BdRateSequenceSweeper::step()
+{
+  if (!this->active)
+    return;
+
+  if (this->groupCursor >= this->groups.size())
+  {
+    this->cancel();
+    emit this->finished();
+    return;
+  }
+
+  const auto &group = this->groups[this->groupCursor];
+  if (this->pointCursor >= group.points.size())
+  {
+    ++this->groupCursor;
+    this->pointCursor  = 0;
+    this->frameCursor  = this->frameFirst;
+    this->frameRetries = 0;
+    return;
+  }
+
+  auto *item = group.points[this->pointCursor].item;
+  if (!item)
+  {
+    this->result.error = QString("\"%1\" lost one of its streams mid sweep.").arg(group.name);
+    this->cancel();
+    emit this->finished();
+    return;
+  }
+
+  item->setBlockInfoRequested(true);
+  item->loadFrame(this->frameCursor, false, true, false);
+  item->requestPixelStatistics(this->frameCursor);
+
+  const auto bits  = item->getSuperblockBits(this->frameCursor);
+  const auto grid  = int(group.superblockSize);
+  const auto width = int(group.frameSize.width);
+  const auto height = int(group.frameSize.height);
+
+  bool ready = !bits.empty();
+  if (ready)
+  {
+    // Every superblock needs its SSE before this frame can be added, or the totals would be short.
+    for (const auto &superblock : bits)
+    {
+      const auto stats = item->getPixelBlockStats(superblock.rect.topLeft(), this->frameCursor);
+      if (!stats || stats->sse < 0.0)
+      {
+        ready = false;
+        break;
+      }
+    }
+  }
+
+  if (!ready)
+  {
+    /* The SSE is computed off this thread, so the first look at a frame usually misses it. Come
+     * back on the next tick rather than blocking - but not forever: a frame that cannot be decoded
+     * would otherwise stop the sweep here.
+     */
+    if (++this->frameRetries < 200)
+      return;
+    this->frameRetries = 0;
+    ++this->frameCursor;
+    ++this->stepsDone;
+    if (this->frameCursor > this->frameLast)
+    {
+      ++this->pointCursor;
+      this->frameCursor = this->frameFirst;
+    }
+    emit this->progressed();
+    return;
+  }
+
+  for (const auto &superblock : bits)
+  {
+    const auto stats = item->getPixelBlockStats(superblock.rect.topLeft(), this->frameCursor);
+    const auto clipped = superblock.rect.intersected(QRect(0, 0, width, height));
+    const auto samples = std::int64_t(clipped.width()) * clipped.height();
+    if (samples <= 0 || !stats)
+      continue;
+
+    const BdRateSbKey key{superblock.rect.left() / grid, superblock.rect.top() / grid};
+    auto             &cell = this->result.perSuperblock[key];
+    if (cell.empty())
+    {
+      cell.assign(this->groups.size(), {});
+      for (std::size_t g = 0; g < this->groups.size(); ++g)
+        cell[g].assign(this->groups[g].points.size(), {});
+    }
+
+    /* Accumulated over the range: bits summed, SSE summed, samples summed. The PSNR is then taken
+     * from the totals, which is the sequence PSNR - averaging the per frame dB values instead is a
+     * different and wrong number.
+     */
+    auto &slot = cell[this->groupCursor][this->pointCursor];
+    slot.bits += double(superblock.bits);
+    slot.sse = (slot.sse < 0.0 ? 0.0 : slot.sse) + stats->sse;
+    slot.sampleCount += samples;
+
+    auto &total = this->result.totals[this->groupCursor][this->pointCursor];
+    total.bits += double(superblock.bits);
+    total.sse = (total.sse < 0.0 ? 0.0 : total.sse) + stats->sse;
+    total.sampleCount += samples;
+  }
+
+  this->frameRetries = 0;
+  ++this->frameCursor;
+  ++this->stepsDone;
+  if (this->frameCursor > this->frameLast)
+  {
+    ++this->pointCursor;
+    this->frameCursor = this->frameFirst;
+  }
+
+  // Redrawing on every frame would spend the sweep on painting; once a second is plenty to watch.
+  if (this->stepsDone % 25 == 0)
+    emit this->progressed();
 }
 
 } // namespace bda::integration
