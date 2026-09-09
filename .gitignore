@@ -27,6 +27,7 @@ tests/data/*.ivf
 tests/data/*.yuv
 tests/data/*.h264
 tests/data/*.av1
+tests/data/*.y4m
 
 # dav1d analyzer 소스 (submodule 이 아니라 shallow clone, README.md 참조) 와 그 빌드 산출물
 third_party/dav1d/upstream/

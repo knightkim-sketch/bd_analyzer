@@ -1,0 +1,121 @@
+diff --git a/YUViewLib/YUViewLib.pro b/YUViewLib/YUViewLib.pro
+index 67085338..8bdd408b 100644
+--- a/YUViewLib/YUViewLib.pro
++++ b/YUViewLib/YUViewLib.pro
+@@ -18,14 +18,17 @@ INCLUDEPATH += src/
+ # never has to merge it. This is the one place the two are joined.
+ #
+ #   src/me/           Qt-free motion estimation core, shared with the headless CLI
++#   src/bdrate/       Qt-free BD-rate maths, unit tested on its own
+ #   src/integration/  the only part of our tree allowed to know about upstream types
+ #
+ # $$PWD is .../third_party/yuview/upstream/YUViewLib, so four levels up is the repository root.
+ BDA_ROOT = $$PWD/../../../..
+ INCLUDEPATH += $$BDA_ROOT/src
+ SOURCES += $$files($$BDA_ROOT/src/me/*.cpp, true)
++SOURCES += $$files($$BDA_ROOT/src/bdrate/*.cpp, true)
+ SOURCES += $$files($$BDA_ROOT/src/integration/*.cpp, true)
+ HEADERS += $$files($$BDA_ROOT/src/me/*.h, true)
++HEADERS += $$files($$BDA_ROOT/src/bdrate/*.h, true)
+ HEADERS += $$files($$BDA_ROOT/src/integration/*.h, true)
+ 
+ RESOURCES += \
+diff --git a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+index 9e27eb52..289029c7 100644
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+@@ -1302,6 +1302,19 @@ stats::BlockInfo playlistItemCompressedVideo::getBlockInfoAt(const QPoint &pixel
+   return info;
+ }
+ 
++bool playlistItemCompressedVideo::providesSuperblockBits() const
++{
++  if (!this->loadingDecoder || !this->loadingDecoder->statisticsSupported())
++    return false;
++  /* The type list is filled when the decoder is allocated, so this answers before any frame has
++   * been decoded - which is when the BD-rate button needs to know.
++   */
++  for (const auto &type : this->statisticsData.getStatisticsTypes())
++    if (type.typeID == decoder::decoderDav1d::SB_BITCOUNT_TYPE_ID)
++      return true;
++  return false;
++}
++
+ bool playlistItemCompressedVideo::supportsMotionEstimation() const
+ {
+   /* An attached original is the whole requirement. It is read with this item's geometry, so once it
+diff --git a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
+index 1b6b5c43..0a9e9286 100644
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
+@@ -90,6 +90,14 @@ public:
+    * encoders' open-loop ME searches, so nothing has to be decoded to answer this - and the
+    * reproduced vectors can be laid over the stream's own on one canvas.
+    */
++  /* Whether this stream can report bits per superblock.
++   *
++   * Only the dav1d analyzer decoder produces sb_bitcount; an FFmpeg fallback gives nothing. BD-rate
++   * has to know before it starts, because a stream with no bit counts would contribute a curve of
++   * zeros and make the answer wrong rather than absent.
++   */
++  bool       providesSuperblockBits() const;
++
+   bool       supportsMotionEstimation() const override;
+   QByteArray readRawFrame(int frameIdx) override;
+ 
+diff --git a/YUViewLib/src/statistics/StatisticsData.h b/YUViewLib/src/statistics/StatisticsData.h
+index b81cf55d..8814186c 100644
+--- a/YUViewLib/src/statistics/StatisticsData.h
++++ b/YUViewLib/src/statistics/StatisticsData.h
+@@ -63,6 +63,8 @@ public:
+    */
+   BlockInfo getBlockInfoAt(const QPoint &pos) const;
+   StatisticsTypesVec &getStatisticsTypes() { return this->statsTypes; }
++  //!< For callers that only read. Needed by const predicates like providesSuperblockBits().
++  const StatisticsTypesVec &getStatisticsTypes() const { return this->statsTypes; }
+   bool                hasDataForTypeID(int typeID) { return this->frameCache.count(typeID) > 0; }
+   void                eraseDataForTypeID(int typeID) { this->frameCache.erase(typeID); }
+ 
+diff --git a/YUViewLib/src/ui/widgets/PlaylistTreeWidget.cpp b/YUViewLib/src/ui/widgets/PlaylistTreeWidget.cpp
+index 09af69c8..3f537eb3 100644
+--- a/YUViewLib/src/ui/widgets/PlaylistTreeWidget.cpp
++++ b/YUViewLib/src/ui/widgets/PlaylistTreeWidget.cpp
+@@ -179,6 +179,19 @@ PlaylistTreeWidget::~PlaylistTreeWidget()
+  * window would call autoSavePlaylist() on an empty playlist, and that removes the snapshot instead
+  * of writing one.
+  */
++QList<playlistItem *> PlaylistTreeWidget::getAllSelectedItems() const
++{
++  /* Playlist order rather than click order. Qt's selectedItems() returns them in the order they
++   * were selected, and a group's points are read as a curve - the order they sit in the playlist is
++   * the one the user arranged and the one the table should show.
++   */
++  QList<playlistItem *> result;
++  for (int i = 0; i < this->topLevelItemCount(); ++i)
++    if (auto *item = dynamic_cast<playlistItem *>(this->topLevelItem(i)); item && item->isSelected())
++      result.append(item);
++  return result;
++}
++
+ int PlaylistTreeWidget::removeDuplicateItems()
+ {
+   /* Identity is the file on disk, resolved through canonicalFilePath() so that a symlink and its
+diff --git a/YUViewLib/src/ui/widgets/PlaylistTreeWidget.h b/YUViewLib/src/ui/widgets/PlaylistTreeWidget.h
+index bec2a4cc..31a38e9e 100644
+--- a/YUViewLib/src/ui/widgets/PlaylistTreeWidget.h
++++ b/YUViewLib/src/ui/widgets/PlaylistTreeWidget.h
+@@ -89,6 +89,14 @@ public:
+   // Update the caching status of all items
+   void updateCachingStatus() { emit dataChanged(QModelIndex(), QModelIndex()); };
+ 
++  /* Every selected item, in playlist order.
++   *
++   * getSelectedItems() above caps at two because that is what the split view can show side by
++   * side. BD-rate needs a whole group of streams at once, and a cap of two would silently drop the
++   * rest of the user's selection.
++   */
++  QList<playlistItem *> getAllSelectedItems() const;
++
+   /* Drop file-backed items whose file is already in the playlist, keeping the first one.
+    *
+    * The same file ending up in the list twice is easy to arrange and never useful: a restored

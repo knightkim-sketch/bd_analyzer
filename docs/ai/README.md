@@ -68,7 +68,7 @@ verified: yes | partial | no      # 도구 출력으로 교차검증했는가
 - [template.md](20-decisions/template.md)
 
 ### 30-designs
-- [sb-bdrate-design](30-designs/sb-bdrate-design.md) — SB 단위 BD-rate: 그룹 모델, 수집 오케스트레이션, PSNR·BD-rate 수식, SB/Frame/Sequence popup (**설계 단계**, 미착수)
+- [sb-bdrate-design](30-designs/sb-bdrate-design.md) — SB 단위 BD-rate: 그룹 모델, 수집 오케스트레이션, PSNR·BD-rate 수식, SB/Frame/Sequence popup (**1-3단계 구현 완료**, Sequence·CSV·heatmap 미착수)
 
 ### 40-tasks
 - [TASK-0001](40-tasks/TASK-0001-bootstrap-build.md) — 빌드 부트스트랩 (**완료** — 빌드 성공, 이식성 실증)

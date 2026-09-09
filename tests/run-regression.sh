@@ -170,6 +170,9 @@ run_unit_test "$ROOT/tests/unit/me-svt-integer.cpp" \
 run_unit_test "$ROOT/tests/unit/me-odyssey-openloop.cpp" \
               "$ROOT/src/me/MePlane.cpp" "$ROOT/src/me/MeCost.cpp" "$ROOT/src/me/OdysseyOpenLoopMe.cpp"
 
+# BD-rate 수식. 균일 배율 곡선의 정답이 (k-1)*100 이라는 성질로 전체 파이프라인을 검증한다.
+run_unit_test "$ROOT/tests/unit/bdrate-math.cpp" "$ROOT/src/bdrate/BdRateMath.cpp"
+
 # ME 결과가 upstream 통계 오버레이(기존 MV drawer)로 실제로 들어가는지. 별도 drawer 를 만들지
 # 않기로 한 결정이 성립하는지를 여기서 확인한다.
 run_test_bda "$ROOT/tests/regression/22-me-statistics-overlay.cpp"
@@ -261,6 +264,35 @@ run_test "$ROOT/tests/regression/30-cache-in-working-directory.cpp"
 # 창을 실제로 파괴한다. 종료 시 "free(): invalid pointer" 로 abort 하던 회귀 + 모든 dock 이
 # View 메뉴에서 다시 켜지는지. 다른 MainWindow 테스트는 창을 일부러 leak 하므로 여기서만 잡힌다.
 run_test "$ROOT/tests/regression/25-mainwindow-teardown.cpp"
+
+echo
+echo "== SB BD-rate =="
+# 같은 소스의 CRF 3점 + 원본. 그룹 구성과 프레임 수집을 검사한다 (수식은 단위 테스트).
+BDORG="$DATA/bdrate_org_176x144.y4m"
+BDQ=()
+if [[ ! -s "$BDORG" ]]; then
+    ff="$(command -v ffmpeg || echo /usr/local/bin/ffmpeg)"
+    [[ -x "$ff" ]] && "$ff" -hide_banner -loglevel error -y \
+        -f lavfi -i "testsrc2=size=176x144:rate=25:duration=0.4" \
+        -pix_fmt yuv420p "$BDORG" >/dev/null 2>&1
+fi
+if [[ -s "$BDORG" ]]; then
+    for q in 20 40 55; do
+        f="$DATA/bdrate_q$q.ivf"
+        if [[ ! -s "$f" ]]; then
+            ff="$(command -v ffmpeg || echo /usr/local/bin/ffmpeg)"
+            [[ -x "$ff" ]] && "$ff" -hide_banner -loglevel error -y -i "$BDORG" \
+                -c:v libaom-av1 -crf $q -cpu-used 8 -g 10 -f ivf "$f" >/dev/null 2>&1
+        fi
+        [[ -s "$f" ]] && BDQ+=("$f")
+    done
+fi
+if [[ ${#BDQ[@]} -ge 2 ]]; then
+    run_test_bda "$ROOT/tests/regression/31-bdrate-groups-and-collection.cpp" "$BDORG" "${BDQ[@]}"
+else
+    echo "  SKIP  31-bdrate-groups-and-collection (AV1 인코딩 실패 - libaom 필요)"
+    ((skip_count++))
+fi
 
 echo
 echo "== 프레임 비트스트림 덤프 (hexdump 패널) =="

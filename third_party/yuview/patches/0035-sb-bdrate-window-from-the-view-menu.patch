@@ -1,0 +1,101 @@
+diff --git a/YUViewLib/src/ui/Mainwindow.cpp b/YUViewLib/src/ui/Mainwindow.cpp
+index f3c3149e..b45a0eb8 100644
+--- a/YUViewLib/src/ui/Mainwindow.cpp
++++ b/YUViewLib/src/ui/Mainwindow.cpp
+@@ -722,6 +722,15 @@ void MainWindow::createMenusAndActions()
+       loadStateMenu, "Slot 7", &stateHandler, &ViewStateHandler::loadViewState7, Qt::Key_7);
+   addActionToMenu(
+       loadStateMenu, "Slot 8", &stateHandler, &ViewStateHandler::loadViewState8, Qt::Key_8);
++  /* Not in a dock: it opens three plots side by side and two tables, and it is opened for a
++   * comparison rather than kept around. The playlist selection is the input, so the action lives
++   * next to the other things that act on a selection.
++   */
++  addActionToMenu(viewMenu,
++                  "SB BD-&rate from Selection",
++                  this,
++                  &MainWindow::addBdRateGroupFromSelection,
++                  Qt::CTRL | Qt::Key_R);
+   viewMenu->addSeparator();
+ 
+   auto dockPanelsMenu = viewMenu->addMenu("Dock Panels");
+@@ -886,6 +895,45 @@ void MainWindow::cancelMotionEstimation()
+   }
+ }
+ 
++void MainWindow::addBdRateGroupFromSelection()
++{
++  if (!this->bdRateWindow)
++  {
++    this->bdRateWindow = new bda::integration::BdRatePlotWindow(this);
++    /* The superblock panel is about the block the user clicked, and the frame panel about the
++     * frame on screen, so both follow the view rather than freezing at whatever was showing when
++     * the window opened.
++     */
++    connect(ui.displaySplitView,
++            &splitViewWidget::blockSelected,
++            this->bdRateWindow.data(),
++            [window = this->bdRateWindow.data()](playlistItem *item, QPoint pixelPos, int)
++            { window->setSelectedPosition(pixelPos, item != nullptr); });
++    connect(ui.displaySplitView,
++            &splitViewWidget::viewFrameChanged,
++            this->bdRateWindow.data(),
++            [window = this->bdRateWindow.data()](playlistItem *, int frameIdx)
++            { window->setCurrentFrame(frameIdx); });
++  }
++
++  this->bdRateWindow->setCurrentFrame(ui.playbackController->getCurrentFrame());
++
++  const auto result = this->bdRateWindow->addGroup(ui.playlistTreeWidget->getAllSelectedItems());
++  if (!result.ok())
++  {
++    /* A dialog rather than a status line: the action was a deliberate press and the reasons are
++     * specific enough to act on - the wrong decoder, a missing original, one stream instead of
++     * four.
++     */
++    QMessageBox::information(this, "SB BD-rate", bda::integration::bdRateGroupErrorText(result));
++    if (this->bdRateWindow->empty())
++      return;
++  }
++
++  this->bdRateWindow->show();
++  this->bdRateWindow->raise();
++}
++
+ void MainWindow::motionEstimationTargetChanged(playlistItem *item, int frameIdx)
+ {
+   /* Only react when the target actually moved.
+diff --git a/YUViewLib/src/ui/Mainwindow.h b/YUViewLib/src/ui/Mainwindow.h
+index 930f45c4..da267b43 100644
+--- a/YUViewLib/src/ui/Mainwindow.h
++++ b/YUViewLib/src/ui/Mainwindow.h
+@@ -41,6 +41,7 @@
+ 
+ #include <memory>
+ 
++#include <integration/BdRatePlotWindow.h>
+ #include <integration/MeRunner.h>
+ 
+ #include <handler/UpdateHandler.h>
+@@ -104,6 +105,10 @@ private slots:
+    */
+   void motionEstimationTargetChanged(playlistItem *item, int frameIdx);
+   void restartMotionEstimation();
++  /* Turn the current playlist selection into a BD-rate curve, opening the window if it is not up.
++   * One press, one curve - pressing it again with a different selection adds a second.
++   */
++  void addBdRateGroupFromSelection();
+   void takeMotionEstimation();
+   void closeAndClearSettings();
+ 
+@@ -215,6 +220,11 @@ private:
+   QPointer<playlistItem>                           meItem;
+   int                                              meFrameIdx{-1};
+ 
++  /* Created on first use and kept, so the groups collected so far survive closing the window -
++   * gathering them is the expensive part and losing them on a stray close would be unkind.
++   */
++  QPointer<bda::integration::BdRatePlotWindow>     bdRateWindow;
++
+   bool showNormalMaximized;     // When going to full screen: Was this windows maximized?
+   bool panelsVisible[8]{false}; // Which panels are visible when going to full-screen mode?
+ };
