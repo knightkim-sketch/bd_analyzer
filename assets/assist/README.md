@@ -44,8 +44,9 @@ in an edit, and this is the one class of failure that is invisible otherwise. An
 would not have saved us here: these tools reach external services over the network, not the
 filesystem, so layer 1 is no defence against them at all.
 
-As a side effect the MCP tool definitions were also inflating context badly — the same two turns
-cost $0.387 before and $0.101 after.
+As a side effect the MCP tool definitions were inflating the context badly: the same two turns
+reported $0.387 of token usage before and $0.101 after — roughly four times the tokens for the
+same answers. See **What a question consumes** below for what that figure is and is not.
 
 ### Why an allowlist and not a denylist
 
@@ -105,6 +106,36 @@ One more argument trap worth knowing: `--print --output-format=stream-json` is *
 `--verbose`**, and the CLI says so as plain text on stdout rather than as an event. The panel
 treats a non-JSON line as a failure for exactly this reason - a session that refused to start
 otherwise looks identical to one that is thinking.
+
+## What a question consumes
+
+`result.total_cost_usd` is the CLI's own figure, computed as tokens x list price
+(`modelUsage[model].costUSD` summed). **Whether it is money depends on how the CLI is
+authenticated, and the panel cannot tell from where it sits:**
+
+| Auth | What a question consumes |
+|---|---|
+| Subscription login (`apiKeySource: "none"`) | Nothing is billed per question. Tokens draw down a rolling usage window — measured here: `rateLimitType: "five_hour"`, with `overageStatus: "rejected"` / `overageDisabledReason: "org_level_disabled"`, so exceeding it **refuses** rather than charges |
+| `ANTHROPIC_API_KEY` set | A real per-token charge on that API account |
+
+So the panel says "token usage ... equivalent", not "spent".
+
+Either way the token count is what matters, and **starting a session is the expensive event, not
+asking a question**. Measured on a two-turn session:
+
+| | cache creation | cache read | input | output | reported |
+|---|---|---|---|---|---|
+| turn 1 | 12,433 | 8,568 | 1,788 | 5 | $0.0832 |
+| turn 2 | 1,804 | 21,001 | 29 | 5 | +$0.0173 |
+
+A follow-up question costs about a fifth of the first one, because the ~21k token prefix is served
+from cache. Two consequences:
+
+- **Keep one session alive across questions.** `ClaudeCliBackend` holds the process open and takes
+  turns on stdin for exactly this reason; a process per question would pay session start every time.
+- **Trimming `system-prompt.md` is not the lever.** It is ~1,500 tokens of that ~21k prefix (the
+  user's `CLAUDE.md` is ~2,300; the rest is the CLI's own system prompt and tool definitions). What
+  moves the number is the number of sessions and the tool count — which is why the MCP fix mattered.
 
 ## Keeping the reference honest
 

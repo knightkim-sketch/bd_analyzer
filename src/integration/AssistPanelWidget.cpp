@@ -254,7 +254,14 @@ void AssistPanelWidget::handleEvent(const AssistEvent &event)
     this->streaming   = false;
     this->lastCostUsd = event.costUsd;
     this->log->appendPlainText(QString());
-    this->status->setText(tr("Session %1 - done. %2 spent so far.")
+    /* "usage" and not "spent": what this figure is depends on how the CLI is authenticated. On a
+     * subscription login (apiKeySource "none", which is what a signed-in user has) nothing is
+     * billed per question - the tokens draw down a rolling usage window, and the CLI reports their
+     * list-price equivalent. With ANTHROPIC_API_KEY set it is a real charge. The panel cannot tell
+     * the difference from here, so it must not claim one.
+     */
+    this->status->setText(tr("Session %1 - done. Token usage so far: $%2 equivalent "
+                             "(billed only if this CLI uses an API key).")
                               .arg(this->sessionId.left(8))
                               .arg(event.costUsd, 0, 'f', 4));
     return;
