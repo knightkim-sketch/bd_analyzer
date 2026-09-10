@@ -1,6 +1,6 @@
 ---
 title: AI 어시스턴트 패널 (Claude / Codex) 설계
-status: 1단계 구현 완료 (컨텍스트 직렬화 + 격리). 2단계 진행 예정
+status: 2단계 구현 완료 (dock + Claude 백엔드). 3단계(컨텍스트 수집 확장) 예정
 created: 2026-09-10
 updated: 2026-09-10
 author: claude-opus-5
@@ -200,6 +200,32 @@ canary 생존 확인: canary
 - (1)이 **탐색 없이 즉답됐다.** 주입한 system prompt 만으로 앱 기능을 인지한다는 요구가 실증됐다.
 - (2)에서 2계층이 먼저 막았고, 뚫렸더라도 1계층이 막았을 것이다.
 
+### MCP 구멍 — `--strict-mcp-config` 가 필수인 이유 (실측)
+
+`--tools` 는 **내장 도구만** 제한한다. 사용자 설정의 MCP 서버는 따로 붙고 **쓰기 가능한 도구를
+같이 들고 온다.**
+
+플래그를 넣기 전 2턴 세션 실측:
+
+- 1턴 `init.tools` = `["Bash","Read"]` — 정상으로 보인다
+- 2턴 `init.tools` = `["Bash","Read"` + **46개**`]`, 그 안에
+  `mcp__claude_ai_Atlassian__createConfluencePage`, `..._editJiraIssue`,
+  `mcp__claude_ai_Google_Drive__create_file`
+
+MCP 서버는 **비동기로 붙는다.** 그래서 첫 턴은 깨끗하고 구멍은 나중에 열린다 — 이런 버그가 가질
+수 있는 최악의 형태다. `--strict-mcp-config` 를 (`--mcp-config` 없이) 넣은 뒤 두 턴 모두
+`["Bash","Read"]` 로 확인됐다.
+
+두 가지가 따라온다:
+
+1. **패널이 매 세션 시작마다 `init.tools` 를 다시 검사하고**, 예상 밖 도구가 있으면 전송을
+   거부한다 (`unexpectedTools()`, 회귀 32 가 고정). 플래그는 편집 중에 사라질 수 있고, 이 부류의
+   실패는 그것 말고는 보이지 않는다.
+2. **샌드박스는 이걸 막지 못한다.** 이 도구들은 파일시스템이 아니라 네트워크로 외부 서비스에
+   닿는다. 1계층은 여기에 아무 방어가 되지 않는다.
+
+부수 효과로 비용도 컸다 — 같은 2턴이 $0.387 → $0.101.
+
 ### allowlist 가 안전한 방향이고 denylist 는 아니다
 
 실측: **`--tools` 에 존재하지 않는 이름을 넣으면 조용히 무시된다.** `--tools "ZzzBogusTool"` 로
@@ -325,8 +351,9 @@ CLI 자기 상태 디렉토리(`~/.claude`, `~/.codex`)는 **쓰기 가능하게
 |---|---|---|
 | 1 | `AssistContext` + 직렬화 + Qt-free 단위 테스트 | **완료** |
 | 1b | 격리 3계층 + 주입 파일 (`assets/assist/`) + 실물 검증 | **완료** |
-| 2 | `ClaudeCliBackend` (`QProcess` + stream-json 파싱) + dock UI + 스트리밍 표시 | 다음 |
-| 3 | `AssistContextCollector` + 첨부 체크박스 + 전송 내용 표시 | 예정 |
+| 2 | `ClaudeCliBackend` (`QProcess` + stream-json 파싱) + dock UI + 스트리밍 표시 | **완료** |
+| 2b | 첨부 체크박스 + "전송 내용" 표시 + 도구 가드 (패치 `0037`) | **완료** |
+| 3 | `AssistContextCollector` — 블록 syntax·SB bits/SSE·BD-rate 값 실제 수집 | 다음 |
 | 4 | `CodexCliBackend` (`exec --json --sandbox read-only` + `resume`) | 예정 |
 | 5 | Mode B (쓰기 허용 + 승인 UI) | **별도 결정 필요** |
 
@@ -353,7 +380,7 @@ CLI 자기 상태 디렉토리(`~/.claude`, `~/.codex`)는 **쓰기 가능하게
 | 격리 2계층 | 런처로 삭제를 요청 → plan mode 가 거부하고 파일이 살아있는지 — **검증 완료** |
 | 기능 인지 | 탐색 없이 `Ctrl+R` 을 즉답하는지 — **검증 완료** |
 | 컨텍스트 문구 | 무손실 / org 미첨부 / 헤더 미파싱이 서로 다르게 읽히는지 — `assist-context` 단위 테스트 |
-| 회귀 무해성 | dock 추가가 기존 회귀 36개를 깨지 않는지. `25-mainwindow-teardown` 이 특히 중요 |
+| 회귀 무해성 | dock 추가가 기존 회귀 36개를 깨지 않는지 (실측 37/37). `25-mainwindow-teardown` 이 특히 중요 |
 
 ---
 
@@ -372,11 +399,15 @@ CLI 자기 상태 디렉토리(`~/.claude`, `~/.codex`)는 **쓰기 가능하게
 - **`bwrap` 이 배포 의존성이 된다.** 이 머신에는 `/bin/bwrap` 이 있고 user namespace 도 열려
   있지만(`user.max_user_namespaces = 510746`), 팀의 다른 머신은 다를 수 있다. 런처는 `bwrap` 이
   없으면 **격리 없이 도는 대신 거부한다.** RPM 의존성에 `bubblewrap` 을 넣어야 한다.
-- **stream-json 이벤트 스키마도 미검증이다.** 플래그는 `--help` 로 확인했지만 실제 이벤트 타입과
-  필드를 눈으로 본 적이 없다. 1단계와 병행해 `claude -p --output-format stream-json` 출력을 한 번
-  받아보고 파서를 그 실물에 맞춰야 한다.
-- **비용 표시는 미검증이다.** `--max-budget-usd` 로 상한은 걸 수 있지만, 누계 비용이 이벤트로
-  오는지 확인하지 않았다. 안 오면 상태줄의 비용 표시를 뺀다.
+- ~~stream-json 이벤트 스키마 미검증~~ → **해결.** 실물 세션에서 잡았고 회귀 32 가 고정한다.
+  `system/init`(session_id, tools, permissionMode, model), `stream_event`→`content_block_delta`
+  →`delta.text_delta`, `result`(result, is_error, total_cost_usd). 입력 봉투는
+  `{"type":"user","message":{"role":"user","content":[{"type":"text","text":...}]}}` 한 줄.
+  덤으로 두 개를 배웠다 — `--print --output-format=stream-json` 은 **`--verbose` 를 요구**하고,
+  거부 메시지는 이벤트가 아니라 **평문**으로 같은 스트림에 나온다 (그래서 파서가 비 JSON 줄을
+  실패로 올린다).
+- ~~비용 표시 미검증~~ → **해결.** `result.total_cost_usd` 로 누계가 온다. 상태줄에 표시한다.
+  `--max-budget-usd` 가 이상하게 낮게 걸렸던 것도 MCP 도구 정의가 컨텍스트를 부풀린 탓이 크다.
 - **`QProcess` 선례가 없다.** 종료 시 정리를 잘못하면 좀비가 남는다. `25-mainwindow-teardown` 회귀가
   이 축을 이미 보고 있으니 거기에 붙인다.
 - **팀 배포 전제가 바뀐다.** 지금까지 bd_analyzer 는 네트워크 없이 동작하는 오프라인 도구였다.

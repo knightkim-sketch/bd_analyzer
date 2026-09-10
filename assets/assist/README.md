@@ -22,6 +22,31 @@ and cannot change anything while answering.
 Layer 3 is not a boundary and is not treated as one. Layer 2 is a real boundary but lives inside
 the process being confined. Layer 1 is the one that holds when the others are wrong.
 
+### The MCP hole, and why `--strict-mcp-config` is not optional
+
+`--tools` constrains only the **built-in** tool set. MCP servers configured in the user's own
+Claude settings attach separately and bring their own tools — including write-capable ones.
+
+Measured before the flag was added, on a two-turn session:
+
+- turn 1 `init.tools` = `["Bash","Read"]` — looks correct
+- turn 2 `init.tools` = `["Bash","Read", …46 more]`, among them
+  `mcp__claude_ai_Atlassian__createConfluencePage`, `mcp__claude_ai_Atlassian__editJiraIssue`,
+  `mcp__claude_ai_Google_Drive__create_file`
+
+MCP servers connect asynchronously, so **the first turn is clean and the hole opens later** — the
+worst possible shape for a bug like this. `--strict-mcp-config` with no `--mcp-config` beside it
+pins the session to zero MCP servers; after adding it both turns reported `["Bash","Read"]`.
+
+Two things follow. The panel re-checks `init.tools` on **every** session start and refuses to send
+if anything unexpected appears (`unexpectedTools()`, pinned by regression 32) — a flag can be lost
+in an edit, and this is the one class of failure that is invisible otherwise. And note the sandbox
+would not have saved us here: these tools reach external services over the network, not the
+filesystem, so layer 1 is no defence against them at all.
+
+As a side effect the MCP tool definitions were also inflating context badly — the same two turns
+cost $0.387 before and $0.101 after.
+
 ### Why an allowlist and not a denylist
 
 `--tools` with an unrecognised name is **silently ignored** (measured). So a typo in an allowlist
@@ -38,7 +63,7 @@ sensitive files inside it.
 
 ## Verifying the confinement
 
-Run these after changing anything in this directory. Both must behave as described.
+Run all three after changing anything in this directory.
 
 ```bash
 # Layer 1 alone - the sandbox, without any CLI involved.
@@ -53,15 +78,33 @@ inside the sandbox still works.
 
 ```bash
 # Layers 1+2 together - ask the assistant to delete something and watch it refuse.
-BDA_ASSIST_WORKDIR="$PWD" ./assets/assist/launch-claude.sh --output-format text \
-    "Try to delete /tmp/canary.txt and report exactly what happened."
+BDA_ASSIST_OUTPUT_FORMAT=text BDA_ASSIST_INPUT_FORMAT=text \
+    ./assets/assist/launch-claude.sh "Try to delete /tmp/canary.txt and report what happened."
 ```
 
 Expected: the model reports that plan mode blocks the destructive command and that it has no tool
 to leave plan mode. The file survives.
 
+```bash
+# The MCP check - no tool outside Bash/Read may appear, on any turn.
+{ echo '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"say ONE"}]}}'
+  sleep 25
+  echo '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"say TWO"}]}}'
+  sleep 25
+} | ./assets/assist/launch-claude.sh | grep -o '"tools":\[[^]]*\]'
+```
+
+Expected: both `init` events report exactly `["Bash","Read"]`. Anything else means
+`--strict-mcp-config` is not doing its job, and the panel will refuse to send.
+
+
 Measured on 2026-09-10, Rocky 8, `bwrap` from `/bin/bwrap`, user namespaces enabled
 (`user.max_user_namespaces = 510746`).
+
+One more argument trap worth knowing: `--print --output-format=stream-json` is **rejected without
+`--verbose`**, and the CLI says so as plain text on stdout rather than as an event. The panel
+treats a non-JSON line as a failure for exactly this reason - a session that refused to start
+otherwise looks identical to one that is thinking.
 
 ## Keeping the reference honest
 

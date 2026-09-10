@@ -15,6 +15,12 @@
 # The tool allowlist is the safe direction: an unrecognised name in --tools is silently ignored, so
 # a typo costs a capability rather than opening a hole. A denylist has the opposite failure mode,
 # which is why permissions.json is defence in depth and not the boundary.
+#
+# --strict-mcp-config is not optional. --tools constrains only the built-in set; MCP servers from
+# the user's own configuration attach separately and bring write-capable tools with them (measured:
+# a second turn arrived with Confluence page-creation and Drive file-creation tools in the session).
+# They connect asynchronously, so the first turn looks clean and the hole opens later. With no
+# --mcp-config alongside it, this pins the session to zero MCP servers.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,11 +39,12 @@ command -v bwrap  >/dev/null 2>&1 || { echo "bd_analyzer: 'bwrap' not found - re
 # Everything else stays read-only. This is the one hole in layer 1 and it is deliberate.
 STATE="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 
-# Token-level streaming and message acknowledgement only exist on the stream-json pair; passing
-# them with --output-format text is rejected.
+# --verbose is not optional here: `--print --output-format=stream-json` is rejected without it
+# (measured - "requires --verbose"). Token-level streaming and message acknowledgement likewise
+# only exist on the stream-json pair.
 STREAM_ARGS=()
 if [[ "$OUT_FORMAT" == "stream-json" ]]; then
-    STREAM_ARGS+=(--include-partial-messages)
+    STREAM_ARGS+=(--verbose --include-partial-messages)
     [[ "$IN_FORMAT" == "stream-json" ]] && STREAM_ARGS+=(--replay-user-messages)
 fi
 
@@ -59,6 +66,8 @@ exec bwrap \
         "${STREAM_ARGS[@]}" \
         --permission-mode plan \
         --tools "Read,Bash" \
+        --strict-mcp-config \
+        --setting-sources user \
         --settings "$HERE/permissions.json" \
         --append-system-prompt "$(cat "$HERE/system-prompt.md")" \
         --model "$MODEL" \

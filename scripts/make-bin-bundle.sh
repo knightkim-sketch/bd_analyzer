@@ -110,6 +110,13 @@ done
 echo "== 6. dav1d analyzer 디코더 (dlopen 대상) =="
 cp "$APPDIR/decoder/libdav1d-internals.so" "$OUT/decoder/"
 
+echo "== 6b. AI 어시스턴트 자산 (런처 + 격리 정책 + 주입 프롬프트) =="
+# AssistPanelWidget 은 applicationDirPath()/assist/launch-claude.sh 를 찾는다. 이것이 없으면
+# 패널은 이유를 표시하고 비활성화된다 - 격리 없이 도는 것보다 낫다.
+mkdir -p "$OUT/assist"
+cp -r "$ROOT/assets/assist/." "$OUT/assist/"
+chmod +x "$OUT/assist"/launch-*.sh
+
 echo "== 7. qt.conf =="
 # Qt 가 플러그인을 Qt 빌드 시점의 prefix 대신 실행 파일 옆에서 찾게 한다.
 cat > "$OUT/qt.conf" <<'EOF'
@@ -181,6 +188,8 @@ for f in "$HERE"/ffmpeg/lib*.so.*[0-9]; do
     [[ -L "$f" ]] || check "$f" "ffmpeg/$(basename "$f")"
 done
 check "$HERE/decoder/libdav1d-internals.so"     "dav1d analyzer 디코더"
+check "$HERE/assist/launch-claude.sh"           "AI 어시스턴트 런처"
+check "$HERE/assist/system-prompt.md"           "AI 어시스턴트 앱 레퍼런스"
 [[ $problems -eq 0 ]] && echo "  (없음)"
 
 echo

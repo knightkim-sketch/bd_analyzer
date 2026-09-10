@@ -60,6 +60,11 @@ Requires:       bash
 # Native GTK3 theme when the target is a full desktop; skipped cleanly otherwise.
 Recommends:     gtk3
 
+# The AI assistant panel runs the CLI inside a read-only bubblewrap sandbox and refuses to start
+# without it. Recommends rather than Requires: the analyzer itself does not need it, and the panel
+# explains why it is disabled.
+Recommends:     bubblewrap
+
 %description
 bd_analyzer is a fork of IENT/YUView extended for codec development and
 verification: AV1/H.264/HEVC bitstream inspection, YUV analysis with PSNR/SSIM
@@ -86,7 +91,7 @@ Qt 6.5.3, FFmpeg 7.1, dav1d analyzer 디코더가 %{bda_home} 아래에 번들�
 %install
 install -d %{buildroot}%{bda_home}
 cp -a YUView bd-analyzer qt.conf check-deps.sh \
-      lib syslib ffmpeg plugins decoder %{buildroot}%{bda_home}/
+      lib syslib ffmpeg plugins decoder assist %{buildroot}%{bda_home}/
 
 # The binary is reached through the launcher, never directly - see packaging/common/bd-analyzer.
 install -d %{buildroot}%{_bindir}
@@ -126,6 +131,7 @@ fi
 %{bda_home}/ffmpeg
 %{bda_home}/plugins
 %{bda_home}/decoder
+%{bda_home}/assist
 %{_bindir}/%{name}
 %{_datadir}/applications/%{name}.desktop
 %{_datadir}/icons/hicolor/*/apps/%{name}.png

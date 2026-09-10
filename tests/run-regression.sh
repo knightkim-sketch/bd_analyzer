@@ -292,7 +292,11 @@ if [[ -s "$BDORG" ]]; then
     done
 fi
 if [[ ${#BDQ[@]} -ge 2 ]]; then
-    run_test_bda "$ROOT/tests/regression/31-bdrate-groups-and-collection.cpp" "$BDORG" "${BDQ[@]}"
+    run_test_bda "$ROOT/tests/regression/31-bdrate-groups-and-collection.cpp"
+
+# 어시스턴트 이벤트 파싱과 읽기 전용 도구 가드. 실물 세션에서 잡은 JSON 라인으로 고정한다.
+# MCP 도구가 늦게 붙어 2턴째에 쓰기 권한이 생겼던 실제 사고가 이 가드의 근거다.
+run_test_bda "$ROOT/tests/regression/32-assist-event-parsing.cpp" "$BDORG" "${BDQ[@]}"
 else
     echo "  SKIP  31-bdrate-groups-and-collection (AV1 인코딩 실패 - libaom 필요)"
     ((skip_count++))

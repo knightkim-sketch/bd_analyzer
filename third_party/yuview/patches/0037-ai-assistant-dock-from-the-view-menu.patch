@@ -1,0 +1,129 @@
+diff --git a/YUViewLib/ui/mainwindow.ui b/YUViewLib/ui/mainwindow.ui
+--- a/YUViewLib/ui/mainwindow.ui
++++ b/YUViewLib/ui/mainwindow.ui
+@@ -398,6 +398,24 @@
+    </attribute>
+    <widget class="MotionEstimationWidget" name="motionEstimationWidget"/>
+   </widget>
++  <widget class="QDockWidget" name="assistDock">
++   <property name="visible">
++    <bool>false</bool>
++   </property>
++   <property name="minimumSize">
++    <size>
++     <width>300</width>
++     <height>320</height>
++    </size>
++   </property>
++   <property name="windowTitle">
++    <string>AI Assistant</string>
++   </property>
++   <attribute name="dockWidgetArea">
++    <number>2</number>
++   </attribute>
++   <widget class="AssistPanelWidget" name="assistPanelWidget"/>
++  </widget>
+   <action name="actionOpen">
+    <property name="text">
+     <string>Open...</string>
+@@ -425,6 +443,12 @@
+    <container>1</container>
+   </customwidget>
+   <customwidget>
++   <class>AssistPanelWidget</class>
++   <extends>QWidget</extends>
++   <header>integration/AssistPanelWidget.h</header>
++   <container>1</container>
++  </customwidget>
++  <customwidget>
+    <class>PlaylistTreeWidget</class>
+    <extends>QTreeWidget</extends>
+    <header>ui/widgets/PlaylistTreeWidget.h</header>
+diff --git a/YUViewLib/src/ui/Mainwindow.cpp b/YUViewLib/src/ui/Mainwindow.cpp
+--- a/YUViewLib/src/ui/Mainwindow.cpp
++++ b/YUViewLib/src/ui/Mainwindow.cpp
+@@ -36,6 +36,7 @@
+ #include <integration/MeFrameSource.h>
+ #include <integration/MeStatisticsAdapter.h>
+ #include <integration/MotionEstimationWidget.h>
++#include <playlistitem/playlistItemCompressedVideo.h>
+ #include <playlistitem/playlistItemRawFile.h>
+ #include <playlistitem/playlistItemWithVideo.h>
+ 
+@@ -62,6 +63,40 @@
+ 
+ #include <algorithm>
+ 
++namespace
++{
++/* Push whatever the item already reports into the assistant panel.
++ *
++ * Nothing here decodes or measures: every value is one the item has computed for its own panels.
++ * The decoder label matters more than it looks - a stream on the FFmpeg fallback has no block
++ * statistics at all, and telling the assistant that up front is what stops it explaining numbers
++ * that were never produced.
++ */
++void pushAssistStream(AssistPanelWidget *panel, playlistItem *item)
++{
++  if (!panel)
++    return;
++  if (!item)
++  {
++    panel->setStream({}, 0, 0, 0, {}, {});
++    return;
++  }
++
++  const auto size       = item->getRawFrameSize();
++  const auto compressed = dynamic_cast<playlistItemCompressedVideo *>(item);
++  const auto decoder    = (compressed && compressed->providesSuperblockBits())
++                              ? QStringLiteral("dav1d analyzer (block statistics available)")
++                              : QStringLiteral("fallback (no block statistics)");
++
++  panel->setStream(item->properties().name,
++                   static_cast<int>(size.width),
++                   static_cast<int>(size.height),
++                   static_cast<int>(item->getDefaultGridSize()),
++                   decoder,
++                   item->getOriginalYUVSource());
++}
++} // namespace
++
+ MainWindow::MainWindow(bool useAlternativeSources, QWidget *parent) : QMainWindow(parent)
+ {
+   Q_INIT_RESOURCE(images);
+@@ -317,6 +352,24 @@
+           &splitViewWidget::viewFrameChanged,
+           ui.rateDistortionPlot,
+           &RateDistortionPlotWidget::setCurrentFrame);
++  /* The assistant panel answers about what is on screen, so it follows the same signals the other
++   * context-driven panels do. blockSelected carries the item as well as the click, which is why
++   * the stream description is refreshed from both signals rather than from a separate connect.
++   */
++  connect(ui.displaySplitView,
++          &splitViewWidget::blockSelected,
++          [this](playlistItem *item, QPoint pixelPos, int)
++          {
++            pushAssistStream(ui.assistPanelWidget, item);
++            ui.assistPanelWidget->setSelectedPosition(pixelPos, item != nullptr);
++          });
++  connect(ui.displaySplitView,
++          &splitViewWidget::viewFrameChanged,
++          [this](playlistItem *item, int frameIdx)
++          {
++            pushAssistStream(ui.assistPanelWidget, item);
++            ui.assistPanelWidget->setCurrentFrame(frameIdx);
++          });
+   connect(ui.playlistTreeWidget,
+           &PlaylistTreeWidget::selectionRangeChanged,
+           ui.rateDistortionPlot,
+@@ -752,6 +805,10 @@
+    * at all - which is exactly how it shipped the first time.
+    */
+   addDockViewAction(ui.motionEstimationDock, "Show &Motion Estimation", Qt::CTRL | Qt::Key_M);
++  /* Ctrl+K rather than Ctrl+I or Ctrl+A: Ctrl+I is already Show Info, and every other letter this
++   * panel suggests is taken by a dock or a zoom action.
++   */
++  addDockViewAction(ui.assistDock, "Show AI Assistan&t", Qt::CTRL | Qt::Key_K);
+   viewMenu->addSeparator();
+   addDockViewAction(ui.playbackControllerDock, "Show Playback &Controls", Qt::CTRL | Qt::Key_D);
+ 

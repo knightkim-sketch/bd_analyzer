@@ -72,7 +72,7 @@ explain the cause rather than suggesting a workaround.
 
 ## Verifying a claim in this repository
 
-- Regression suite: `./tests/run-regression.sh` (36 tests). It builds and runs headless.
+- Regression suite: `./tests/run-regression.sh` (37 tests). It builds and runs headless.
 - Unit tests are compiled **without Qt** to prove the core stays Qt-free.
 - Build: `./scripts/build.sh` applies the patches and builds.
 - A "successful" build can still hide a file that never compiled — stale objects mask compile
