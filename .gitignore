@@ -24,6 +24,7 @@ aqtinstall.log
 
 # generated test streams
 tests/data/*.ivf
+tests/data/*.mp4
 tests/data/*.yuv
 tests/data/*.h264
 tests/data/*.av1
