@@ -1,0 +1,53 @@
+diff --git a/YUViewLib/ui/bitstreamAnalysisWidget.ui b/YUViewLib/ui/bitstreamAnalysisWidget.ui
+--- a/YUViewLib/ui/bitstreamAnalysisWidget.ui
++++ b/YUViewLib/ui/bitstreamAnalysisWidget.ui
+@@ -163,6 +163,16 @@
+        </item>
+       </layout>
+      </widget>
++     <widget class="QWidget" name="tabContainer">
++      <attribute name="title">
++       <string>Container</string>
++      </attribute>
++      <layout class="QVBoxLayout" name="verticalLayout_6">
++       <item>
++        <widget class="Mp4ContainerWidget" name="mp4ContainerWidget" native="true"/>
++       </item>
++      </layout>
++     </widget>
+     </widget>
+    </item>
+    <item>
+@@ -185,6 +195,12 @@
+    <header>ui/views/PlotViewWidget.h</header>
+    <container>1</container>
+   </customwidget>
++  <customwidget>
++   <class>Mp4ContainerWidget</class>
++   <extends>QWidget</extends>
++   <header>integration/Mp4ContainerWidget.h</header>
++   <container>1</container>
++  </customwidget>
+  </customwidgets>
+  <resources/>
+  <connections/>
+diff --git a/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.cpp b/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.cpp
+--- a/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.cpp
++++ b/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.cpp
+@@ -314,6 +314,16 @@
+   this->ui.tabPacketAnalysis->setEnabled(isBitstream);
+   this->ui.tabBitrateGraphicsView->setEnabled(isBitstream);
+ 
++  /* The container tab reads the file itself rather than waiting for the background parser: the box
++   * structure is in the file's own headers, needs no decoder, and is exactly what you want to see
++   * when the parser is the thing that failed. It maps the file, so mdat is never read.
++   */
++  this->ui.tabContainer->setEnabled(isBitstream);
++  if (isBitstream)
++    this->ui.mp4ContainerWidget->setFile(this->currentCompressedVideo->properties().name);
++  else
++    this->ui.mp4ContainerWidget->clearFile();
++
+   this->restartParsingOfCurrentItem();
+ }
+ 

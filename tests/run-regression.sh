@@ -52,6 +52,21 @@ ensure_stream() {
     echo "$out"
 }
 
+# AV1-in-MP4. 컨테이너 파서 검증용이며, 없으면 그 테스트만 SKIP 한다.
+ensure_mp4() {
+    local out="$DATA/test.mp4"
+    if [[ -s "$out" ]]; then echo "$out"; return 0; fi
+    local ff
+    ff="$(command -v ffmpeg || echo /usr/local/bin/ffmpeg)"
+    [[ -x "$ff" ]] || return 1
+    "$ff" -hide_banner -loglevel error -y \
+          -f lavfi -i "testsrc2=size=176x144:rate=25:duration=1" \
+          -c:v libaom-av1 -cpu-used 8 -g 10 -pix_fmt yuv420p \
+          -movflags +faststart "$out" >/dev/null 2>&1 || return 1
+    [[ -s "$out" ]]
+    echo "$out"
+}
+
 STREAM="$(ensure_stream)" || {
     echo "SKIP ALL: test.ivf 이 없고 ffmpeg 로 생성할 수도 없습니다 (libaom-av1 필요)."
     exit 0
@@ -177,6 +192,17 @@ run_unit_test "$ROOT/tests/unit/bdrate-math.cpp" "$ROOT/src/bdrate/BdRateMath.cp
 # 다르게 읽히는지를 고정한다 - 뭉개지면 모델이 자신있게 틀린 답을 만든다.
 run_unit_test "$ROOT/tests/unit/assist-context.cpp" "$ROOT/src/assist/AssistContext.cpp"
 
+# MP4 컨테이너. box 트리와 sample table(stsc/stco/stsz)을 실제 ffmpeg 산출물로 검증한다 -
+# 손으로 만든 픽스처는 "내가 생각하는 포맷" 과의 일치만 증명하기 때문이다.
+MP4="$(ensure_mp4)" || MP4=""
+if [[ -n "$MP4" ]]; then
+    BDA_TEST_MP4="$MP4" run_unit_test "$ROOT/tests/unit/mp4-parser.cpp" \
+                  "$ROOT/src/container/Mp4Parser.cpp" "$ROOT/src/container/Mp4SampleTable.cpp"
+else
+    echo "  SKIP  mp4-parser (test.mp4 을 만들 수 없습니다 - ffmpeg + libaom-av1 필요)"
+    ((skip_count++))
+fi
+
 # ME 결과가 upstream 통계 오버레이(기존 MV drawer)로 실제로 들어가는지. 별도 drawer 를 만들지
 # 않기로 한 결정이 성립하는지를 여기서 확인한다.
 run_test_bda "$ROOT/tests/regression/22-me-statistics-overlay.cpp"
@@ -292,15 +318,28 @@ if [[ -s "$BDORG" ]]; then
     done
 fi
 if [[ ${#BDQ[@]} -ge 2 ]]; then
-    run_test_bda "$ROOT/tests/regression/31-bdrate-groups-and-collection.cpp"
-
-# 어시스턴트 이벤트 파싱과 읽기 전용 도구 가드. 실물 세션에서 잡은 JSON 라인으로 고정한다.
-# MCP 도구가 늦게 붙어 2턴째에 쓰기 권한이 생겼던 실제 사고가 이 가드의 근거다.
-run_test_bda "$ROOT/tests/regression/32-assist-event-parsing.cpp" "$BDORG" "${BDQ[@]}"
+    run_test_bda "$ROOT/tests/regression/31-bdrate-groups-and-collection.cpp" "$BDORG" "${BDQ[@]}"
 else
     echo "  SKIP  31-bdrate-groups-and-collection (AV1 인코딩 실패 - libaom 필요)"
     ((skip_count++))
 fi
+
+echo
+echo "== MP4 컨테이너 =="
+# Container 탭. 파서는 단위 테스트가 보고, 여기서는 위젯이 파일을 매핑해 트리를 채우는지와
+# ISO BMFF 가 아닌 파일을 받았을 때 이전 트리를 남기지 않는지를 본다.
+if [[ -n "$MP4" ]]; then
+    run_test_bda "$ROOT/tests/regression/33-mp4-container-tab.cpp" "$MP4" "$STREAM"
+else
+    echo "  SKIP  33-mp4-container-tab (test.mp4 없음)"
+    ((skip_count++))
+fi
+
+echo
+echo "== AI 어시스턴트 =="
+# 이벤트 파싱과 읽기 전용 도구 가드. 실물 세션에서 잡은 JSON 라인으로 고정한다.
+# MCP 도구가 늦게 붙어 2턴째에 쓰기 권한이 생겼던 실제 사고가 이 가드의 근거다.
+run_test_bda "$ROOT/tests/regression/32-assist-event-parsing.cpp"
 
 echo
 echo "== 프레임 비트스트림 덤프 (hexdump 패널) =="
