@@ -173,6 +173,10 @@ run_unit_test "$ROOT/tests/unit/me-odyssey-openloop.cpp" \
 # BD-rate 수식. 균일 배율 곡선의 정답이 (k-1)*100 이라는 성질로 전체 파이프라인을 검증한다.
 run_unit_test "$ROOT/tests/unit/bdrate-math.cpp" "$ROOT/src/bdrate/BdRateMath.cpp"
 
+# 어시스턴트 컨텍스트 직렬화. 수치가 없는 세 경우(무손실 / org 미첨부 / 헤더 미파싱)가 서로
+# 다르게 읽히는지를 고정한다 - 뭉개지면 모델이 자신있게 틀린 답을 만든다.
+run_unit_test "$ROOT/tests/unit/assist-context.cpp" "$ROOT/src/assist/AssistContext.cpp"
+
 # ME 결과가 upstream 통계 오버레이(기존 MV drawer)로 실제로 들어가는지. 별도 drawer 를 만들지
 # 않기로 한 결정이 성립하는지를 여기서 확인한다.
 run_test_bda "$ROOT/tests/regression/22-me-statistics-overlay.cpp"
