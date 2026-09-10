@@ -1,0 +1,23 @@
+diff --git a/YUViewLib/YUViewLib.pro b/YUViewLib/YUViewLib.pro
+--- a/YUViewLib/YUViewLib.pro
++++ b/YUViewLib/YUViewLib.pro
+@@ -19,6 +19,7 @@
+ #
+ #   src/me/           Qt-free motion estimation core, shared with the headless CLI
+ #   src/bdrate/       Qt-free BD-rate maths, unit tested on its own
++#   src/assist/       Qt-free assistant panel context model, unit tested on its own
+ #   src/integration/  the only part of our tree allowed to know about upstream types
+ #
+ # $$PWD is .../third_party/yuview/upstream/YUViewLib, so four levels up is the repository root.
+@@ -26,9 +27,11 @@
+ INCLUDEPATH += $$BDA_ROOT/src
+ SOURCES += $$files($$BDA_ROOT/src/me/*.cpp, true)
+ SOURCES += $$files($$BDA_ROOT/src/bdrate/*.cpp, true)
++SOURCES += $$files($$BDA_ROOT/src/assist/*.cpp, true)
+ SOURCES += $$files($$BDA_ROOT/src/integration/*.cpp, true)
+ HEADERS += $$files($$BDA_ROOT/src/me/*.h, true)
+ HEADERS += $$files($$BDA_ROOT/src/bdrate/*.h, true)
++HEADERS += $$files($$BDA_ROOT/src/assist/*.h, true)
+ HEADERS += $$files($$BDA_ROOT/src/integration/*.h, true)
+ 
+ RESOURCES += \
