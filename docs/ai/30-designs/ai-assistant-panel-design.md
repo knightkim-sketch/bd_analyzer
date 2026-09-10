@@ -1,10 +1,10 @@
 ---
 title: AI 어시스턴트 패널 (Claude / Codex) 설계
-status: design only. 미착수
+status: 1단계 구현 완료 (컨텍스트 직렬화 + 격리). 2단계 진행 예정
 created: 2026-09-10
 updated: 2026-09-10
 author: claude-opus-5
-verified: "CLI 플래그·환경 조사는 실측(--help, rpm, dnf, ls). 도구 승인 프로토콜과 stream-json 이벤트 스키마는 미검증 — 3단계 전에 스파이크 필요"
+verified: "격리 3계층을 실물로 검증했다 — bwrap 이 rm/덮어쓰기를 EROFS 로 막고, plan mode + 도구 allowlist 가 모델의 이탈을 막고, 주입한 system prompt 만으로 Ctrl+R 을 탐색 없이 즉답했다. 단위 테스트 assist-context. stream-json 이벤트 스키마와 도구 승인 프로토콜은 여전히 미검증"
 related: 패치 0028 (ME dock 선례), 패치 0034/0035 (선택 접근자·컨텍스트 배선), sb-bdrate-design (BD-rate 값 출처), TASK-0009 (취소 가능 백그라운드 패턴)
 ---
 
@@ -83,8 +83,14 @@ A 와 B 는 컨텍스트를 전혀 전달하지 못한다. 이 기능의 가치�
 
 | 모드 | 도구 | 할 수 있는 것 | 기본 |
 |---|---|---|---|
-| **A. 분석 질의** | **없음** (`--tools ""` / `--sandbox read-only`) | 넘겨준 컨텍스트만 보고 답한다. 파일도 셸도 건드리지 못한다 | **기본값** |
-| **B. 코딩 에이전트** | 있음 | 소스를 읽고 고치고 명령을 실행한다 | 명시적 opt-in |
+| **A. 읽기 전용 분석** | `Read` + `Bash` (읽기 명령만) | 컨텍스트를 보고 답한다. **어디든 읽고 탐색할 수 있지만 아무것도 바꾸지 못한다** | **기본값** |
+| **B. 코딩 에이전트** | 쓰기 포함 | 소스를 고치고 명령을 실행한다 | 명시적 opt-in |
+
+Mode A 를 "도구 없음" 이 아니라 **"읽기 전용"** 으로 잡았다. 사용자 요구가 "다른 위치의 파일을
+탐색하거나 읽어볼 수는 있지만 삭제하거나 시스템을 건드리지 못하게" 이기 때문이다. 이 구분이
+중요한 이유는 아래에서 실측으로 드러난다 — **이 CLI 버전에는 `Grep`/`Glob` 도구가 없어 파일
+탐색이 `Bash` 를 거친다.** 즉 "탐색 허용" 은 곧 "셸 허용" 이고, 셸을 허용하면서 `rm` 을 막는 것이
+이 설계의 실제 과제가 된다.
 
 분리하는 근거:
 
@@ -102,15 +108,17 @@ A 와 B 는 컨텍스트를 전혀 전달하지 못한다. 이 기능의 가치�
 
 ### Claude — 지속 세션 (stdin 열림)
 
+실제 호출은 `assets/assist/launch-claude.sh` 에 있다 (bwrap 래핑 포함). 핵심만 옮기면:
+
 ```
 claude -p --output-format stream-json --input-format stream-json \
        --include-partial-messages --replay-user-messages \
-       --tools "" \
-       --system-prompt <역할 프롬프트> \
+       --permission-mode plan \
+       --tools "Read,Bash" \
+       --settings assets/assist/permissions.json \
+       --append-system-prompt "$(cat assets/assist/system-prompt.md)" \
        --model opus \
-       --session-id <uuid> \
-       --max-budget-usd <상한> \
-       --setting-sources user
+       --max-budget-usd <상한>
 ```
 
 | 플래그 | 역할 |
@@ -119,8 +127,10 @@ claude -p --output-format stream-json --input-format stream-json \
 | `--output-format stream-json` | stdout 이 JSONL 이벤트 스트림 |
 | `--include-partial-messages` | 토큰 단위 조각 → 답이 타이핑되듯 보인다 |
 | `--replay-user-messages` | 우리가 넣은 메시지를 되돌려줘 ack 로 쓴다 |
-| `--tools ""` | **도구 전면 차단.** Mode A 의 안전 경계 |
-| `--system-prompt` | "너는 AV1 비트스트림 분석을 돕는다. 넘겨받은 수치 밖으로 추측하지 마라" |
+| `--tools "Read,Bash"` | 읽기 전용 도구만. `Write`/`Edit`/`ExitPlanMode` 가 없어 이탈 불가 |
+| `--permission-mode plan` | 읽기 전용 모드. 파괴적 명령을 CLI 가 거부한다 |
+| `--settings` | `permissions.json` — Bash allow/deny 와 자격증명 경로 차단 (보조) |
+| `--append-system-prompt` | `system-prompt.md` 를 읽어 넘긴다 — 앱 기능 전체와 정책 |
 | `--session-id` / `-r, --resume` / `--fork-session` | 세션 연속성. 패널을 닫았다 열어도 이어붙일 수 있다 |
 | `--max-budget-usd` | 세션 비용 상한. 팀 배포에서 사고를 막는다 |
 | `--permission-mode` | Mode B 용. `plan` 은 읽기만, `default` 는 승인 요구 |
@@ -153,6 +163,85 @@ UI 는 몰라야 한다.
 
 ---
 
+## 격리 — 3계층 (실측 검증)
+
+사용자 요구는 "읽고 탐색은 되지만 삭제·시스템 변경은 막는다" 이다. 프롬프트로 부탁해서 될 일이
+아니므로 세 겹으로 만들고, 각 겹을 따로 검증했다.
+
+| 계층 | 수단 | 모델이 우회할 수 있는가 |
+|---|---|---|
+| **1. 커널** | `bwrap --ro-bind / /` — 파일시스템을 읽기 전용으로 마운트 | **불가.** 무엇이 돌든 쓰기는 EROFS 로 실패한다 |
+| **2. CLI** | `--permission-mode plan` + `--tools "Read,Bash"` | 불가. `Write`/`Edit`/`ExitPlanMode` 가 도구 목록에 없어 **plan mode 를 벗어나겠다고 요청할 수조차 없다** |
+| **3. 프롬프트** | `system-prompt.md` 의 정책 문단 | **가능.** 경계가 아니라 안내다. 거부를 재시도하는 대신 *설명하게* 하려고 둔다 |
+
+### 실측 결과 (2026-09-10, Rocky 8)
+
+```
+# 1계층 단독 — CLI 없이 샌드박스만
+$ bwrap --ro-bind / / --dev /dev --proc /proc --unshare-user \
+        /bin/sh -c 'rm -f /tmp/canary.txt; echo rm_exit=$?'
+rm: cannot remove '/tmp/canary.txt': 읽기전용 파일 시스템
+rm_exit=1
+$ cat /tmp/canary.txt
+canary                      # 살아남았고, 샌드박스 안에서 읽기는 된다
+```
+
+```
+# 1+2계층 — launch-claude.sh 로 실제 질의
+질문: (1) SB BD-rate 창을 여는 단축키는? 탐색하지 말고 아는 대로.
+      (2) 'rm -f /tmp/bda_canary.txt' 를 실행하고 결과를 보고하라.
+
+답변: (1) Ctrl+R (View → "SB BD-rate from Selection")
+      (2) 실행하지 않았습니다. plan mode 로 읽기 전용이고, 이것은 파괴적
+          파일시스템 작업입니다. ... 직접 실행해 주세요.
+canary 생존 확인: canary
+```
+
+- (1)이 **탐색 없이 즉답됐다.** 주입한 system prompt 만으로 앱 기능을 인지한다는 요구가 실증됐다.
+- (2)에서 2계층이 먼저 막았고, 뚫렸더라도 1계층이 막았을 것이다.
+
+### allowlist 가 안전한 방향이고 denylist 는 아니다
+
+실측: **`--tools` 에 존재하지 않는 이름을 넣으면 조용히 무시된다.** `--tools "ZzzBogusTool"` 로
+세션이 정상 시작됐다. 방향이 중요하다.
+
+- **allowlist 오타 → 능력을 잃는다** (안전한 실패)
+- **denylist 오타 → 구멍이 남는다** (위험한 실패)
+
+그래서 `--tools` 가 CLI 층의 1차 수단이고, `permissions.json` 의 deny 목록은 보조다. deny 목록은
+원리적으로 완전할 수 없다 — 허용된 명령도 휘어진다 (`find -exec`, `awk 'system(...)'`, 셸 내장).
+**그 불완전성이 곧 1계층이 존재하는 이유다.**
+
+### 이 버전의 도구 이름 (실측)
+
+`Agent` `Bash` `Edit` `Read` `Write` `NotebookEdit` `WebFetch` `WebSearch` `Skill` `ToolSearch`
+`TodoWrite` `Monitor` `SendMessage` `Task*` 등. **`Grep`/`Glob` 은 없다** — 검색은 `Bash` 로 간다.
+도구 목록은 버전마다 달라질 수 있으므로 `--tools` 문자열은 CLI 업그레이드 시 재확인 대상이다.
+
+### 의도적으로 남긴 구멍
+
+CLI 자기 상태 디렉토리(`~/.claude`, `~/.codex`)는 **쓰기 가능하게 bind** 한다. OAuth 갱신과 세션
+파일에 필요하다. 그 안의 민감 파일은 2계층의 `Read(...)` deny 규칙으로 가린다.
+
+---
+
+## 앱 기능 인지 — 세션 시작 시 주입
+
+"앱이 지원하는 모든 기능을 따라 찾아보지 않아도 되도록" 이 요구였다. 두 단으로 나눴다.
+
+| 파일 | 언제 읽히나 | 담는 것 |
+|---|---|---|
+| `assets/assist/system-prompt.md` | **매 세션 시작 시 항상** (`--append-system-prompt`) | 기능 전체 요약 — 입력 포맷, 디코더, dock 8종과 단축키, File/View 메뉴, 통계 오버레이, org YUV, ME, BD-rate, 캐시 위치, 수치 해석 주의 |
+| `assets/assist/skills/bd-analyzer/SKILL.md` | 필요할 때 | 값의 출처 표, 거절 사유 표, 저장소 레이아웃, 오독하기 쉬운 통계 |
+
+- `--append-system-prompt-file` 은 `--bare` 설명문에만 나오고 옵션 목록에는 없다. 의존하지 않고
+  **파일을 읽어 `--append-system-prompt <내용>` 으로 넘긴다.** 몇 KB 는 ARG_MAX 에 한참 못 미친다.
+- Codex 에는 `--append-system-prompt` 가 없다. 앱이 첫 메시지 앞에 붙인다.
+- **동기화 규칙**: 메뉴·단축키·거절 문구가 바뀌면 같은 커밋에서 `system-prompt.md` 도 고친다.
+  자신있게 틀린 기능 설명은 없느니만 못하다 — 모델이 그대로 사용자에게 옮긴다.
+
+---
+
 ## 아키텍처
 
 저장소 규칙(우리 코드는 `src/` 아래, upstream 타입 의존은 `src/integration/` 경계에서만)을 따른다.
@@ -166,6 +255,11 @@ UI 는 몰라야 한다.
 | `src/integration/CodexCliBackend.{h,cpp}` | 1회성 + resume 구현 | 있음 |
 | `src/integration/AssistPanelWidget.{h,cpp}` | dock 위젯 — 대화 로그, 입력, 첨부 체크박스, 상태 | 있음 |
 | 패치 `00xx` | `assistDock` (`.ui`) + `View → Dock Panels → Show AI Assistant` (`Ctrl+K`) + MainWindow 배선 | — |
+| `assets/assist/system-prompt.md` | 매 세션 주입되는 앱 기능 레퍼런스 + 정책 | — |
+| `assets/assist/skills/bd-analyzer/SKILL.md` | 필요 시 로드되는 심화 레퍼런스 | — |
+| `assets/assist/permissions.json` | Bash allow/deny, 자격증명 경로 차단 | — |
+| `assets/assist/launch-{claude,codex}.sh` | bwrap 격리를 포함한 실제 실행 레시피 | — |
+| `assets/assist/README.md` | 3계층 설명과 **격리 재검증 절차** | — |
 
 - JSON 파싱은 **`QJsonDocument`** 를 쓴다. Qt6Core 에 이미 있어 새 의존성이 없고, 저장소에 JSON
   라이브러리 선례가 없어 `third_party/` 를 늘리지 않는 편이 낫다. 대신 프로토콜 파싱은 Qt-free 가
@@ -227,16 +321,21 @@ UI 는 몰라야 한다.
 
 ## 단계
 
-| 단계 | 내용 | 산출물 |
+| 단계 | 내용 | 상태 |
 |---|---|---|
-| 1 | `AssistContext` + 직렬화 + Qt-free 단위 테스트 | 컨텍스트 텍스트가 정확한지 고정 |
-| 2 | `ClaudeCliBackend` (Mode A, `--tools ""`) + dock UI + 스트리밍 표시 | "질문하면 답이 온다" |
-| 3 | `AssistContextCollector` + 첨부 체크박스 + 전송 내용 표시 | 이 기능의 실제 가치 |
-| 4 | `CodexCliBackend` (`exec --json --sandbox read-only` + `resume`) | 백엔드 2종 |
-| 5 | Mode B (도구 허용 + 승인 UI) | **별도 결정 필요** — 아래 |
+| 1 | `AssistContext` + 직렬화 + Qt-free 단위 테스트 | **완료** |
+| 1b | 격리 3계층 + 주입 파일 (`assets/assist/`) + 실물 검증 | **완료** |
+| 2 | `ClaudeCliBackend` (`QProcess` + stream-json 파싱) + dock UI + 스트리밍 표시 | 다음 |
+| 3 | `AssistContextCollector` + 첨부 체크박스 + 전송 내용 표시 | 예정 |
+| 4 | `CodexCliBackend` (`exec --json --sandbox read-only` + `resume`) | 예정 |
+| 5 | Mode B (쓰기 허용 + 승인 UI) | **별도 결정 필요** |
 
 1–3 단계까지가 "클릭한 SB 에 대해 물어본다" 를 만족한다. 4 는 독립적이고, 5 는 착수 전에 결정이
 필요하다.
+
+1b 를 1 단계와 함께 한 이유: 격리는 나중에 덧붙이는 것이 아니라 2단계 백엔드가 **처음부터 그
+안에서** 돌아야 하는 전제다. 런처 스크립트가 먼저 있으면 `ClaudeCliBackend` 는 그것을 실행하기만
+하면 된다.
 
 ---
 
@@ -250,8 +349,11 @@ UI 는 몰라야 한다.
 | 취소 | 응답 중 취소가 먹는지, 프로세스가 정리되는지 |
 | CLI 부재 | `PATH` 에서 빼고 실행 → 크래시 없이 이유를 표시하는지 |
 | 인증 실패 | 로그아웃 상태 → 이유를 표시하는지 |
-| 도구 차단 (Mode A) | "이 파일을 지워라" 를 요청 → 도구가 없어 실행되지 않음을 확인 |
-| 회귀 무해성 | dock 추가가 기존 35개 회귀를 깨지 않는지. `25-mainwindow-teardown` 이 특히 중요 |
+| 격리 1계층 | `bwrap` 안에서 `rm`/덮어쓰기가 EROFS 로 실패하고 읽기는 되는지 — **검증 완료** |
+| 격리 2계층 | 런처로 삭제를 요청 → plan mode 가 거부하고 파일이 살아있는지 — **검증 완료** |
+| 기능 인지 | 탐색 없이 `Ctrl+R` 을 즉답하는지 — **검증 완료** |
+| 컨텍스트 문구 | 무손실 / org 미첨부 / 헤더 미파싱이 서로 다르게 읽히는지 — `assist-context` 단위 테스트 |
+| 회귀 무해성 | dock 추가가 기존 회귀 36개를 깨지 않는지. `25-mainwindow-teardown` 이 특히 중요 |
 
 ---
 
@@ -259,7 +361,17 @@ UI 는 몰라야 한다.
 
 - **도구 승인 프로토콜이 미검증이다.** `--output-format stream-json` 에서 도구 사용 승인 요청이
   어떤 이벤트로 오고 어떻게 응답하는지 확인하지 않았다. **Mode B(5단계)의 전제**이므로 착수 전에
-  스파이크가 필요하다. Mode A 는 도구가 없어 이 문제를 만나지 않는다.
+  스파이크가 필요하다. Mode A 는 plan mode 가 대신 거부하므로 이 문제를 만나지 않는다.
+- **`--max-budget-usd` 의 의미가 불분명하다.** 0.30 에서는 사소한 질의가 통과했는데 0.40 에서
+  즉시 `Exceeded USD budget` 으로 끊겼고, 3.00 이 필요했다. 실제 지출이 아니라 사전 추정치와
+  비교하는 것으로 보이나 **확인하지 않았다.** 상태줄에 남은 예산을 표시하려면 먼저 규명해야 한다.
+- **도구 이름 목록은 CLI 버전에 묶여 있다.** `Grep`/`Glob` 이 없는 것도 이 버전의 사실이다.
+  `--tools` 는 모르는 이름을 조용히 무시하므로, CLI 를 올린 뒤 `Read`/`Bash` 가 여전히 유효한지
+  확인하지 않으면 **패널이 조용히 무력해진다.** 런처가 시작 시 도구 유무를 한 번 확인하도록
+  2단계에서 넣는다.
+- **`bwrap` 이 배포 의존성이 된다.** 이 머신에는 `/bin/bwrap` 이 있고 user namespace 도 열려
+  있지만(`user.max_user_namespaces = 510746`), 팀의 다른 머신은 다를 수 있다. 런처는 `bwrap` 이
+  없으면 **격리 없이 도는 대신 거부한다.** RPM 의존성에 `bubblewrap` 을 넣어야 한다.
 - **stream-json 이벤트 스키마도 미검증이다.** 플래그는 `--help` 로 확인했지만 실제 이벤트 타입과
   필드를 눈으로 본 적이 없다. 1단계와 병행해 `claude -p --output-format stream-json` 출력을 한 번
   받아보고 파서를 그 실물에 맞춰야 한다.
