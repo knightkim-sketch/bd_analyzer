@@ -324,6 +324,9 @@ else
     ((skip_count++))
 fi
 
+# RD curve 축 눈금. 틀린 눈금은 그럴듯하게 그려지므로 값으로 고정한다.
+run_test_bda "$ROOT/tests/regression/34-rd-curve-axis-ticks.cpp"
+
 echo
 echo "== MP4 컨테이너 =="
 # Container 탭. 파서는 단위 테스트가 보고, 여기서는 위젯이 파일을 매핑해 트리를 채우는지와

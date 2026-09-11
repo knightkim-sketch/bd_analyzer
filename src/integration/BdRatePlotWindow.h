@@ -34,6 +34,19 @@ namespace bda::integration
  * BD-rate is the integral of that fit - drawing the segments would show a curve the number does not
  * come from.
  */
+/* Axis tick helpers, exposed for the regression test rather than kept private.
+ *
+ * A wrong tick does not look wrong: 42.7 / 45.1 / 47.5 draws as convincingly as 42 / 44 / 46, and
+ * a rate axis labelled at the wrong decade reads as a plausible number. So the values are pinned
+ * by a test instead of by looking at the picture.
+ */
+//!< A round step - 1, 2 or 5 times a power of ten - for `divisions` divisions of a linear range.
+double niceAxisStep(double range, int divisions);
+//!< Round values on a log rate axis (1, 2, 5, 10, ...) lying within [logMin, logMax].
+std::vector<double> logAxisTicks(double logMin, double logMax);
+//!< A rate as a short label: 6435 -> "6.44k".
+QString formatAxisRate(double value);
+
 class BdRateCurvePanel : public QWidget
 {
   Q_OBJECT

@@ -1,6 +1,7 @@
 #include "BdRatePlotWindow.h"
 
 #include <QCheckBox>
+#include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
@@ -59,6 +60,87 @@ QString bdRateText(const std::optional<bdrate::BdRateResult> &result)
 }
 
 } // namespace
+
+/* A round step for a linear axis: 1, 2 or 5 times a power of ten, whichever lands nearest the
+ * requested number of divisions. Ticks at arbitrary fractions of the data range are readable only
+ * by accident - 42.7, 45.1, 47.5 tells you less than 42, 44, 46 does.
+ */
+double niceAxisStep(double range, int divisions)
+{
+  if (!(range > 0.0) || divisions < 1)
+    return 1.0;
+  const auto raw        = range / divisions;
+  const auto magnitude  = std::pow(10.0, std::floor(std::log10(raw)));
+  const auto normalised = raw / magnitude;
+
+  /* Rounded to the *nearest* round number, not up to the next one. Rounding up looks harmless and
+   * is not: a 12 dB PSNR span asks for 2.4 and gets 5, which is two labels on the whole axis.
+   * Measured on the render before this was fixed - 40 and 45, and nothing else.
+   */
+  double step = 10.0;
+  if (normalised < 1.5)
+    step = 1.0;
+  else if (normalised < 3.5)
+    step = 2.0;
+  else if (normalised < 7.5)
+    step = 5.0;
+  return step * magnitude;
+}
+
+/* Tick positions for the rate axis, which is logarithmic.
+ *
+ * Stepping linearly in log space would label 10^3.4 and 10^3.7 - numbers nobody reads. These are
+ * the round values a reader expects on a log scale (1, 2, 5, 10, 20, 50, ...) that fall inside the
+ * visible range. Over a narrow range those three mantissas can yield too few ticks, so a second
+ * pass fills in.
+ */
+std::vector<double> logAxisTicks(double logMin, double logMax)
+{
+  const auto collect = [logMin, logMax](const std::vector<double> &mantissas) {
+    std::vector<double> ticks;
+    const int           first = int(std::floor(logMin));
+    const int           last  = int(std::ceil(logMax));
+    for (int decade = first; decade <= last; ++decade)
+      for (const auto mantissa : mantissas)
+      {
+        const auto value = mantissa * std::pow(10.0, decade);
+        const auto position = std::log10(value);
+        if (position >= logMin && position <= logMax)
+          ticks.push_back(value);
+      }
+    return ticks;
+  };
+
+  auto ticks = collect({1.0, 2.0, 5.0});
+  if (ticks.size() >= 3)
+    return ticks;
+
+  if (auto filled = collect({1.0, 1.5, 2.0, 3.0, 5.0, 7.0}); filled.size() >= 3)
+    return filled;
+
+  /* Still too few. That happens when the whole visible span sits between two round values -
+   * 2100..4800 bits contains no 1/2/5 mantissa at all and would draw a single tick. Over a span
+   * that narrow the axis is effectively linear, so round values *in bits* are both correct and
+   * what a reader expects.
+   */
+  const auto low   = std::pow(10.0, logMin);
+  const auto high  = std::pow(10.0, logMax);
+  const auto step  = niceAxisStep(high - low, 4);
+  ticks.clear();
+  for (double value = std::ceil(low / step) * step; value <= high; value += step)
+    ticks.push_back(value);
+  return ticks;
+}
+
+//!< Short enough for a narrow panel: 6435 -> "6.44k", 1200000 -> "1.2M".
+QString formatAxisRate(double value)
+{
+  if (value >= 1e6)
+    return QString::number(value / 1e6, 'g', 3) + "M";
+  if (value >= 1e3)
+    return QString::number(value / 1e3, 'g', 3) + "k";
+  return QString::number(value, 'g', 3);
+}
 
 // ---------------------------------------------------------------------------------------------
 // BdRateCurvePanel
@@ -131,23 +213,82 @@ void BdRateCurvePanel::paintEvent(QPaintEvent *)
   yMin -= yPad;
   yMax += yPad;
 
-  const QRect plot(48, 22, this->width() - 60, this->height() - 60);
-  painter.drawLine(plot.bottomLeft(), plot.bottomRight());
-  painter.drawLine(plot.topLeft(), plot.bottomLeft());
-  painter.drawText(QRect(plot.left(), plot.bottom() + 2, plot.width(), 14),
-                   Qt::AlignCenter,
-                   "bits + 1 (log)");
-  painter.save();
-  painter.translate(12, plot.center().y());
-  painter.rotate(-90);
-  painter.drawText(QRect(-50, -10, 100, 14), Qt::AlignCenter, "PSNR (dB)");
-  painter.restore();
+  const QRect plot(52, 22, this->width() - 64, this->height() - 64);
 
   const auto toPixel = [&](double rate, double psnr) {
     const auto x = (std::log10(rate) - xMin) / (xMax - xMin);
     const auto y = (psnr - yMin) / (yMax - yMin);
     return QPointF(plot.left() + x * plot.width(), plot.bottom() - y * plot.height());
   };
+
+  /* Ticks before the curves, so the grid sits under the data rather than over it.
+   *
+   * Both axes are labelled in the reader's units, not the plotting ones: the rate axis is drawn in
+   * log space but labelled with bits, because "3.8" on a log axis is not a number anyone can use.
+   */
+  auto gridColour = pen;
+  gridColour.setAlpha(40);
+  const QFontMetrics metrics(painter.font());
+  constexpr int      kTick = 4;
+
+  // --- rate, logarithmic ---------------------------------------------------------------------
+  painter.setPen(pen);
+  int lastLabelRight = plot.left() - 1000;
+  for (const auto rate : logAxisTicks(xMin, xMax))
+  {
+    const auto x = toPixel(rate, yMin).x();
+
+    painter.setPen(gridColour);
+    painter.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()));
+    painter.setPen(pen);
+    painter.drawLine(QPointF(x, plot.bottom()), QPointF(x, plot.bottom() + kTick));
+
+    /* Skip a label that would collide with the one before it. A narrow panel can hold more ticks
+     * than legible numbers, and overlapping text is worse than a bare tick.
+     */
+    const auto text  = formatAxisRate(rate);
+    const auto width = metrics.horizontalAdvance(text);
+    const auto left  = int(x) - width / 2;
+    if (left > lastLabelRight + 6)
+    {
+      painter.drawText(QRect(left, plot.bottom() + kTick + 1, width, 12),
+                       Qt::AlignHCenter | Qt::AlignTop,
+                       text);
+      lastLabelRight = left + width;
+    }
+  }
+
+  // --- PSNR, linear ---------------------------------------------------------------------------
+  const auto psnrStep = niceAxisStep(yMax - yMin, 5);
+  for (double value = std::ceil(yMin / psnrStep) * psnrStep; value <= yMax; value += psnrStep)
+  {
+    const auto y = toPixel(std::pow(10.0, xMin), value).y();
+
+    painter.setPen(gridColour);
+    painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y));
+    painter.setPen(pen);
+    painter.drawLine(QPointF(plot.left() - kTick, y), QPointF(plot.left(), y));
+
+    // One decimal only when the step needs it - "44" beats "44.0" in a 52 pixel margin.
+    const auto text = QString::number(value, 'f', psnrStep < 1.0 ? 1 : 0);
+    painter.drawText(QRect(0, int(y) - 7, plot.left() - kTick - 2, 14),
+                     Qt::AlignRight | Qt::AlignVCenter,
+                     text);
+  }
+
+  painter.setPen(pen);
+  painter.drawLine(plot.bottomLeft(), plot.bottomRight());
+  painter.drawLine(plot.topLeft(), plot.bottomLeft());
+  // Below the tick labels, not level with them - at +16 the title sat in the same row and the
+  // axis read "3k 5k bits + 1 (log) 7k 10k".
+  painter.drawText(QRect(plot.left(), plot.bottom() + 20, plot.width(), 14),
+                   Qt::AlignCenter,
+                   "bits + 1 (log)");
+  painter.save();
+  painter.translate(11, plot.center().y());
+  painter.rotate(-90);
+  painter.drawText(QRect(-50, -10, 100, 14), Qt::AlignCenter, "PSNR (dB)");
+  painter.restore();
 
   int legendRow = 0;
   for (std::size_t index = 0; index < this->curves.size(); ++index)
