@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# Launch the Claude CLI for the bd_analyzer assistant panel, read-only.
+# Launch the Claude CLI for the bd_analyzer assistant panel.
 #
 # The app spawns this rather than the CLI directly, so the whole confinement recipe sits in one
 # reviewable file. Three layers, in order of how much they can be argued with:
 #
-#   1. Kernel      - bwrap mounts the filesystem read-only. Nothing the model or the CLI does can
-#                    write, delete, or rename outside the few paths bound writable below. Verified:
-#                    rm and overwrite both fail with EROFS, reads succeed.
-#   2. CLI         - plan mode plus a tool allowlist that omits Write/Edit/ExitPlanMode, so the
-#                    model cannot even ask to leave read-only.
+#   1. Kernel      - bwrap mounts the filesystem read-only, and in edit mode binds the working
+#                    directory (and only that) writable on top. Nothing the model or the CLI does
+#                    can write or delete anywhere else. Verified: under the edit bind, writing
+#                    outside the workspace and removing a system binary both fail with EROFS.
+#   2. CLI         - a tool allowlist. In readonly mode it contains no writer at all and plan mode
+#                    blocks the rest; in edit mode Write and Edit join it, and layer 1 is what
+#                    keeps them inside the working directory.
 #   3. Prompt      - system-prompt.md states the policy. Guidance, not a boundary; it is here so
 #                    the model explains a refusal instead of fighting it.
 #
@@ -32,12 +34,44 @@ BUDGET="${BDA_ASSIST_BUDGET_USD:-5.00}"
 OUT_FORMAT="${BDA_ASSIST_OUTPUT_FORMAT:-stream-json}"
 IN_FORMAT="${BDA_ASSIST_INPUT_FORMAT:-stream-json}"
 
+# readonly | edit. The panel sets this; edit is the default because reading a stream and then not
+# being able to fix the code that produced it is the shape of the job here.
+MODE="${BDA_ASSIST_MODE:-edit}"
+case "$MODE" in
+    readonly|edit) ;;
+    *) echo "bd_analyzer: BDA_ASSIST_MODE must be 'readonly' or 'edit', got '$MODE'" >&2; exit 2 ;;
+esac
+
 command -v claude >/dev/null 2>&1 || { echo "bd_analyzer: 'claude' not found in PATH" >&2; exit 127; }
 command -v bwrap  >/dev/null 2>&1 || { echo "bd_analyzer: 'bwrap' not found - refusing to run unsandboxed" >&2; exit 127; }
 
 # The CLI needs its own state directory writable: OAuth refresh, session files, plan scratch.
 # Everything else stays read-only. This is the one hole in layer 1 and it is deliberate.
+#
+# /tmp is a private tmpfs, not a bind of the host's. It used to be `--bind /tmp /tmp`, which
+# quietly made every file under /tmp writable - measured: in edit mode the assistant wrote to a
+# path under /tmp that was nowhere near the working directory, and correctly reported that the
+# boundary had not held. A tmpfs gives the CLI the scratch space it needs and nothing else.
 STATE="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+
+# What separates the two modes, and what does not.
+#
+# Changes: whether the working directory is writable, and whether Write/Edit exist.
+#
+# Does not change: everything outside the working directory stays read-only in both modes, so
+# /etc, /usr and the user's other projects are untouchable either way. Deletion and system
+# administration also stay denied by permissions.json in both - "the assistant may edit the files
+# it is working on" is a different request from "the assistant may run rm", and only the first was
+# made.
+if [[ "$MODE" == "edit" ]]; then
+    WORKSPACE_BIND=(--bind "$WORKDIR" "$WORKDIR")
+    TOOLS="Read,Bash,Write,Edit"
+    PERMISSION_MODE="acceptEdits"
+else
+    WORKSPACE_BIND=()
+    TOOLS="Read,Bash"
+    PERMISSION_MODE="plan"
+fi
 
 # --verbose is not optional here: `--print --output-format=stream-json` is rejected without it
 # (measured - "requires --verbose"). Token-level streaming and message acknowledgement likewise
@@ -55,7 +89,8 @@ exec bwrap \
     --tmpfs /run \
     --tmpfs /var/tmp \
     --bind "$STATE" "$STATE" \
-    --bind /tmp /tmp \
+    --tmpfs /tmp \
+    "${WORKSPACE_BIND[@]}" \
     --unshare-pid --unshare-ipc --unshare-uts \
     --die-with-parent \
     --chdir "$WORKDIR" \
@@ -64,8 +99,8 @@ exec bwrap \
         --output-format "$OUT_FORMAT" \
         --input-format "$IN_FORMAT" \
         "${STREAM_ARGS[@]}" \
-        --permission-mode plan \
-        --tools "Read,Bash" \
+        --permission-mode "$PERMISSION_MODE" \
+        --tools "$TOOLS" \
         --strict-mcp-config \
         --setting-sources user \
         --settings "$HERE/permissions.json" \

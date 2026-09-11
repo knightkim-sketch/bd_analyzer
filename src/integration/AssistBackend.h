@@ -43,18 +43,37 @@ struct AssistEvent
  */
 AssistEvent parseAssistEvent(const QByteArray &line);
 
-/* The tools a read-only session is allowed to have. Everything else is a finding.
+/* What the panel asked the session to be.
+ *
+ * ReadOnly can look at anything and change nothing. Edit can additionally create and modify files
+ * inside the working directory - and only there, because the sandbox around the CLI binds that one
+ * directory writable over an otherwise read-only filesystem. Neither can delete, administer the
+ * system, or touch another project.
+ */
+enum class AssistMode
+{
+  ReadOnly,
+  Edit,
+};
+
+/* The tools a session in this mode is allowed to have. Everything else is a finding.
  *
  * An allowlist rather than a denylist, and the difference is not theoretical: `--tools` constrains
  * only the built-in set, so MCP servers from the user's own configuration attach separately and
  * bring write-capable tools with them. Measured on a two-turn session before --strict-mcp-config
  * was added: the second turn arrived holding Confluence page-creation and Drive file-creation
  * tools. They connect asynchronously, so the first turn looked clean.
+ *
+ * Edit mode widens this by exactly two names. It does not become a free-for-all: the guard still
+ * fires on anything else, which is what catches an MCP server reappearing.
  */
-QStringList readOnlyToolAllowlist();
+QStringList toolAllowlist(AssistMode mode);
 
-//!< Whatever in `tools` is not on the allowlist. Empty means the session came up as intended.
-QStringList unexpectedTools(const QStringList &tools);
+//!< Whatever in `tools` is not allowed in this mode. Empty means the session came up as intended.
+QStringList unexpectedTools(const QStringList &tools, AssistMode mode);
+
+//!< "readonly" / "edit", as the launcher's BDA_ASSIST_MODE expects them.
+QString assistModeName(AssistMode mode);
 
 //!< A user turn in the shape the CLI's stream-json input expects, newline terminated.
 QByteArray encodeUserMessage(const QString &text);

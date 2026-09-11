@@ -103,6 +103,11 @@ void ClaudeCliBackend::start()
   auto environment = QProcessEnvironment::systemEnvironment();
   if (!this->workingDirectory.isEmpty())
     environment.insert(QStringLiteral("BDA_ASSIST_WORKDIR"), this->workingDirectory);
+  /* The mode is passed rather than baked in, because it decides how the launcher builds the
+   * sandbox - which directory, if any, is bound writable - and that has to happen before the CLI
+   * starts.
+   */
+  environment.insert(QStringLiteral("BDA_ASSIST_MODE"), assistModeName(this->mode));
   this->process->setProcessEnvironment(environment);
   if (!this->workingDirectory.isEmpty())
     this->process->setWorkingDirectory(this->workingDirectory);

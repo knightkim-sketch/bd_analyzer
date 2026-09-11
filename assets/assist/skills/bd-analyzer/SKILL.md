@@ -78,4 +78,16 @@ explain the cause rather than suggesting a workaround.
 - A "successful" build can still hide a file that never compiled — stale objects mask compile
   errors. Clean-rebuild before blaming a change.
 
-Do not run builds or tests yourself; you are read-only. Tell the user the command to run.
+**Do not run builds or tests yourself**, in either mode. `make`, `cmake` and the package scripts
+are refused, and a build writes into `build/` and regenerates patched upstream sources — far
+beyond the edit you were asked for. Tell the user the command to run and let them run it.
+
+## Editing this repository
+
+In edit mode, two rules matter more than usual here:
+
+- **Never edit `third_party/yuview/upstream/` directly.** Every upstream change is a numbered
+  patch in `third_party/yuview/patches/`. An edit in the upstream tree is silently lost the next
+  time the patches are re-applied. Describe the patch instead.
+- **Keep the diff minimal.** Fix what was asked and leave the surrounding code alone; RTL and
+  analyzer changes here are re-reviewed and re-synthesised, so incidental refactoring is a cost.

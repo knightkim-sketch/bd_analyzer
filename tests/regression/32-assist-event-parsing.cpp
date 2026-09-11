@@ -26,6 +26,17 @@ void check(bool ok, const std::string &what)
     ++g_failures;
 }
 
+template <typename T> void checkEqual(T got, T want, const std::string &what)
+{
+  const bool ok = got == want;
+  std::cout << (ok ? "  ok    " : "  FAIL  ") << what;
+  if (!ok)
+    std::cout << "  (mismatch)";
+  std::cout << std::endl;
+  if (!ok)
+    ++g_failures;
+}
+
 using namespace bda::integration;
 } // namespace
 
@@ -45,25 +56,58 @@ int main(int argc, char **argv)
     check(event.model == "claude-sonnet-5", "model is read out");
     check(event.sessionId.startsWith("9a7720e7"), "session id is read out");
     check(event.tools.size() == 2, "both tools are read out");
-    check(unexpectedTools(event.tools).isEmpty(), "Bash+Read is an expected read-only session");
+    check(unexpectedTools(event.tools, AssistMode::ReadOnly).isEmpty(),
+          "Bash+Read is an expected read-only session");
   }
 
-  // --- the MCP hole -----------------------------------------------------------------------
+  // --- the MCP hole, in both modes ---------------------------------------------------------
   {
     const QStringList withMcp{"Bash",
                               "Read",
                               "mcp__claude_ai_Atlassian__createConfluencePage",
                               "mcp__claude_ai_Google_Drive__create_file"};
-    const auto        unexpected = unexpectedTools(withMcp);
-    check(unexpected.size() == 2, "MCP write tools are reported as unexpected");
-    check(unexpected.contains("mcp__claude_ai_Google_Drive__create_file"),
-          "the Drive file-creation tool is named");
+    for (const auto mode : {AssistMode::ReadOnly, AssistMode::Edit})
+    {
+      const auto unexpected = unexpectedTools(withMcp, mode);
+      check(unexpected.size() == 2, "MCP write tools are unexpected in " +
+                                        assistModeName(mode).toStdString() + " mode");
+      check(unexpected.contains("mcp__claude_ai_Google_Drive__create_file"),
+            "and the Drive file-creation tool is named");
+    }
+  }
+
+  // --- the modes differ by exactly two names ----------------------------------------------
+  {
+    check(!unexpectedTools({"Bash", "Read", "Write"}, AssistMode::ReadOnly).isEmpty(),
+          "Write is unexpected in read-only mode");
+    check(!unexpectedTools({"Bash", "Read", "Edit"}, AssistMode::ReadOnly).isEmpty(),
+          "Edit is unexpected in read-only mode");
+
+    check(unexpectedTools({"Bash", "Read", "Write", "Edit"}, AssistMode::Edit).isEmpty(),
+          "Write and Edit are expected in edit mode");
+
+    /* Edit mode widens the list, it does not switch the guard off. Deletion and shell escapes are
+     * not granted by "the assistant may edit files", and an extra built-in arriving unannounced
+     * is exactly the MCP failure in a different coat.
+     */
+    check(!unexpectedTools({"Bash", "Read", "Write", "Edit", "NotebookEdit"}, AssistMode::Edit)
+               .isEmpty(),
+          "an extra built-in is still a finding in edit mode");
+    check(!unexpectedTools({"Bash", "Read", "Write", "Edit", "WebFetch"}, AssistMode::Edit)
+               .isEmpty(),
+          "so is a network tool");
+
+    checkEqual(toolAllowlist(AssistMode::Edit).size(),
+               toolAllowlist(AssistMode::ReadOnly).size() + 2,
+               "edit mode adds exactly two tools");
+
+    for (const auto mode : {AssistMode::ReadOnly, AssistMode::Edit})
+      check(unexpectedTools({}, mode).isEmpty(), "an empty tool set is not a finding");
   }
   {
-    // A built-in that would let the model edit files must be caught by the same guard.
-    check(!unexpectedTools({"Bash", "Read", "Write"}).isEmpty(), "Write is unexpected");
-    check(!unexpectedTools({"Bash", "Read", "Edit"}).isEmpty(), "Edit is unexpected");
-    check(unexpectedTools({}).isEmpty(), "an empty tool set is not a finding");
+    checkEqual(assistModeName(AssistMode::Edit), QString("edit"), "the edit mode name matches the launcher");
+    checkEqual(assistModeName(AssistMode::ReadOnly), QString("readonly"),
+               "and so does the read-only one");
   }
 
   // --- streamed text ----------------------------------------------------------------------

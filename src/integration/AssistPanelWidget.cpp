@@ -1,6 +1,7 @@
 #include "integration/AssistPanelWidget.h"
 
 #include <QCheckBox>
+#include <QComboBox>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -29,6 +30,21 @@ std::string toStd(const QString &text)
 AssistPanelWidget::AssistPanelWidget(QWidget *parent) : QWidget(parent)
 {
   auto *outer = new QVBoxLayout(this);
+
+  /* The mode is in front of the conversation rather than buried in settings, because it is the
+   * one control that changes what the assistant is allowed to do to the user's files.
+   */
+  auto *modeRow = new QHBoxLayout();
+  modeRow->addWidget(new QLabel(tr("Mode:"), this));
+  this->modeBox = new QComboBox(this);
+  this->modeBox->addItem(tr("Edit files in this project"), int(AssistMode::Edit));
+  this->modeBox->addItem(tr("Read only"), int(AssistMode::ReadOnly));
+  this->modeBox->setToolTip(tr("Edit mode lets the assistant create and modify files inside the "
+                               "working directory. Everything outside it stays read-only in both "
+                               "modes, and neither mode can delete files or change the system."));
+  modeRow->addWidget(this->modeBox);
+  modeRow->addStretch();
+  outer->addLayout(modeRow);
 
   this->status = new QLabel(this);
   this->status->setWordWrap(true);
@@ -90,6 +106,11 @@ AssistPanelWidget::AssistPanelWidget(QWidget *parent) : QWidget(parent)
 
   connect(this->sendButton, &QPushButton::clicked, this, &AssistPanelWidget::sendQuestion);
   connect(this->stopButton, &QPushButton::clicked, this, [this]() { this->backend->cancel(); });
+  connect(this->modeBox,
+          QOverload<int>::of(&QComboBox::currentIndexChanged),
+          this,
+          [this](int) { this->applyMode(); });
+  this->applyMode();
 
   /* Say up front why the panel cannot work, the way the ME panel does when no original is
    * attached. A disabled Send with no explanation is the thing this repository keeps not doing.
@@ -99,14 +120,44 @@ AssistPanelWidget::AssistPanelWidget(QWidget *parent) : QWidget(parent)
     this->status->setText(reason);
     this->sendButton->setEnabled(false);
     this->input->setEnabled(false);
+    this->modeBox->setEnabled(false);
   }
-  else
-  {
-    this->status->setText(tr("Read-only. It can read and search files, but cannot change "
-                             "anything. Ask a question to start a session."));
-  }
+  // The available case is described by applyMode(), which ran just above.
 
   this->refreshSentPreview();
+}
+
+void AssistPanelWidget::applyMode()
+{
+  this->mode = static_cast<AssistMode>(this->modeBox->currentData().toInt());
+
+  /* A running session was built with the old mode's sandbox, so it cannot be switched in place.
+   * End it and let the next question start a fresh one rather than silently answering in a mode
+   * the control no longer shows.
+   */
+  if (this->backend->running())
+  {
+    this->backend->cancel();
+    this->appendLog(tr("--- mode changed to %1; the next question starts a new session ---")
+                        .arg(assistModeName(this->mode)));
+  }
+
+  if (auto *claude = qobject_cast<ClaudeCliBackend *>(this->backend))
+    claude->setMode(this->mode);
+
+  /* A tool warning belongs to the session that raised it. A new session is a new judgement, so
+   * clearing it here is what lets the user recover instead of having to reopen the panel.
+   */
+  this->toolWarning.clear();
+  if (this->backend->unavailableReason().isEmpty())
+  {
+    this->sendButton->setEnabled(true);
+    this->status->setText(this->mode == AssistMode::Edit
+                              ? tr("Edit mode. It can read anywhere and change files inside this "
+                                   "project. It cannot delete files or touch the system.")
+                              : tr("Read only. It can read and search files, but cannot change "
+                                   "anything."));
+  }
 }
 
 void AssistPanelWidget::setStream(const QString &path,
@@ -221,7 +272,7 @@ void AssistPanelWidget::handleEvent(const AssistEvent &event)
   case AssistEvent::Kind::SessionStarted:
   {
     this->sessionId = event.sessionId;
-    if (const auto unexpected = unexpectedTools(event.tools); !unexpected.isEmpty())
+    if (const auto unexpected = unexpectedTools(event.tools, this->mode); !unexpected.isEmpty())
     {
       /* Refuse rather than warn and continue. This fires when something outside our flags put a
        * tool in the session - the measured case is MCP servers from the user's configuration

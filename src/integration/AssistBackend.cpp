@@ -8,18 +8,33 @@
 namespace bda::integration
 {
 
-QStringList readOnlyToolAllowlist()
+QStringList toolAllowlist(AssistMode mode)
 {
   /* Read is the file reader; Bash is here because this CLI build has no Grep or Glob tool, so
    * searching a tree at all means a shell. What makes that acceptable is the layers around it -
-   * plan mode, the permission rules, and a read-only mount namespace - not this list.
+   * the permission rules and the mount namespace - not this list.
    */
-  return {QStringLiteral("Read"), QStringLiteral("Bash")};
+  QStringList allowed{QStringLiteral("Read"), QStringLiteral("Bash")};
+
+  /* Edit mode adds the two writers and nothing else. Deletion is not among them: Write and Edit
+   * create and modify files, and `rm` stays denied by the permission rules, because "the
+   * assistant may edit the files it is working on" is a different request from "the assistant may
+   * delete things".
+   */
+  if (mode == AssistMode::Edit)
+    allowed << QStringLiteral("Write") << QStringLiteral("Edit");
+
+  return allowed;
 }
 
-QStringList unexpectedTools(const QStringList &tools)
+QString assistModeName(AssistMode mode)
 {
-  const auto  allowed = readOnlyToolAllowlist();
+  return mode == AssistMode::Edit ? QStringLiteral("edit") : QStringLiteral("readonly");
+}
+
+QStringList unexpectedTools(const QStringList &tools, AssistMode mode)
+{
+  const auto  allowed = toolAllowlist(mode);
   QStringList unexpected;
   for (const auto &tool : tools)
     if (!allowed.contains(tool))

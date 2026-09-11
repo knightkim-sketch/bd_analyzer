@@ -14,6 +14,7 @@
 #include "integration/AssistBackend.h"
 
 class QCheckBox;
+class QComboBox;
 class QGroupBox;
 class QLabel;
 class QPlainTextEdit;
@@ -49,8 +50,12 @@ private:
   QString     composeMessage(const QString &question) const;
   assist::AssistContext attachedContext() const;
 
+  //!< Changing the mode has to restart the session; the sandbox is built at launch.
+  void applyMode();
+
   AssistBackend *backend{};
 
+  QComboBox      *modeBox{};
   QLabel         *status{};
   QPlainTextEdit *log{};
   QGroupBox      *sentBox{};
@@ -73,9 +78,10 @@ private:
    */
   QString toolWarning;
 
-  bool    streaming{};
-  double  lastCostUsd{};
-  QString sessionId;
+  bool       streaming{};
+  double     lastCostUsd{};
+  QString    sessionId;
+  AssistMode mode{AssistMode::Edit};
 };
 
 } // namespace bda::integration
