@@ -104,7 +104,26 @@ int main(int argc, char **argv)
     for (const auto mode : {AssistMode::ReadOnly, AssistMode::Edit})
       check(unexpectedTools({}, mode).isEmpty(), "an empty tool set is not a finding");
   }
+
+  // --- full mode turns the guard off, and says so rather than pretending -------------------
   {
+    /* The point of full mode is that nothing is refused, so the guard must not fire on it - a
+     * guard that blocks sending in the mode whose purpose is not to block would make the mode
+     * useless. What matters is that this is true *only* for Full.
+     */
+    check(toolAllowlist(AssistMode::Full).isEmpty(), "full mode has no allowlist");
+    check(unexpectedTools({"Bash", "Read", "Write", "Edit", "WebFetch", "WebSearch"},
+                          AssistMode::Full)
+              .isEmpty(),
+          "the tools the download-and-measure workflow needs are not a finding in full mode");
+    check(unexpectedTools({"mcp__anything__at_all"}, AssistMode::Full).isEmpty(),
+          "nor is anything else, which is what full mode means");
+    check(!unexpectedTools({"WebFetch"}, AssistMode::Edit).isEmpty(),
+          "while edit mode still reports the same tool");
+  }
+  {
+    checkEqual(assistModeName(AssistMode::Full), QString("full"),
+               "the full mode name matches the launcher");
     checkEqual(assistModeName(AssistMode::Edit), QString("edit"), "the edit mode name matches the launcher");
     checkEqual(assistModeName(AssistMode::ReadOnly), QString("readonly"),
                "and so does the read-only one");

@@ -81,7 +81,7 @@ private:
   bool       streaming{};
   double     lastCostUsd{};
   QString    sessionId;
-  AssistMode mode{AssistMode::Edit};
+  AssistMode mode{AssistMode::Full};
 };
 
 } // namespace bda::integration

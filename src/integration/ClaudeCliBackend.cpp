@@ -67,13 +67,14 @@ QString ClaudeCliBackend::unavailableReason() const
   if (QStandardPaths::findExecutable(QStringLiteral("claude")).isEmpty())
     return QStringLiteral("The 'claude' CLI is not on PATH. Install it and sign in; the panel "
                           "cannot provide it.");
-  /* Refuse rather than run unconfined. The tool allowlist and plan mode both live inside the
-   * process being confined, so without the sandbox there is no layer left that the model cannot
-   * argue with.
+  /* Refuse rather than run a confined mode unconfined: the tool allowlist and the permission rules
+   * both live inside the process being confined, so without the sandbox there is no layer left
+   * that the model cannot argue with. Full mode is unconfined by definition and needs no bwrap.
    */
-  if (QStandardPaths::findExecutable(QStringLiteral("bwrap")).isEmpty())
-    return QStringLiteral("'bwrap' (bubblewrap) is not installed. The assistant runs read-only "
-                          "inside it, so the panel will not start without it.");
+  if (this->mode != AssistMode::Full &&
+      QStandardPaths::findExecutable(QStringLiteral("bwrap")).isEmpty())
+    return QStringLiteral("'bwrap' (bubblewrap) is not installed, and the read-only and edit modes "
+                          "run inside it. Install it, or switch the panel to Full access.");
   return {};
 }
 

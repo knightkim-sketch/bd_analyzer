@@ -10,6 +10,10 @@ namespace bda::integration
 
 QStringList toolAllowlist(AssistMode mode)
 {
+  // Full mode has no allowlist. An empty list means "not restricted", not "no tools".
+  if (mode == AssistMode::Full)
+    return {};
+
   /* Read is the file reader; Bash is here because this CLI build has no Grep or Glob tool, so
    * searching a tree at all means a shell. What makes that acceptable is the layers around it -
    * the permission rules and the mount namespace - not this list.
@@ -29,11 +33,23 @@ QStringList toolAllowlist(AssistMode mode)
 
 QString assistModeName(AssistMode mode)
 {
-  return mode == AssistMode::Edit ? QStringLiteral("edit") : QStringLiteral("readonly");
+  switch (mode)
+  {
+  case AssistMode::Full:
+    return QStringLiteral("full");
+  case AssistMode::Edit:
+    return QStringLiteral("edit");
+  case AssistMode::ReadOnly:
+    break;
+  }
+  return QStringLiteral("readonly");
 }
 
 QStringList unexpectedTools(const QStringList &tools, AssistMode mode)
 {
+  if (mode == AssistMode::Full)
+    return {}; // Nothing is unexpected when nothing is restricted.
+
   const auto  allowed = toolAllowlist(mode);
   QStringList unexpected;
   for (const auto &tool : tools)

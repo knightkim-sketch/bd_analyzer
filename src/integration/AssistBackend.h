@@ -54,6 +54,16 @@ enum class AssistMode
 {
   ReadOnly,
   Edit,
+
+  /* No confinement at all: no sandbox, every built-in tool, no permission ruleset.
+   *
+   * This exists because the job the panel is actually for does not fit inside a box. Finding a
+   * test sequence on the web, downloading it, laying out a playlist, running an encoder sweep and
+   * measuring BD-rate is a chain where any single refusal stops the whole thing - and every link
+   * of it is ordinary work for this application. The narrower modes stay for when the assistant is
+   * only being asked to explain what is on screen.
+   */
+  Full,
 };
 
 /* The tools a session in this mode is allowed to have. Everything else is a finding.
@@ -66,13 +76,16 @@ enum class AssistMode
  *
  * Edit mode widens this by exactly two names. It does not become a free-for-all: the guard still
  * fires on anything else, which is what catches an MCP server reappearing.
+ *
+ * Full mode has no allowlist - it returns empty, and unexpectedTools() reports nothing. That is
+ * the point of it, and the guard being off is stated in the panel rather than implied.
  */
 QStringList toolAllowlist(AssistMode mode);
 
-//!< Whatever in `tools` is not allowed in this mode. Empty means the session came up as intended.
+//!< Whatever in `tools` is not allowed in this mode. Always empty in Full mode.
 QStringList unexpectedTools(const QStringList &tools, AssistMode mode);
 
-//!< "readonly" / "edit", as the launcher's BDA_ASSIST_MODE expects them.
+//!< "readonly" / "edit" / "full", as the launcher's BDA_ASSIST_MODE expects them.
 QString assistModeName(AssistMode mode);
 
 //!< A user turn in the shape the CLI's stream-json input expects, newline terminated.

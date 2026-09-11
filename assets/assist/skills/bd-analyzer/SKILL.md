@@ -78,16 +78,106 @@ explain the cause rather than suggesting a workaround.
 - A "successful" build can still hide a file that never compiled — stale objects mask compile
   errors. Clean-rebuild before blaming a change.
 
-**Do not run builds or tests yourself**, in either mode. `make`, `cmake` and the package scripts
-are refused, and a build writes into `build/` and regenerates patched upstream sources — far
-beyond the edit you were asked for. Tell the user the command to run and let them run it.
+In **full** mode you can run these yourself. In the narrower modes `make` and the package scripts
+are refused — tell the user the command instead.
+
+A build takes minutes and rewrites `build/` and the patched upstream tree, so say you are starting
+one rather than doing it silently.
 
 ## Editing this repository
 
-In edit mode, two rules matter more than usual here:
-
 - **Never edit `third_party/yuview/upstream/` directly.** Every upstream change is a numbered
   patch in `third_party/yuview/patches/`. An edit in the upstream tree is silently lost the next
-  time the patches are re-applied. Describe the patch instead.
+  time the patches are re-applied — write or amend a patch instead, then verify it with
+  `git apply --reverse --check` from inside the submodule.
 - **Keep the diff minimal.** Fix what was asked and leave the surrounding code alone; RTL and
   analyzer changes here are re-reviewed and re-synthesised, so incidental refactoring is a cost.
+
+## Measuring an RD curve and BD-rate
+
+The usual job. Anything below that writes or downloads needs **full** mode.
+
+### 1. Get a source sequence
+
+Standard test clips come as raw `.y4m` or `.yuv`. Common sources are `media.xiph.org/video/derf/`
+and the AOM test set. Download into a directory with room — decoded YUV and encoder sweeps run to
+gigabytes — and check the size before starting:
+
+```bash
+curl -L -o /data/work/seq.y4m https://media.xiph.org/video/derf/y4m/<clip>.y4m
+ffprobe -hide_banner /data/work/seq.y4m        # confirm resolution, frame count, pixel format
+df -h /data/work
+```
+
+Prefer `.y4m`: it carries its own resolution and frame rate, so nothing has to be guessed. A raw
+`.yuv` needs the geometry supplied by hand everywhere it is used.
+
+### 2. Encode the sweep
+
+One curve is one encoder configuration at several rate points. Four is the number the standard
+BD-rate uses; two is the minimum anything can be computed from.
+
+```bash
+for q in 20 32 43 55; do
+  ffmpeg -hide_banner -loglevel error -y -i /data/work/seq.y4m \
+         -c:v libaom-av1 -crf $q -cpu-used 4 -g 60 -pix_fmt yuv420p \
+         /data/work/curveA_q$q.ivf
+done
+```
+
+Keep everything except the rate point identical within a curve, and change exactly one thing for
+the curve you are comparing against. Use `.ivf` (or `.av1` / `.obu`) — the analyzer's per-block
+statistics come from the dav1d analyzer decoder, and an MP4 goes through the FFmpeg fallback
+instead, which reports no block statistics at all.
+
+### 3. Measure it in the app
+
+The BD-rate is computed in the GUI, not from a command line — there is no headless entry point.
+
+1. Add the sweep and the source to the playlist (`File → Open`, or start the app with the files as
+   arguments: `bd-analyzer /data/work/curveA_q*.ivf /data/work/seq.y4m`).
+2. Select the streams of **one** curve plus the source, and press `Ctrl+R`.
+3. Select the second curve plus the same source, press `Ctrl+R` again — it becomes a second curve
+   in the same window.
+4. Pick the anchor with the radio button in the group table. BD-rate is reported against it.
+
+Read **Statistics that are easy to misread** above before reporting the numbers.
+
+### Measuring it without the GUI
+
+For a figure in the terminal, measure PSNR with ffmpeg and feed the points to the analyzer's own
+maths — same code the panel uses, so the answers agree.
+
+```bash
+# PSNR per rate point. Note the verbosity: the summary line is printed at *info* level, so
+# -loglevel error (the habit everywhere else in this repo) silently produces an empty result.
+ffmpeg -hide_banner -i curveA_q20.ivf -i src.y4m -lavfi psnr -f null - 2>&1 \
+    | grep -o 'y:[0-9.]*' | head -1
+```
+
+Use the **y:** figure, not `average:` — the average is a weighted mix of Y, U and V, and BD-rate is
+conventionally reported on luma. Rate can be the file size in bytes; BD-rate is a ratio, so the
+unit only has to be consistent within one comparison.
+
+Then call `bdrate(anchor, test)` from `src/bdrate/BdRateMath.h` with the `(rate, psnr)` pairs —
+`tests/unit/bdrate-math.cpp` shows the call. Compile it standalone; it needs no Qt:
+
+```bash
+scl enable gcc-toolset-13 -- g++ -std=gnu++2a -I<repo>/src \
+    yours.cpp <repo>/src/bdrate/BdRateMath.cpp -o bdrate_check
+```
+
+Worth knowing what a sane answer looks like: measured on 30 frames of `akiyo_qcif`, four CRF
+points, `-cpu-used 2` against `-cpu-used 8` gave **-13.6 %** at cubic fit. A slower preset buying
+low-double-digit bitrate is the expected shape; a number in the hundreds means the curves were
+mismatched, usually a different source or frame count between them.
+
+### Common ways this goes wrong
+
+| Symptom | Cause |
+|---|---|
+| BD-rate window refuses the selection | The streams are on the FFmpeg fallback — re-encode to `.ivf`, or check the decoder in Properties |
+| "is a single operating point" | Only one stream selected for that curve; a curve needs at least two |
+| "One curve has to describe one grid" | The rate points differ in resolution or superblock size — one of them was encoded with different settings |
+| "No original to measure against" | The source was not in the selection and is not attached with `Load Org YUV` |
+| Most superblocks report `lossless` | Expected on flat synthetic content. Use a real sequence for per-superblock work |

@@ -52,7 +52,7 @@ private:
   QByteArray pending; //!< Partial line left over between reads; the CLI writes one event per line.
   QString    workingDirectory;
   QString    launcher;
-  AssistMode mode{AssistMode::Edit};
+  AssistMode mode{AssistMode::Full};
 };
 
 } // namespace bda::integration

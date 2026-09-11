@@ -37,11 +37,13 @@ AssistPanelWidget::AssistPanelWidget(QWidget *parent) : QWidget(parent)
   auto *modeRow = new QHBoxLayout();
   modeRow->addWidget(new QLabel(tr("Mode:"), this));
   this->modeBox = new QComboBox(this);
+  this->modeBox->addItem(tr("Full access"), int(AssistMode::Full));
   this->modeBox->addItem(tr("Edit files in this project"), int(AssistMode::Edit));
   this->modeBox->addItem(tr("Read only"), int(AssistMode::ReadOnly));
-  this->modeBox->setToolTip(tr("Edit mode lets the assistant create and modify files inside the "
-                               "working directory. Everything outside it stays read-only in both "
-                               "modes, and neither mode can delete files or change the system."));
+  this->modeBox->setToolTip(
+      tr("Full access: no sandbox — downloads, encoder runs, and changes anywhere, as you.\n"
+         "Edit: create and modify files inside this project only; no deletion, no system changes.\n"
+         "Read only: read and search anywhere, change nothing."));
   modeRow->addWidget(this->modeBox);
   modeRow->addStretch();
   outer->addLayout(modeRow);
@@ -152,11 +154,24 @@ void AssistPanelWidget::applyMode()
   if (this->backend->unavailableReason().isEmpty())
   {
     this->sendButton->setEnabled(true);
-    this->status->setText(this->mode == AssistMode::Edit
-                              ? tr("Edit mode. It can read anywhere and change files inside this "
-                                   "project. It cannot delete files or touch the system.")
-                              : tr("Read only. It can read and search files, but cannot change "
-                                   "anything."));
+    switch (this->mode)
+    {
+    case AssistMode::Full:
+      /* Said plainly, every time the mode is selected. This is the one setting where the user
+       * should never be unsure what they turned on.
+       */
+      this->status->setText(tr("Full access — no sandbox. It can download, run encoders and "
+                               "builds, and change or delete anything you can, as you."));
+      break;
+    case AssistMode::Edit:
+      this->status->setText(tr("Edit mode. It can read anywhere and change files inside this "
+                               "project. It cannot delete files or touch the system."));
+      break;
+    case AssistMode::ReadOnly:
+      this->status->setText(tr("Read only. It can read and search files, but cannot change "
+                               "anything."));
+      break;
+    }
   }
 }
 
