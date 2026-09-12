@@ -133,6 +133,13 @@ private:
    */
   bool fillingTable{};
 
+  /* The name columns are widened to their contents once, the first time there is anything to
+   * measure. They stay draggable, so re-imposing a width on every refill would undo whatever the
+   * user had just dragged.
+   */
+  bool groupColumnsSized{};
+  bool valueColumnsSized{};
+
   /* The SSE for a frame is computed off the GUI thread, so the first collection of a frame comes
    * back with `pending` set and nothing to draw. This asks again until it arrives.
    *

@@ -59,6 +59,42 @@ QString bdRateText(const std::optional<bdrate::BdRateResult> &result)
   return "-";
 }
 
+/* Make a table's name columns readable, which the Qt defaults actively prevent.
+ *
+ * Two settings, and the second is the one that matters. `QTableView` elides on the right, which
+ * cuts exactly the end of a path - and these names differ only at the end: two encoders of one
+ * clip produce the same file names in different directories, and the rate points differ by a
+ * trailing quality index. So elide from the middle and keep both ends.
+ *
+ * Word wrap then has to go. It is on by default, and it breaks a path at a '/' to fill one line
+ * before eliding - measured, a 113 character path in a 627 pixel column lost its tail at about
+ * 390 pixels *with* ElideMiddle already set. Turning it off is load bearing, not cosmetic.
+ */
+void readableNameColumns(QTableWidget *table)
+{
+  table->setTextElideMode(Qt::ElideMiddle);
+  table->setWordWrap(false);
+}
+
+/* Widen the name columns to what they hold, once.
+ *
+ * Capped so one long path cannot push the numbers out of the window; past the cap the table
+ * scrolls, which it already allows. Applied once rather than on every refill, because these
+ * columns stay draggable and re-imposing a width every time the frame changes would undo what the
+ * user just dragged.
+ */
+void fitNameColumnsOnce(QTableWidget *table, std::initializer_list<int> nameColumns, bool &done)
+{
+  if (done || table->rowCount() == 0)
+    return;
+  done = true;
+
+  constexpr int kMaxNameWidth = 360;
+  table->resizeColumnsToContents();
+  for (const auto column : nameColumns)
+    table->setColumnWidth(column, std::min(table->columnWidth(column), kMaxNameWidth));
+}
+
 } // namespace
 
 /* A round step for a linear axis: 1, 2 or 5 times a power of ten, whichever lands nearest the
@@ -401,6 +437,7 @@ BdRatePlotWindow::BdRatePlotWindow(QWidget *parent) : QDialog(parent)
   this->groupTable->horizontalHeader()->setStretchLastSection(true);
   this->groupTable->verticalHeader()->setVisible(false);
   this->groupTable->setMaximumHeight(150);
+  readableNameColumns(this->groupTable);
   outer->addWidget(this->groupTable, 1);
 
   this->valueTable = new QTableWidget(0, 5, this);
@@ -408,6 +445,7 @@ BdRatePlotWindow::BdRatePlotWindow(QWidget *parent) : QDialog(parent)
       {"Group", "Stream", "Scope", "bits", "PSNR (dB)"});
   this->valueTable->horizontalHeader()->setStretchLastSection(true);
   this->valueTable->verticalHeader()->setVisible(false);
+  readableNameColumns(this->valueTable);
   outer->addWidget(this->valueTable, 2);
 
   this->sweeper = new BdRateSequenceSweeper(this);
@@ -524,6 +562,8 @@ void BdRatePlotWindow::rebuildGroupTable()
     this->groupTable->setCellWidget(row, 0, anchor);
 
     auto *name = new QTableWidgetItem(group.name);
+    // Whatever the elide had to drop is still one hover away.
+    name->setToolTip(group.name);
     this->groupTable->setItem(row, 1, name);
 
     auto *points = new QTableWidgetItem(QString::number(group.points.size()));
@@ -532,9 +572,12 @@ void BdRatePlotWindow::rebuildGroupTable()
 
     auto *original = new QTableWidgetItem(group.originalPath);
     original->setFlags(original->flags() & ~Qt::ItemIsEditable);
+    original->setToolTip(group.originalPath);
     this->groupTable->setItem(row, 3, original);
   }
   this->fillingTable = false;
+
+  fitNameColumnsOnce(this->groupTable, {1, 3}, this->groupColumnsSized);
 }
 
 void BdRatePlotWindow::collect()
@@ -693,8 +736,13 @@ void BdRatePlotWindow::updatePanels()
         const auto &sample = perGroup[g][p];
         const auto  row    = this->valueTable->rowCount();
         this->valueTable->insertRow(row);
-        this->valueTable->setItem(row, 0, new QTableWidgetItem(this->groups[g].name));
-        this->valueTable->setItem(row, 1, new QTableWidgetItem(this->groups[g].points[p].label));
+        auto *groupName = new QTableWidgetItem(this->groups[g].name);
+        groupName->setToolTip(this->groups[g].name);
+        this->valueTable->setItem(row, 0, groupName);
+
+        auto *stream = new QTableWidgetItem(this->groups[g].points[p].label);
+        stream->setToolTip(this->groups[g].points[p].label);
+        this->valueTable->setItem(row, 1, stream);
         this->valueTable->setItem(row, 2, new QTableWidgetItem(scope));
         this->valueTable->setItem(row, 3, new QTableWidgetItem(QString::number(sample.bits)));
         const auto psnr = sample.psnr();
@@ -718,6 +766,8 @@ void BdRatePlotWindow::updatePanels()
       if (const auto it = sequence.perSuperblock.find(sbKey); it != sequence.perSuperblock.end())
         addRows(QString("seq SB (%1,%2)").arg(sbKey.first).arg(sbKey.second), it->second);
   }
+
+  fitNameColumnsOnce(this->valueTable, {0, 1}, this->valueColumnsSized);
 }
 
 } // namespace bda::integration

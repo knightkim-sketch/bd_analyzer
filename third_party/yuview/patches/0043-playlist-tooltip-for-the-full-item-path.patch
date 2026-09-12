@@ -1,0 +1,16 @@
+diff --git a/YUViewLib/src/playlistitem/playlistItem.cpp b/YUViewLib/src/playlistitem/playlistItem.cpp
+--- a/YUViewLib/src/playlistitem/playlistItem.cpp
++++ b/YUViewLib/src/playlistitem/playlistItem.cpp
+@@ -55,6 +55,12 @@
+   this->prop.name = name;
+   // For the text that is shown in the playlist, remove all newline characters.
+   this->setText(0, name.simplified());
++  /* The name is a whole path and the column is only as wide as the dock, so what reaches the
++   * screen is elided. Two streams of the same clip from different encoders then look identical -
++   * they differ in a directory and a trailing quality index, and those are exactly what is cut.
++   * The tooltip carries the part that did not fit.
++   */
++  this->setToolTip(0, name.simplified());
+ }
+ 
+ void playlistItem::drawItem(QPainter *painter, int, double zoomFactor, bool)
