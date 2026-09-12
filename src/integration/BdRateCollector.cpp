@@ -64,6 +64,23 @@ BdRateFrameData collectBdRateFrame(const std::vector<BdRateGroup> &groups, int f
         return data;
       }
 
+      /* A stream can be moved onto a decoder that has no per superblock bit counts *after* the
+       * group was built - makeBdRateGroup() checks this, but only once, at creation.
+       *
+       * Worth its own branch because the failure is otherwise indistinguishable from a slow
+       * decode: getSuperblockBits() returns empty either way, and the empty case below means "ask
+       * again". On this decoder asking again never helps, so the window sat forever saying the
+       * SSE was on its way when the SSE was fine and the bit counts were never coming.
+       */
+      if (!item->providesSuperblockBits())
+      {
+        data.error = QString("\"%1\" is decoded by something other than the dav1d analyzer, so it "
+                             "reports no per superblock bit counts. Switch its decoder back in the "
+                             "Properties panel.")
+                         .arg(group.points[p].label);
+        return data;
+      }
+
       /* sb_bitcount is only gathered while something asks for it, and nothing asks on a stream the
        * user is not looking at. Switching it on here is what makes the other groups' streams
        * report anything at all.

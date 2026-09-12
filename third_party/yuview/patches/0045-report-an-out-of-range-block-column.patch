@@ -1,0 +1,47 @@
+diff --git a/YUViewLib/src/decoder/decoderDav1d.cpp b/YUViewLib/src/decoder/decoderDav1d.cpp
+--- a/YUViewLib/src/decoder/decoderDav1d.cpp
++++ b/YUViewLib/src/decoder/decoderDav1d.cpp
+@@ -35,6 +35,7 @@
+ #include <QCoreApplication>
+ #include <QDir>
+ #include <QSettings>
++#include <atomic>
+ #include <cassert>
+ #include <cstring>
+ #include <mutex>
+@@ -892,6 +893,35 @@
+   if (y >= frameInfo.sizeInBlocks.height)
+     return;
+ 
++  /* Monitoring, deliberately not a guard - see the note below before changing this.
++   *
++   * `y` is checked against the picture, `x` is not. The recursion steps `x + subw`, and the last
++   * superblock column hangs off the right edge for any width that is not a multiple of the
++   * superblock size, so x does run past sizeInBlocks.width. The row is b4_stride wide and the
++   * stride is the *aligned* width, so those reads land in the alignment padding - memory inside
++   * the allocation that dav1d never wrote. That is the most likely source of the impossible block
++   * values seen elsewhere (a tx of 151 and a bl of 76 on real streams), which is what patch 0041
++   * had to guard against downstream.
++   *
++   * It is reported rather than clamped because the reads are in-allocation and the partition walk
++   * still produces correct results for every position that *is* inside the picture: adding the
++   * symmetric `x >= sizeInBlocks.width` return would change which blocks are drawn, and that
++   * wants its own before/after comparison rather than being slipped in under a crash fix. This
++   * counts the occurrences so the decision can be made on numbers.
++   */
++  if (x >= frameInfo.sizeInBlocks.width)
++  {
++    static std::atomic<unsigned> outOfRangeX{0};
++    if (const auto seen = ++outOfRangeX; seen <= 8)
++      qWarning("dav1d block walk: x %u is past the picture width %u (y %u, stride %d, level %d)%s",
++               x,
++               frameInfo.sizeInBlocks.width,
++               y,
++               frameInfo.b4_stride,
++               int(level),
++               seen == 8 ? " - further occurrences will not be reported" : "");
++  }
++
+   Av1Block         b          = blockData[y * frameInfo.b4_stride + x];
+   const BlockLevel blockLevel = (BlockLevel)b.bl;
+ 

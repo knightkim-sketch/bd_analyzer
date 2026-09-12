@@ -1,0 +1,86 @@
+diff --git a/YUViewLib/YUViewLib.pro b/YUViewLib/YUViewLib.pro
+--- a/YUViewLib/YUViewLib.pro
++++ b/YUViewLib/YUViewLib.pro
+@@ -21,6 +21,7 @@
+ #   src/bdrate/       Qt-free BD-rate maths, unit tested on its own
+ #   src/assist/       Qt-free assistant panel context model, unit tested on its own
+ #   src/container/    Qt-free MP4 box + sample table parser, unit tested on its own
++#   src/bitstream/    Qt-free AV1 bitstream reads, unit tested on its own
+ #   src/integration/  the only part of our tree allowed to know about upstream types
+ #
+ # $$PWD is .../third_party/yuview/upstream/YUViewLib, so four levels up is the repository root.
+@@ -30,11 +31,13 @@
+ SOURCES += $$files($$BDA_ROOT/src/bdrate/*.cpp, true)
+ SOURCES += $$files($$BDA_ROOT/src/assist/*.cpp, true)
+ SOURCES += $$files($$BDA_ROOT/src/container/*.cpp, true)
++SOURCES += $$files($$BDA_ROOT/src/bitstream/*.cpp, true)
+ SOURCES += $$files($$BDA_ROOT/src/integration/*.cpp, true)
+ HEADERS += $$files($$BDA_ROOT/src/me/*.h, true)
+ HEADERS += $$files($$BDA_ROOT/src/bdrate/*.h, true)
+ HEADERS += $$files($$BDA_ROOT/src/assist/*.h, true)
+ HEADERS += $$files($$BDA_ROOT/src/container/*.h, true)
++HEADERS += $$files($$BDA_ROOT/src/bitstream/*.h, true)
+ HEADERS += $$files($$BDA_ROOT/src/integration/*.h, true)
+ 
+ RESOURCES += \
+diff --git a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+@@ -39,6 +39,7 @@
+ #include <algorithm>
+ #include <inttypes.h>
+ 
++#include <bitstream/av1/ObuScan.h>
+ #include <common/Formatting.h>
+ #include <common/Functions.h>
+ #include <common/FunctionsGui.h>
+@@ -1337,6 +1338,23 @@
+       !this->loadingDecoder->statisticsEnabled())
+     return {};
+ 
++  /* A `show_existing_frame` display frame is deliberately *not* special-cased here.
++   *
++   * It was, briefly. The reasoning was that such a frame codes no blocks, so reporting any bits
++   * for it must be stale data - the numbers looked nothing like the coded frames on either side
++   * (3574 and 7075 against 659 and 460 on an SVT-AV1 clip).
++   *
++   * That reasoning was wrong, and the regression suite said so: tests 19 and 31 read per
++   * superblock bits at frames 2 and 6 of the reference clip, and both of those are re-shown
++   * frames. What the decoder hands back is the block data of the picture being re-shown - a hidden
++   * alt-ref coded in an earlier packet, which is exactly why its bit count is unlike its
++   * neighbours and much larger. That is real data about the picture on screen, and suppressing it
++   * would have removed the only statistics those frames have.
++   *
++   * The bitstream dump still labels the frame (see getItemDataDump), so the five byte packet and
++   * these numbers no longer look like a contradiction.
++   */
++
+   const auto superblockSize = int(this->getDefaultGridSize());
+   if (superblockSize <= 0)
+     return {};
+@@ -1505,6 +1523,25 @@
+     return dump;
+   }
+ 
++  /* A re-shown frame is not a short frame, and saying so is the whole fix here.
++   *
++   * `show_existing_frame` packets are about five bytes: a temporal delimiter and a frame header
++   * that names a reference slot. There are no blocks in them, so the block highlight below finds
++   * nothing and the dump used to read as a broken frame rather than as a frame that was never
++   * coded twice. Measured on an SVT-AV1 clip, 11 of 24 display frames are of this kind.
++   */
++  if (const auto reshown = bda::bitstream::av1::scanShowExistingFrame(
++          reinterpret_cast<const std::uint8_t *>(frameData.constData()),
++          std::size_t(frameData.size())))
++  {
++    dump.bytes       = frameData;
++    dump.description = frameDescription +
++                       QString(" · show_existing_frame = 1 (reference slot %1) · this frame is a "
++                               "repeat of an earlier decoded frame and codes no blocks of its own")
++                           .arg(reshown->frameToShowMapIdx);
++    return dump;
++  }
++
+   if (blockInfo.bitstreamRange && blockInfo.bitstreamRange->isValid())
+   {
+     const auto &range     = *blockInfo.bitstreamRange;

@@ -192,6 +192,11 @@ run_unit_test "$ROOT/tests/unit/bdrate-math.cpp" "$ROOT/src/bdrate/BdRateMath.cp
 # 다르게 읽히는지를 고정한다 - 뭉개지면 모델이 자신있게 틀린 답을 만든다.
 run_unit_test "$ROOT/tests/unit/assist-context.cpp" "$ROOT/src/assist/AssistContext.cpp"
 
+# AV1 show_existing_frame 검출. 재표시 프레임은 블록을 코딩하지 않는데, 앱은 그것을 보통
+# 프레임으로 다뤄 dump 와 통계가 서로 다른 것을 가리켰다.
+BDA_TEST_IVF="$STREAM" run_unit_test "$ROOT/tests/unit/av1-obu-scan.cpp" \
+              "$ROOT/src/bitstream/av1/ObuScan.cpp"
+
 # MP4 컨테이너. box 트리와 sample table(stsc/stco/stsz)을 실제 ffmpeg 산출물로 검증한다 -
 # 손으로 만든 픽스처는 "내가 생각하는 포맷" 과의 일치만 증명하기 때문이다.
 MP4="$(ensure_mp4)" || MP4=""
