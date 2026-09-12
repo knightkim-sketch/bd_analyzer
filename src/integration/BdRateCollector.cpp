@@ -56,7 +56,7 @@ BdRateFrameData collectBdRateFrame(const std::vector<BdRateGroup> &groups, int f
 
     for (std::size_t p = 0; p < group.points.size(); ++p)
     {
-      auto *item = group.points[p].item;
+      auto *item = group.points[p].item.data();
       if (!item)
       {
         data.error = QString("\"%1\" lost one of its streams - it was removed from the playlist.")
@@ -274,7 +274,7 @@ void BdRateSequenceSweeper::step()
     return;
   }
 
-  auto *item = group.points[this->pointCursor].item;
+  auto *item = group.points[this->pointCursor].item.data();
   if (!item)
   {
     this->result.error = QString("\"%1\" lost one of its streams mid sweep.").arg(group.name);

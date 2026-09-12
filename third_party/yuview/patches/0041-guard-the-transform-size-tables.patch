@@ -1,0 +1,25 @@
+--- a/YUViewLib/src/decoder/decoderDav1d.cpp
++++ b/YUViewLib/src/decoder/decoderDav1d.cpp
+@@ -1111,8 +1111,22 @@
+       4, 8, 16, 32, 64, 4, 8, 8, 16, 16, 32, 32, 64, 4, 16, 8, 32, 16, 64};
+   static const unsigned TxfmSizeHeightTable[] = {
+       4, 8, 16, 32, 64, 8, 4, 16, 8, 32, 16, 64, 32, 16, 4, 32, 8, 64, 16};
++  /* The tables hold the 19 (rect) transform sizes and are indexed by a byte out of the decoder's
++   * block data. That byte is not always one of them: the partition walk reaches positions inside
++   * the picture whose Av1Block was never written (observed on real streams - tx 151, 221, 149 with
++   * an equally impossible bl of 76, 231, 18), and indexing past the tables returns whatever follows
++   * them. When that happens to be zero, the loops below step by zero and never end, appending to
++   * the transform size statistics until the allocator gives up - a std::bad_alloc part way through
++   * decoding a sequence, which is how this was found. Same failure mode, and same remedy, as the
++   * range check in calculateIntraPredDirection() below: draw nothing for a block that cannot be
++   * described rather than trusting the number.
++   */
++  if (unsigned(tx_val) >= sizeof(TxfmSizeWidthTable) / sizeof(TxfmSizeWidthTable[0]))
++    return;
+   const unsigned tx_w = TxfmSizeWidthTable[tx_val];
+   const unsigned tx_h = TxfmSizeHeightTable[tx_val];
++  if (tx_w == 0 || tx_h == 0)
++    return;
+ 
+   if (tx_w > cbWidth || tx_h > cbHeight)
+     // Transform can not be bigger then the coding block

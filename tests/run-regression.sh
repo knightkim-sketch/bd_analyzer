@@ -319,8 +319,13 @@ if [[ -s "$BDORG" ]]; then
 fi
 if [[ ${#BDQ[@]} -ge 2 ]]; then
     run_test_bda "$ROOT/tests/regression/31-bdrate-groups-and-collection.cpp" "$BDORG" "${BDQ[@]}"
+    # 재생목록에서 아이템을 지웠을 때: 분석 중이던 파서와 BD-rate 그룹이 그 아이템을 계속 들고
+    # 있었다 (널 파서 역참조 + dangling 포인터 use-after-free).
+    run_test_bda "$ROOT/tests/regression/36-delete-item-under-analysis.cpp" "$BDORG" "${BDQ[@]}"
 else
     echo "  SKIP  31-bdrate-groups-and-collection (AV1 인코딩 실패 - libaom 필요)"
+    ((skip_count++))
+    echo "  SKIP  36-delete-item-under-analysis (AV1 인코딩 실패 - libaom 필요)"
     ((skip_count++))
 fi
 
@@ -366,6 +371,9 @@ fi
 if [[ -e "$APPDIR/decoder/libdav1d-internals.so" ]]; then
     run_test "$ROOT/tests/regression/14-block-bitstream-range.cpp"      "$STREAM"
     run_test "$ROOT/tests/regression/16-statistics-ui-grouping.cpp"     "$STREAM"
+    # 스트림 길이(마지막 인덱스 off-by-one)와 한 프레임이 만들 수 있는 통계 항목 수의 상한.
+    # 상한이 깨지면 transform size 루프가 0 만큼 전진하며 bad_alloc 까지 간다.
+    run_test "$ROOT/tests/regression/35-frame-range-and-statistics-bounds.cpp" "$STREAM"
     # 블록 syntax pane 의 프레임 추종 + Rec/Org 뷰어 전환 + SSE/bitcount 그래프.
     # test.ivf 와 raw YUV 는 같은 testsrc2 소스라서 raw YUV 를 original 로 붙일 수 있다.
     if [[ -s "$RAWYUV" ]]; then
@@ -378,6 +386,8 @@ else
     echo "  SKIP  14-block-bitstream-range (libdav1d-internals.so 없음)"
     ((skip_count++))
     echo "  SKIP  16-statistics-ui-grouping (libdav1d-internals.so 없음)"
+    ((skip_count++))
+    echo "  SKIP  35-frame-range-and-statistics-bounds (libdav1d-internals.so 없음)"
     ((skip_count++))
 fi
 

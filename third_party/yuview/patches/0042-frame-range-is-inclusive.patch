@@ -1,0 +1,17 @@
+--- a/YUViewLib/src/filesource/FileSourceFFmpegFile.cpp
++++ b/YUViewLib/src/filesource/FileSourceFFmpegFile.cpp
+@@ -739,7 +739,13 @@
+ 
+   indexRange range;
+   range.first  = int(this->keyFrameList.at(0).frame);
+-  range.second = int(this->nrFrames);
++  /* Inclusive, so the last index is one below the count. nrFrames is how many packets the scan
++   * saw; handing it back as the last index invented a frame that is not in the file - a 150 frame
++   * clip reported "Num POCs 151", seeking to it decoded nothing, and the BD-rate sweep spent its
++   * whole retry budget waiting for statistics that could never arrive. The annex B path above
++   * already subtracts one.
++   */
++  range.second = int(this->nrFrames) - 1;
+   return range;
+ }
+ 

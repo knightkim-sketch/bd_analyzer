@@ -8,6 +8,7 @@
 // playlistItem. The maths is in src/bdrate and knows nothing.
 #pragma once
 
+#include <QPointer>
 #include <QString>
 #include <QStringList>
 
@@ -29,7 +30,11 @@ namespace bda::integration
  */
 struct BdRatePoint
 {
-  playlistItemCompressedVideo *item{};
+  /* A QPointer, not a raw one: deleting the stream from the playlist destroys the item, and every
+   * use here re-checks the pointer. With a raw pointer that check could never fire and the next
+   * collection - which happens on every frame change - read freed memory.
+   */
+  QPointer<playlistItemCompressedVideo> item;
   QString                      label; //!< File name, which is how the user recognises the QP point.
 };
 

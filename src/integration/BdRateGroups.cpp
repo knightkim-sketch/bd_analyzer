@@ -1,5 +1,6 @@
 #include "BdRateGroups.h"
 
+#include <QDir>
 #include <QFileInfo>
 #include <QList>
 
@@ -32,6 +33,28 @@ QStringList rawItemPaths(const QList<playlistItem *> &selection)
 QString fileNameOf(const playlistItem *item)
 {
   return item ? QFileInfo(item->properties().name).fileName() : QString();
+}
+
+/* The directory the group's streams all live in, or nothing when they are spread around.
+ *
+ * Two encoders of one clip produce files with the same names in different directories - which is
+ * precisely the comparison this feature exists for - so the file names cannot tell those curves
+ * apart. The directory can.
+ */
+QString commonDirectoryName(const QStringList &paths)
+{
+  QString dir;
+  for (const auto &path : paths)
+  {
+    const auto candidate = QFileInfo(path).dir().dirName();
+    if (candidate.isEmpty())
+      return {};
+    if (dir.isEmpty())
+      dir = candidate;
+    else if (dir != candidate)
+      return {};
+  }
+  return dir;
 }
 
 } // namespace
@@ -77,6 +100,7 @@ BdRateGroupResult makeBdRateGroup(const QList<playlistItem *>    &selection,
 
   // --- the streams -----------------------------------------------------------------------------
   QStringList names;
+  QStringList paths;
   for (auto *item : selection)
   {
     auto *stream = dynamic_cast<playlistItemCompressedVideo *>(item);
@@ -120,6 +144,7 @@ BdRateGroupResult makeBdRateGroup(const QList<playlistItem *>    &selection,
 
     result.group.points.push_back({stream, fileNameOf(stream)});
     names.append(fileNameOf(stream));
+    paths.append(stream->properties().name);
   }
 
   if (result.group.points.empty())
@@ -203,6 +228,15 @@ BdRateGroupResult makeBdRateGroup(const QList<playlistItem *>    &selection,
       return group.name == candidate;
     });
   };
+  if (taken(name))
+  {
+    /* The directory first, and only then a counter. Comparing two encoders of one clip gives both
+     * curves the same file names, so the counter alone produced "NewsClip..." and
+     * "NewsClip... (2)" - two legend entries that say nothing about which encoder each is.
+     */
+    if (const auto dir = commonDirectoryName(paths); !dir.isEmpty() && !taken(dir))
+      name = dir;
+  }
   if (taken(name))
   {
     const auto base = name;

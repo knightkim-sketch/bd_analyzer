@@ -1,0 +1,18 @@
+--- a/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.cpp
++++ b/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.cpp
+@@ -153,6 +153,15 @@
+ 
+ void BitstreamAnalysisWidget::updateStreamInfo()
+ {
++  /* The parser emits streamInfoUpdated from its background thread, so the call arrives queued. By
++   * the time it runs the parser can be gone: deleting the selected playlist item announces an empty
++   * selection, and that tears the parser down while its last update is still in the event queue.
++   * Every other slot on this signal already checks; this one dereferenced a null unique_ptr and
++   * crashed on deleting the item being analysed.
++   */
++  if (!this->parser)
++    return;
++
+   this->ui.streamInfoTreeWidget->clear();
+   for (auto item : this->parser->getStreamInfo())
+     this->ui.streamInfoTreeWidget->addTopLevelItem(item);
