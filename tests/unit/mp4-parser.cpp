@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <algorithm>
 #include <numeric>
 #include <string>
 #include <vector>
@@ -345,15 +346,73 @@ int main(int argc, char **argv)
       check(findMp4Box(fragParsed.boxes, "moov/mvex") != nullptr, "mvex announces the shape");
 
       const auto fragTracks = readMp4Tracks(frag.data(), frag.size(), fragParsed);
-      check(!fragTracks.empty(), "the tracks are still described");
+      checkEqual(fragTracks.size(), std::size_t(2), "both tracks are described");
+
       for (const auto &track : fragTracks)
       {
-        check(track.samples.empty(), "with no samples, because the sample table is empty");
-        check(track.error.find("fragmented") != std::string::npos,
-              "and an error that says why rather than an unexplained empty list");
-        // The metadata still has to be right - that comes from moov, which is present.
-        check(!track.sampleFormat.empty(), "the sample format is still read");
+        if (!track.error.empty())
+          std::cout << "        track " << track.id << ": " << track.error << std::endl;
+        check(track.error.empty(), "a fragmented track reads without error");
+        check(!track.samples.empty(), "and its samples are located out of the trun boxes");
+        check(!track.sampleFormat.empty(), "the sample format still comes from moov");
+
+        bool ordered = true, contained = true;
+        for (std::size_t index = 0; index < track.samples.size(); ++index)
+        {
+          if (index > 0 && track.samples[index].offset < track.samples[index - 1].offset)
+            ordered = false;
+          if (track.samples[index].offset + track.samples[index].size > frag.size())
+            contained = false;
+        }
+        check(ordered, "the fragment samples are in file order");
+        check(contained, "and every one lies inside the file");
+
+        /* Samples must land in an mdat, not in the moof that describes them. Getting the base
+         * offset rule wrong - default-base-is-moof against an explicit base_data_offset - puts
+         * them a few hundred bytes out, which every other check here would still pass.
+         */
+        bool inMdat = true;
+        for (const auto &sample : track.samples)
+        {
+          bool covered = false;
+          for (const auto &box : fragParsed.boxes)
+            if (box.type == "mdat" && sample.offset >= box.payloadOffset() &&
+                sample.offset + sample.size <= box.offset + box.size)
+              covered = true;
+          inMdat = inMdat && covered;
+        }
+        check(inMdat, "and sits inside an mdat rather than in the moof describing it");
       }
+
+      /* The counts and totals the container promises, against what ffmpeg reports for the same
+       * file: 100 video samples of 72303 bytes and 174 audio samples of 34918. Those are the same
+       * figures the non-fragmented build of this clip produces, which is the real cross-check -
+       * the bytes did not change, only where they are described.
+       */
+      const auto *video = &fragTracks.front();
+      const auto *audio = &fragTracks.back();
+      if (video->handlerType != "vide")
+        std::swap(video, audio);
+
+      checkEqual(video->samples.size(), std::size_t(100), "the video track has 100 samples");
+      checkEqual(audio->samples.size(), std::size_t(174), "the audio track has 174");
+      {
+        const auto videoBytes = std::accumulate(
+            video->samples.begin(), video->samples.end(), std::uint64_t(0),
+            [](std::uint64_t sum, const Mp4Sample &s) { return sum + s.size; });
+        checkEqual(videoBytes, std::uint64_t(72303), "and the video bytes match ffmpeg's");
+      }
+
+      /* -g 10 over 100 frames with +frag_keyframe: one key frame per fragment, ten fragments.
+       *
+       * This is the check that caught the real bug. Sample flags come from the trun, but the
+       * sample-table path was still running afterwards, and "no stss" there means "everything is a
+       * key frame" - so all 100 came back sync and the number looked plausible.
+       */
+      const auto videoSyncs = std::count_if(
+          video->samples.begin(), video->samples.end(), [](const Mp4Sample &s) { return s.sync; });
+      checkEqual(videoSyncs, std::ptrdiff_t(10), "exactly ten video samples are key frames");
+      check(video->samples.front().sync, "the first sample of a fragment is one");
     }
   }
 

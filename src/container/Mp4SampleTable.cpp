@@ -1,6 +1,7 @@
 #include "container/Mp4SampleTable.h"
 
 #include <algorithm>
+#include <map>
 
 namespace bda::container
 {
@@ -170,6 +171,204 @@ void readSyncFlags(Reader &reader, const Mp4Box *stss, std::vector<Mp4Sample> &s
   }
 }
 
+/* Per track defaults from `mvex/trex`, used by any fragment that does not carry its own.
+ *
+ * A fragmented file usually states the sample size once here and then never again, so without
+ * this every sample in the file comes out zero sized.
+ */
+struct TrackFragmentDefaults
+{
+  std::uint32_t sampleDuration{};
+  std::uint32_t sampleSize{};
+  std::uint32_t sampleFlags{};
+};
+
+// A sample is a random access point unless its flags say otherwise. ISO 14496-12, 8.8.3.1.
+bool syncFromSampleFlags(std::uint32_t flags)
+{
+  constexpr std::uint32_t kNonSyncSample = 0x00010000;
+  return (flags & kNonSyncSample) == 0;
+}
+
+std::map<std::uint32_t, TrackFragmentDefaults> readTrackExtends(Reader &reader, const Mp4Box &moov)
+{
+  std::map<std::uint32_t, TrackFragmentDefaults> defaults;
+  const auto                                    *mvex = findMp4Box(moov.children, "mvex");
+  if (mvex == nullptr)
+    return defaults;
+
+  for (const auto *trex : findMp4Children(*mvex, "trex"))
+  {
+    const auto payload = trex->payloadOffset();
+    const auto trackId = reader.u32(payload + 4);
+    // payload: version/flags(4), track_ID(4), default_sample_description_index(4), then the three.
+    defaults[trackId] = {reader.u32(payload + 12), reader.u32(payload + 16), reader.u32(payload + 20)};
+  }
+  return defaults;
+}
+
+/* Locate the samples a fragmented file keeps in its `moof` boxes.
+ *
+ * Each `moof/traf` names a track and describes a run of samples: `tfhd` says where the run's data
+ * starts and what the defaults are, `trun` gives the per sample sizes. The samples sit end to end
+ * from the run's start, exactly as they do inside a chunk - the difference is only where the
+ * description lives.
+ *
+ * Returned per track id, because `traf` names the track and the caller matches it to `tkhd`.
+ */
+std::map<std::uint32_t, std::vector<Mp4Sample>>
+readFragmentSamples(Reader &reader, const Mp4ParseResult &boxes, const Mp4Box &moov)
+{
+  // tfhd flags
+  constexpr std::uint32_t kBaseDataOffsetPresent      = 0x000001;
+  constexpr std::uint32_t kSampleDescriptionPresent   = 0x000002;
+  constexpr std::uint32_t kDefaultSampleDuration      = 0x000008;
+  constexpr std::uint32_t kDefaultSampleSize          = 0x000010;
+  constexpr std::uint32_t kDefaultSampleFlags         = 0x000020;
+  constexpr std::uint32_t kDefaultBaseIsMoof          = 0x020000;
+  // trun flags
+  constexpr std::uint32_t kDataOffsetPresent          = 0x000001;
+  constexpr std::uint32_t kFirstSampleFlagsPresent    = 0x000004;
+  constexpr std::uint32_t kSampleDurationPresent      = 0x000100;
+  constexpr std::uint32_t kSampleSizePresent          = 0x000200;
+  constexpr std::uint32_t kSampleFlagsPresent         = 0x000400;
+  constexpr std::uint32_t kCompositionOffsetPresent   = 0x000800;
+
+  const auto trex = readTrackExtends(reader, moov);
+
+  std::map<std::uint32_t, std::vector<Mp4Sample>> samples;
+  std::map<std::uint32_t, std::uint64_t>          decodeTime;
+
+  for (const auto &moof : boxes.boxes)
+  {
+    if (moof.type != "moof")
+      continue;
+
+    for (const auto *traf : findMp4Children(moof, "traf"))
+    {
+      const auto *tfhd = findMp4Box(traf->children, "tfhd");
+      if (tfhd == nullptr)
+        continue;
+
+      auto       at      = tfhd->payloadOffset();
+      const auto tfhdFlags = reader.u32(at) & 0x00ffffff; // low 24 bits; the top byte is version
+      at += 4;
+      const auto trackId = reader.u32(at);
+      at += 4;
+
+      /* Where this run's data starts. With neither an explicit offset nor default-base-is-moof the
+       * spec chains each fragment onto the end of the previous one; that form is rare and getting
+       * it subtly wrong would place samples plausibly but incorrectly, so the moof start is used
+       * and the offsets are bounds checked by the caller either way.
+       */
+      std::uint64_t baseOffset = moof.offset;
+      if (tfhdFlags & kBaseDataOffsetPresent)
+      {
+        baseOffset = reader.u64(at);
+        at += 8;
+      }
+      else if ((tfhdFlags & kDefaultBaseIsMoof) == 0)
+      {
+        baseOffset = moof.offset;
+      }
+      if (tfhdFlags & kSampleDescriptionPresent)
+        at += 4;
+
+      auto fragmentDefaults = trex.count(trackId) != 0 ? trex.at(trackId) : TrackFragmentDefaults{};
+      if (tfhdFlags & kDefaultSampleDuration)
+      {
+        fragmentDefaults.sampleDuration = reader.u32(at);
+        at += 4;
+      }
+      if (tfhdFlags & kDefaultSampleSize)
+      {
+        fragmentDefaults.sampleSize = reader.u32(at);
+        at += 4;
+      }
+      if (tfhdFlags & kDefaultSampleFlags)
+      {
+        fragmentDefaults.sampleFlags = reader.u32(at);
+        at += 4;
+      }
+
+      // tfdt restates the decode time, which keeps a seek from having to sum every fragment before.
+      if (const auto *tfdt = findMp4Box(traf->children, "tfdt"))
+      {
+        const auto tfdtPayload = tfdt->payloadOffset();
+        const auto version     = reader.u32(tfdtPayload) >> 24;
+        decodeTime[trackId] =
+            version == 1 ? reader.u64(tfdtPayload + 4) : reader.u32(tfdtPayload + 4);
+      }
+
+      for (const auto *trun : findMp4Children(*traf, "trun"))
+      {
+        auto       runAt     = trun->payloadOffset();
+        const auto trunFlags = reader.u32(runAt) & 0x00ffffff;
+        runAt += 4;
+        const auto sampleCount = reader.u32(runAt);
+        runAt += 4;
+
+        auto dataOffset = baseOffset;
+        if (trunFlags & kDataOffsetPresent)
+        {
+          // Signed: a run can start before the box that describes it.
+          dataOffset = baseOffset + std::int32_t(reader.u32(runAt));
+          runAt += 4;
+        }
+
+        std::uint32_t firstSampleFlags = fragmentDefaults.sampleFlags;
+        if (trunFlags & kFirstSampleFlagsPresent)
+        {
+          firstSampleFlags = reader.u32(runAt);
+          runAt += 4;
+        }
+
+        if (!plausibleCount(sampleCount, reader.size, 1))
+          continue;
+
+        auto at2 = dataOffset;
+        for (std::uint32_t index = 0; index < sampleCount; ++index)
+        {
+          auto duration = fragmentDefaults.sampleDuration;
+          auto size     = fragmentDefaults.sampleSize;
+          auto flags    = index == 0 ? firstSampleFlags : fragmentDefaults.sampleFlags;
+
+          if (trunFlags & kSampleDurationPresent)
+          {
+            duration = reader.u32(runAt);
+            runAt += 4;
+          }
+          if (trunFlags & kSampleSizePresent)
+          {
+            size = reader.u32(runAt);
+            runAt += 4;
+          }
+          if (trunFlags & kSampleFlagsPresent)
+          {
+            const auto perSample = reader.u32(runAt);
+            runAt += 4;
+            if (index != 0 || (trunFlags & kFirstSampleFlagsPresent) == 0)
+              flags = perSample;
+          }
+          if (trunFlags & kCompositionOffsetPresent)
+            runAt += 4;
+
+          Mp4Sample sample;
+          sample.offset     = at2;
+          sample.size       = size;
+          sample.decodeTime = decodeTime[trackId];
+          sample.sync       = syncFromSampleFlags(flags);
+          samples[trackId].push_back(sample);
+
+          at2 += size;
+          decodeTime[trackId] += duration;
+        }
+      }
+    }
+  }
+  return samples;
+}
+
 //!< The av1C payload is a 4-byte configuration record, then the configOBUs to the end of the box.
 std::vector<std::uint8_t> readAv1Config(const std::uint8_t *data, const Mp4Box &av1c)
 {
@@ -203,6 +402,11 @@ readMp4Tracks(const std::uint8_t *data, std::size_t size, const Mp4ParseResult &
    */
   const bool fragmented = findMp4Box(moov->children, "mvex") != nullptr ||
                           findMp4Box(boxes.boxes, "moof") != nullptr;
+
+  Reader fragmentReader{data, size, false};
+  const auto fragmentSamples =
+      fragmented ? readFragmentSamples(fragmentReader, boxes, *moov)
+                 : std::map<std::uint32_t, std::vector<Mp4Sample>>{};
 
   Reader reader{data, size, false};
 
@@ -315,11 +519,36 @@ readMp4Tracks(const std::uint8_t *data, std::size_t size, const Mp4ParseResult &
 
     std::string locateError;
     track.samples = locateSamples(sizes, chunkOffsets, runs, locateError);
+
+    /* A fragmented file's sample table is empty by design, and the samples are in the fragments
+     * instead. Only fall back to them when the table really had nothing: a file can carry both,
+     * and the table is the authoritative description of what it covers.
+     */
+    bool fromFragments = false;
+    if (track.samples.empty())
+      if (const auto found = fragmentSamples.find(track.id); found != fragmentSamples.end())
+      {
+        track.samples  = found->second;
+        fromFragments  = true;
+        locateError.clear();
+      }
+
     if (track.error.empty())
       track.error = locateError;
 
-    readTimes(reader, findMp4Box(stbl->children, "stts"), track.samples);
-    readSyncFlags(reader, findMp4Box(stbl->children, "stss"), track.samples);
+    /* Only when the samples came from the sample table. Fragment samples already carry their times
+     * from `tfdt` plus the run's durations, and their sync flags from the `trun`.
+     *
+     * readSyncFlags in particular must not run on them: no `stss` means "every sample is a random
+     * access point", which is right for a table that has none and wrong for a fragmented file,
+     * which simply keeps that information somewhere else. It silently marked all 100 video samples
+     * as key frames where the file has 10.
+     */
+    if (!fromFragments)
+    {
+      readTimes(reader, findMp4Box(stbl->children, "stts"), track.samples);
+      readSyncFlags(reader, findMp4Box(stbl->children, "stss"), track.samples);
+    }
 
     /* A sample that points outside the file is the failure that matters here: the hexdump panes
      * would read past the buffer. Report it rather than handing out the offset.
@@ -336,9 +565,8 @@ readMp4Tracks(const std::uint8_t *data, std::size_t size, const Mp4ParseResult &
       track.error = "A sample table entry was read past the end of the file.";
 
     if (track.error.empty() && track.samples.empty() && fragmented)
-      track.error = "This file is fragmented: the samples are described by the trun boxes inside "
-                    "each moof, not by the sample table, and only the sample table is read here. "
-                    "The box tree is complete.";
+      track.error = "This file is fragmented and no fragment describes this track: the sample "
+                    "table is empty by design, and no moof carried a trun for it.";
 
     tracks.push_back(track);
   }
