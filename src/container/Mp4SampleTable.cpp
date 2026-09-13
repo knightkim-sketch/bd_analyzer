@@ -193,6 +193,17 @@ readMp4Tracks(const std::uint8_t *data, std::size_t size, const Mp4ParseResult &
   if (moov == nullptr)
     return tracks;
 
+  /* A fragmented file keeps its sample table in the fragments, not in `moov`.
+   *
+   * `mvex` in the movie header announces that, and each `moof` carries the real run of samples in
+   * its `trun`. This reads the sample table only, so on such a file every track comes back with
+   * nothing - and an empty list with no explanation reads as a parser failure rather than as a
+   * shape we do not open. `mvex` is the reliable signal: a file can be fragmented and, at the
+   * moment it is being written, not have a `moof` yet.
+   */
+  const bool fragmented = findMp4Box(moov->children, "mvex") != nullptr ||
+                          findMp4Box(boxes.boxes, "moof") != nullptr;
+
   Reader reader{data, size, false};
 
   for (const auto *trak : findMp4Children(*moov, "trak"))
@@ -323,6 +334,11 @@ readMp4Tracks(const std::uint8_t *data, std::size_t size, const Mp4ParseResult &
 
     if (track.error.empty() && reader.overran)
       track.error = "A sample table entry was read past the end of the file.";
+
+    if (track.error.empty() && track.samples.empty() && fragmented)
+      track.error = "This file is fragmented: the samples are described by the trun boxes inside "
+                    "each moof, not by the sample table, and only the sample table is read here. "
+                    "The box tree is complete.";
 
     tracks.push_back(track);
   }

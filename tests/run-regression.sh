@@ -94,6 +94,39 @@ ensure_mp4_co64() {
     echo "$out"
 }
 
+# Fragmented MP4: 샘플이 sample table 이 아니라 moof/traf/trun 에 있다. 파서가 그 사실을
+# 말하는지 확인하는 용도다 (조용히 0개를 보여주면 파서가 깨진 것처럼 읽힌다).
+ensure_mp4_frag() {
+    local out="$DATA/test_frag.mp4"
+    if [[ -s "$out" ]]; then echo "$out"; return 0; fi
+    local ff
+    ff="$(command -v ffmpeg || echo /usr/local/bin/ffmpeg)"
+    [[ -x "$ff" ]] || return 1
+    "$ff" -hide_banner -loglevel error -y \
+          -f lavfi -i "testsrc2=size=176x144:rate=25:duration=4" \
+          -f lavfi -i "sine=frequency=440:duration=4" \
+          -c:v libaom-av1 -cpu-used 8 -g 10 -pix_fmt yuv420p -c:a aac \
+          -movflags +frag_keyframe+empty_moov+default_base_moof "$out" >/dev/null 2>&1 || return 1
+    [[ -s "$out" ]]
+    echo "$out"
+}
+
+# version 1 mdhd. 거대한 track timescale 을 주면 duration 이 32비트를 넘어 ffmpeg 이 version 1 을
+# 쓴다 - timescale 이 offset 12 에서 20 으로 옮겨가는 분기가 그때만 실행된다.
+ensure_mp4_v1() {
+    local out="$DATA/test_mdhd_v1.mp4"
+    if [[ -s "$out" ]]; then echo "$out"; return 0; fi
+    local ff
+    ff="$(command -v ffmpeg || echo /usr/local/bin/ffmpeg)"
+    [[ -x "$ff" ]] || return 1
+    "$ff" -hide_banner -loglevel error -y \
+          -f lavfi -i "testsrc2=size=176x144:rate=25:duration=2" \
+          -c:v libaom-av1 -cpu-used 8 -g 10 -pix_fmt yuv420p \
+          -video_track_timescale 2000000000 "$out" >/dev/null 2>&1 || return 1
+    [[ -s "$out" ]]
+    echo "$out"
+}
+
 STREAM="$(ensure_stream)" || {
     echo "SKIP ALL: test.ivf 이 없고 ffmpeg 로 생성할 수도 없습니다 (libaom-av1 필요)."
     exit 0
@@ -231,7 +264,10 @@ if [[ -n "$MP4" ]]; then
     MP4MULTI="$(ensure_mp4_multi)" || MP4MULTI=""
     MP4CO64=""
     [[ -n "$MP4MULTI" ]] && { MP4CO64="$(ensure_mp4_co64 "$MP4MULTI")" || MP4CO64=""; }
+    MP4FRAG="$(ensure_mp4_frag)" || MP4FRAG=""
+    MP4V1="$(ensure_mp4_v1)" || MP4V1=""
     BDA_TEST_MP4="$MP4" BDA_TEST_MP4_MULTI="$MP4MULTI" BDA_TEST_MP4_CO64="$MP4CO64" \
+    BDA_TEST_MP4_FRAG="$MP4FRAG" BDA_TEST_MP4_V1="$MP4V1" \
         run_unit_test "$ROOT/tests/unit/mp4-parser.cpp" \
                   "$ROOT/src/container/Mp4Parser.cpp" "$ROOT/src/container/Mp4SampleTable.cpp"
 else

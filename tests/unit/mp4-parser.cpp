@@ -317,6 +317,78 @@ int main(int argc, char **argv)
     }
   }
 
+  // --- a fragmented file, whose samples are not in the sample table -------------------------
+  //
+  // `-movflags +frag_keyframe+empty_moov` puts an empty `moov` up front and the samples in a run
+  // of `moof`/`mdat` pairs. The sample table is genuinely empty, so the interesting question is
+  // not whether samples come back - they cannot - but whether that is *said*. An empty list with
+  // no explanation reads as a broken parser.
+  if (const char *fragPath = std::getenv("BDA_TEST_MP4_FRAG"))
+  {
+    const auto frag = readFile(fragPath);
+    if (frag.empty())
+    {
+      std::cout << "  SKIP  (could not read " << fragPath << ")" << std::endl;
+    }
+    else
+    {
+      const auto fragParsed = parseMp4Boxes(frag.data(), frag.size());
+      check(fragParsed.ok(), "a fragmented file's box tree parses without error");
+
+      // The fragments must be visible as boxes even though their samples are not read.
+      int moofCount = 0;
+      for (const auto &box : fragParsed.boxes)
+        if (box.type == "moof")
+          ++moofCount;
+      check(moofCount > 1, "its moof fragments are in the tree");
+      check(findMp4Box(fragParsed.boxes, "moof/traf") != nullptr, "and a traf inside one of them");
+      check(findMp4Box(fragParsed.boxes, "moov/mvex") != nullptr, "mvex announces the shape");
+
+      const auto fragTracks = readMp4Tracks(frag.data(), frag.size(), fragParsed);
+      check(!fragTracks.empty(), "the tracks are still described");
+      for (const auto &track : fragTracks)
+      {
+        check(track.samples.empty(), "with no samples, because the sample table is empty");
+        check(track.error.find("fragmented") != std::string::npos,
+              "and an error that says why rather than an unexplained empty list");
+        // The metadata still has to be right - that comes from moov, which is present.
+        check(!track.sampleFormat.empty(), "the sample format is still read");
+      }
+    }
+  }
+
+  // --- a version 1 media header -------------------------------------------------------------
+  //
+  // `mdhd` widens creation, modification and duration to 64 bits when the duration does not fit
+  // in 32, which moves `timescale` from offset 12 to 20. Forced here with a huge track timescale;
+  // reading it at the version 0 offset yields a timestamp instead.
+  if (const char *v1Path = std::getenv("BDA_TEST_MP4_V1"))
+  {
+    const auto v1 = readFile(v1Path);
+    if (v1.empty())
+    {
+      std::cout << "  SKIP  (could not read " << v1Path << ")" << std::endl;
+    }
+    else
+    {
+      const auto v1Parsed = parseMp4Boxes(v1.data(), v1.size());
+      check(v1Parsed.ok(), "a file with a version 1 mdhd parses");
+
+      const auto *mdhd = findMp4Box(v1Parsed.boxes, "moov/trak/mdia/mdhd");
+      check(mdhd != nullptr, "mdhd is found");
+      check(mdhd != nullptr && v1[mdhd->payloadOffset()] == 1, "and it really is version 1");
+
+      const auto v1Tracks = readMp4Tracks(v1.data(), v1.size(), v1Parsed);
+      check(!v1Tracks.empty(), "the track is read");
+      if (!v1Tracks.empty())
+      {
+        checkEqual(v1Tracks.front().timescale, std::uint32_t(2000000000),
+                   "the timescale comes from the version 1 offset");
+        check(!v1Tracks.front().samples.empty(), "and its samples are still located");
+      }
+    }
+  }
+
   // --- truncation, derived from the real file rather than invented -------------------------
   {
     /* Cutting the file mid-mdat is what a capture interrupted by a crash looks like. The parser
