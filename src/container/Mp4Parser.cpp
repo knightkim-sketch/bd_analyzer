@@ -55,15 +55,40 @@ const std::set<std::string> &fullBoxContainers()
 //!< `stsd` holds sample entries rather than plain boxes, so it is walked by its own rule.
 constexpr const char *kSampleDescriptionBox = "stsd";
 
-/* Bytes a VisualSampleEntry occupies before its own child boxes begin, counted from the entry's
- * box header: 8 header + 78 of fixed fields (6 reserved, 2 data_reference_index, 16 pre_defined /
- * reserved, 2+2 width/height, 4+4 resolutions, 4 reserved, 2 frame_count, 32 compressor_name,
- * 2 depth, 2 pre_defined).
+/* Bytes a sample entry occupies before its own child boxes begin, counted from the entry's box
+ * header. There is no single answer - it depends on what kind of entry it is:
  *
- * Verified against an ffmpeg-written AV1 file: the `av01` entry began at 457 and its `av1C` child
- * at 543, a difference of 86.
+ *   visual: 8 header + 78 fixed (6 reserved, 2 data_reference_index, 16 pre_defined/reserved,
+ *           2+2 width/height, 4+4 resolutions, 4 reserved, 2 frame_count, 32 compressor_name,
+ *           2 depth, 2 pre_defined) = 86. Verified: an `av01` entry at 457 had its `av1C` at 543.
+ *   audio:  8 header + 28 fixed (6 reserved, 2 data_reference_index, 8 reserved, 2 channelcount,
+ *           2 samplesize, 2 pre_defined, 2 reserved, 4 samplerate) = 36.
+ *
+ * Using the visual figure on an audio entry lands 50 bytes into the entry's `esds`, and the
+ * descriptor bytes there parse as a box with a two-gigabyte size. That is exactly what happened
+ * the first time this met a file with an audio track - a video-only file can never reach it.
  */
 constexpr std::uint64_t kVisualSampleEntryPrefix = 86;
+constexpr std::uint64_t kAudioSampleEntryPrefix  = 36;
+
+//!< A plausible box header at `offset`: a sane size that fits, and a printable four character code.
+bool looksLikeBoxAt(const std::uint8_t *data, std::uint64_t offset, std::uint64_t end)
+{
+  if (offset + kBasicHeader > end)
+    return false;
+
+  const auto size = readU32(data, offset);
+  if (size < kBasicHeader || offset + size > end)
+    return false;
+
+  for (int character = 0; character < 4; ++character)
+  {
+    const auto value = data[offset + 4 + character];
+    if (value < 0x20 || value > 0x7e)
+      return false;
+  }
+  return true;
+}
 
 struct Walker
 {
@@ -211,11 +236,19 @@ struct Walker
         return false;
       }
 
-      if (offset + kVisualSampleEntryPrefix < offset + entry.size)
-        this->walk(offset + kVisualSampleEntryPrefix,
-                   offset + entry.size,
-                   depth + 2,
-                   entry.children);
+      /* Pick the prefix by looking, not by guessing from the four character code - that list would
+       * be endless and every codec added later would land back in the `esds`. Whichever candidate
+       * puts a plausible box header under it is the right one; if neither does, the entry is a
+       * kind we do not know how to open and is reported as a leaf. That is the same rule as the
+       * container allowlist: describe what is certain, invent nothing.
+       */
+      const auto entryEnd = offset + entry.size;
+      for (const auto prefix : {kVisualSampleEntryPrefix, kAudioSampleEntryPrefix})
+        if (looksLikeBoxAt(this->data, offset + prefix, entryEnd))
+        {
+          this->walk(offset + prefix, entryEnd, depth + 2, entry.children);
+          break;
+        }
 
       box.children.push_back(entry);
       offset += entry.size;

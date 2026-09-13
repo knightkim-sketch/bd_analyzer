@@ -67,6 +67,33 @@ ensure_mp4() {
     echo "$out"
 }
 
+# 오디오를 섞어 인터리브시킨 mp4. 비디오 전용 파일은 chunk 가 하나뿐이라 sample table 의
+# chunk 순회와 stsc 다중 run 을 전혀 지나가지 않는다 - 그 경로에서 실제로 버그가 나왔다.
+ensure_mp4_multi() {
+    local out="$DATA/test_multi.mp4"
+    if [[ -s "$out" ]]; then echo "$out"; return 0; fi
+    local ff
+    ff="$(command -v ffmpeg || echo /usr/local/bin/ffmpeg)"
+    [[ -x "$ff" ]] || return 1
+    "$ff" -hide_banner -loglevel error -y \
+          -f lavfi -i "testsrc2=size=176x144:rate=25:duration=4" \
+          -f lavfi -i "sine=frequency=440:duration=4" \
+          -c:v libaom-av1 -cpu-used 8 -g 10 -pix_fmt yuv420p -c:a aac "$out" >/dev/null 2>&1 || return 1
+    [[ -s "$out" ]]
+    echo "$out"
+}
+
+# 같은 파일의 stco 를 co64 로 넓혀 쓴 것. 4GB 넘는 파일을 만들지 않고 64-bit chunk offset 경로를
+# 지나가는 유일한 현실적 방법이다. moov 가 파일 끝에 있어 mdat 오프셋은 밀리지 않는다.
+ensure_mp4_co64() {
+    local src="$1" out="$DATA/test_co64.mp4"
+    if [[ -s "$out" ]]; then echo "$out"; return 0; fi
+    [[ -s "$src" ]] || return 1
+    python3 "$ROOT/tests/tools/stco-to-co64.py" "$src" "$out" >/dev/null 2>&1 || return 1
+    [[ -s "$out" ]]
+    echo "$out"
+}
+
 STREAM="$(ensure_stream)" || {
     echo "SKIP ALL: test.ivf 이 없고 ffmpeg 로 생성할 수도 없습니다 (libaom-av1 필요)."
     exit 0
@@ -201,7 +228,11 @@ BDA_TEST_IVF="$STREAM" run_unit_test "$ROOT/tests/unit/av1-obu-scan.cpp" \
 # 손으로 만든 픽스처는 "내가 생각하는 포맷" 과의 일치만 증명하기 때문이다.
 MP4="$(ensure_mp4)" || MP4=""
 if [[ -n "$MP4" ]]; then
-    BDA_TEST_MP4="$MP4" run_unit_test "$ROOT/tests/unit/mp4-parser.cpp" \
+    MP4MULTI="$(ensure_mp4_multi)" || MP4MULTI=""
+    MP4CO64=""
+    [[ -n "$MP4MULTI" ]] && { MP4CO64="$(ensure_mp4_co64 "$MP4MULTI")" || MP4CO64=""; }
+    BDA_TEST_MP4="$MP4" BDA_TEST_MP4_MULTI="$MP4MULTI" BDA_TEST_MP4_CO64="$MP4CO64" \
+        run_unit_test "$ROOT/tests/unit/mp4-parser.cpp" \
                   "$ROOT/src/container/Mp4Parser.cpp" "$ROOT/src/container/Mp4SampleTable.cpp"
 else
     echo "  SKIP  mp4-parser (test.mp4 을 만들 수 없습니다 - ffmpeg + libaom-av1 필요)"

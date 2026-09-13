@@ -221,6 +221,102 @@ int main(int argc, char **argv)
             "the first config OBU is a sequence header with a size field (0x0a)");
   }
 
+  // --- more than one chunk, more than one stsc run, more than one track --------------------
+  //
+  // The single track clip above has one chunk holding every sample, so it never walks the chunk
+  // table at all. This one is interleaved with audio: the video track gets 100 chunks of one
+  // sample, and the audio track 101 chunks under a 56 entry stsc whose runs alternate 1 and 2
+  // samples. That is the arithmetic the sample walk exists for, and none of it ran until now.
+  if (argc >= 3 || std::getenv("BDA_TEST_MP4_MULTI"))
+  {
+    const std::string multiPath = argc >= 3 ? argv[2] : std::getenv("BDA_TEST_MP4_MULTI");
+    const auto        multi     = readFile(multiPath);
+    if (multi.empty())
+    {
+      std::cout << "  SKIP  (could not read " << multiPath << ")" << std::endl;
+    }
+    else
+    {
+      const auto multiParsed = parseMp4Boxes(multi.data(), multi.size());
+      check(multiParsed.ok(), "an interleaved file parses without error");
+      if (!multiParsed.ok())
+        std::cout << "        error: " << multiParsed.error << std::endl;
+
+      const auto multiTracks = readMp4Tracks(multi.data(), multi.size(), multiParsed);
+      checkEqual(multiTracks.size(), std::size_t(2), "both tracks are found");
+
+      for (const auto &track : multiTracks)
+      {
+        if (!track.error.empty())
+          std::cout << "        track " << track.id << ": " << track.error << std::endl;
+        check(track.error.empty(), "track " + std::to_string(track.id) + " reads without error");
+
+        /* Samples must come out in file order and inside the file. An off-by-one in the stsc run
+         * walk shows up here and essentially nowhere else: the offsets stay individually
+         * plausible, they just belong to the wrong chunk.
+         */
+        bool ordered = true, contained = true;
+        for (std::size_t index = 0; index < track.samples.size(); ++index)
+        {
+          if (index > 0 && track.samples[index].offset < track.samples[index - 1].offset)
+            ordered = false;
+          if (track.samples[index].offset + track.samples[index].size > multi.size())
+            contained = false;
+        }
+        check(ordered, "its samples are in file order");
+        check(contained, "and every one lies inside the file");
+      }
+
+      /* The audio entry is the one that used to break the box tree: a sample entry's fixed fields
+       * are 78 bytes for video and 28 for audio, and using the video figure on `mp4a` lands inside
+       * its `esds`, where the descriptor bytes parse as a box two gigabytes long.
+       */
+      const auto *stsdBox = findMp4Box(multiParsed.boxes, "moov/trak/mdia/minf/stbl/stsd");
+      check(stsdBox != nullptr && !stsdBox->children.empty(), "the first track still has an entry");
+
+      bool sawAudioEntry = false;
+      if (const auto *moov = findMp4Box(multiParsed.boxes, "moov"))
+        for (const auto *trak : findMp4Children(*moov, "trak"))
+          if (const auto *stsd = findMp4Box(trak->children, "mdia/minf/stbl/stsd"))
+            for (const auto &entry : stsd->children)
+              if (entry.type == "mp4a")
+              {
+                sawAudioEntry = true;
+                check(!entry.children.empty(), "the audio entry's own boxes are found");
+              }
+      check(sawAudioEntry, "the audio sample entry is present");
+    }
+  }
+
+  // --- 64-bit chunk offsets ----------------------------------------------------------------
+  //
+  // co64 replaces stco in any file over 4 GB. Rather than make one, this fixture is the
+  // interleaved file above with its stco boxes rewritten as co64 - same offsets, widened - which
+  // ffprobe still reads as the same 100 video and 174 audio samples.
+  if (const char *co64Path = std::getenv("BDA_TEST_MP4_CO64"))
+  {
+    const auto co64 = readFile(co64Path);
+    if (co64.empty())
+    {
+      std::cout << "  SKIP  (could not read " << co64Path << ")" << std::endl;
+    }
+    else
+    {
+      const auto co64Parsed = parseMp4Boxes(co64.data(), co64.size());
+      check(co64Parsed.ok(), "a co64 file parses without error");
+      check(findMp4Box(co64Parsed.boxes, "moov/trak/mdia/minf/stbl/co64") != nullptr,
+            "and really does use co64 rather than stco");
+
+      const auto co64Tracks = readMp4Tracks(co64.data(), co64.size(), co64Parsed);
+      checkEqual(co64Tracks.size(), std::size_t(2), "both tracks are found through co64");
+      for (const auto &track : co64Tracks)
+      {
+        check(track.error.empty(), "co64 track " + std::to_string(track.id) + " reads cleanly");
+        check(!track.samples.empty(), "and locates its samples");
+      }
+    }
+  }
+
   // --- truncation, derived from the real file rather than invented -------------------------
   {
     /* Cutting the file mid-mdat is what a capture interrupted by a crash looks like. The parser
