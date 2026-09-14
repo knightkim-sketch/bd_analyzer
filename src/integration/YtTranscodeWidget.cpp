@@ -362,12 +362,21 @@ void YtTranscodeWidget::startTranscode()
   listFile.write(QString::fromStdString(yt::renderLinkList(this->entries)).toUtf8());
   listFile.close();
 
+  /* --prefetch: yt-dlp downloads to a local file and ffmpeg encodes from that, rather than ffmpeg
+   * reading the googlevideo URLs itself.
+   *
+   * Not a preference. The static ffmpeg 7.0.2 on this machine segfaults on *any* https input -
+   * reproduced against media.xiph.org as well as YouTube, with no headers and with -c copy, so it
+   * is the TLS layer. A pane cannot ask the user to diagnose their ffmpeg build, and the download
+   * is going to disk either way here.
+   */
   const QStringList arguments{
       QStringLiteral("-l"),         listPath,
       QStringLiteral("-d"),         this->outDirEdit->text(),
       QStringLiteral("-e"),         this->encoderBox->currentData().toString(),
       QStringLiteral("-q"),         QString::number(this->crfBox->value()),
       QStringLiteral("-H"),         this->heightBox->currentText(),
+      QStringLiteral("--prefetch"),
       QStringLiteral("--skip-existing"),
   };
 
@@ -382,6 +391,8 @@ void YtTranscodeWidget::startTranscode()
                       .arg(this->encoderBox->currentText())
                       .arg(this->crfBox->value())
                       .arg(this->heightBox->currentText()));
+  this->appendLog(tr("Each video is downloaded to a temporary file first, then encoded. The "
+                     "download is deleted once the encode finishes."));
 
   this->process = new QProcess(this);
   this->process->setProcessChannelMode(QProcess::MergedChannels);

@@ -31,6 +31,7 @@ FORCE=0
 SKIP_EXISTING=0
 STOP_ON_ERROR=0
 PLAYLIST=0
+PREFETCH=0
 LIMIT=0
 DRYRUN=0
 URLARG=""
@@ -83,6 +84,8 @@ BEHAVIOUR
       --stop            Stop the list on the first failure
       --cookies BROWSER Load cookies from chrome|firefox|edge|brave
       --playlist        Expand a playlist URL into all of its videos
+      --prefetch        Download with yt-dlp first, then encode from the
+                        local file. Needed when ffmpeg cannot read https.
       --limit N         With --playlist, take only the first N videos
   -n, --dry-run         Print the ffmpeg command instead of running it
   -h, --help            This text
@@ -116,6 +119,7 @@ while [[ $# -gt 0 ]]; do
         --stop)             STOP_ON_ERROR=1; shift ;;
         --play)             PLAY=1;          shift ;;
         --playlist)         PLAYLIST=1;      shift ;;
+        --prefetch)         PREFETCH=1;      shift ;;
         --limit)            LIMIT="$2";    shift 2 ;;
         -n|--dry-run)       DRYRUN=1;        shift ;;
         -h|--help)          usage; exit 0 ;;
@@ -317,6 +321,40 @@ convert_one() {
     printf '  Title  : %s\n' "$title"
     printf '  Output : %s%s%s\n' "$C_GRN" "$target" "$C_RST"
 
+    # ---- prefetch: let yt-dlp fetch the streams to a local file first
+    #
+    # ffmpeg reads the googlevideo URLs itself in the default path, and some builds cannot. The
+    # static ffmpeg 7.0.2 on this machine segfaults on *any* https input - reproduced against
+    # media.xiph.org as well as googlevideo, with no headers involved and with -c copy, so it is
+    # the TLS layer and not anything this script does. yt-dlp downloads over its own HTTP stack,
+    # so handing ffmpeg a local file steps around it entirely.
+    #
+    # It costs disk and a non-streaming first pass. That is why it is an option rather than the
+    # only path - but it is the one the GUI uses, because a pane cannot ask the user to diagnose
+    # their ffmpeg.
+    local prefetched=""
+    if (( PREFETCH )); then
+        prefetched="$(mktemp -u "${TMPDIR:-/tmp}/yt-prefetch-$vid-XXXXXX")"
+        info "Downloading with yt-dlp first (--prefetch)"
+        if ! yt-dlp "${YT_BASE[@]}" \
+                    -f "bv*[height<=$HEIGHT]+ba/b[height<=$HEIGHT]/b" \
+                    --merge-output-format mkv -o "$prefetched.%(ext)s" "$link"; then
+            err "Download failed: $link"
+            rm -f "$prefetched".* 2>/dev/null
+            return 1
+        fi
+        # yt-dlp picks the extension; take whatever it produced.
+        local got
+        got="$(ls "$prefetched".* 2>/dev/null | head -1)"
+        if [[ -z "$got" ]]; then
+            err "yt-dlp reported success but produced no file for: $link"
+            return 1
+        fi
+        prefetched="$got"
+        INPUTS=(-i "$prefetched")
+        nstreams=1
+    fi
+
     local -a MAPS
     if (( nstreams >= 2 )); then
         MAPS=(-map 0:v:0 -map 1:a:0)     # separate video and audio
@@ -346,6 +384,10 @@ convert_one() {
     else
         ffmpeg "${FF[@]}"
     fi
+
+    # The prefetched download is scratch; the encode is the artefact. Removed on both exit paths
+    # so an interrupted list does not leave gigabytes behind in /tmp.
+    [[ -n "$prefetched" ]] && rm -f "$prefetched"
 
     # ffmpeg's exit code is unreliable through a pipe, so judge by the file.
     if [[ -s "$target" ]] && (( $(stat -c%s "$target") > 51200 )); then
