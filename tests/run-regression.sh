@@ -257,6 +257,10 @@ run_unit_test "$ROOT/tests/unit/assist-context.cpp" "$ROOT/src/assist/AssistCont
 BDA_TEST_IVF="$STREAM" run_unit_test "$ROOT/tests/unit/av1-obu-scan.cpp" \
               "$ROOT/src/bitstream/av1/ObuScan.cpp"
 
+# YouTube 링크 목록. pane 과 yt-transcode.sh 가 한 줄의 의미에 합의해야 한다 - 어긋나면
+# 화면에 보이는 목록과 실제로 인코딩되는 목록이 달라진다 (주석 처리한 링크가 큐에 들어가는 등).
+run_unit_test "$ROOT/tests/unit/yt-link-list.cpp" "$ROOT/src/yt/LinkList.cpp"
+
 # MP4 컨테이너. box 트리와 sample table(stsc/stco/stsz)을 실제 ffmpeg 산출물로 검증한다 -
 # 손으로 만든 픽스처는 "내가 생각하는 포맷" 과의 일치만 증명하기 때문이다.
 MP4="$(ensure_mp4)" || MP4=""

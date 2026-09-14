@@ -1,0 +1,18 @@
+# yt-transcode list file
+#
+# One video per line: a full YouTube URL or a bare 11-character video ID.
+# A '#' starts a comment, either at the start of a line or after a link.
+# Blank lines are ignored. Surrounding quotes and trailing commas are tolerated.
+#
+# Run with:
+#   .\yt-transcode.ps1 -ListFile .\links.txt -OutDir D:\Encoded -SkipExisting
+
+# --- full URLs ---
+https://www.youtube.com/watch?v=bGYi7eOoVJ4&list=PLKtRB3ixro79F8cAxCHtpuRNThUJcy050&index=3
+https://youtu.be/cWSXtFMh0Yk
+
+# --- bare IDs work too ---
+dQw4w9WgXcQ          # trailing comments are stripped
+
+# --- this whole line is disabled ---
+# https://youtu.be/SomeVideoID

@@ -65,6 +65,10 @@ Recommends:     gtk3
 # explains why it is disabled.
 Recommends:     bubblewrap
 
+# The YouTube transcode pane downloads with yt-dlp. Recommends, not Requires: the analyzer does
+# not need it, and the pane says so rather than failing when it is absent.
+Recommends:     yt-dlp
+
 %description
 bd_analyzer is a fork of IENT/YUView extended for codec development and
 verification: AV1/H.264/HEVC bitstream inspection, YUV analysis with PSNR/SSIM
@@ -91,7 +95,7 @@ Qt 6.5.3, FFmpeg 7.1, dav1d analyzer 디코더가 %{bda_home} 아래에 번들�
 %install
 install -d %{buildroot}%{bda_home}
 cp -a YUView bd-analyzer qt.conf check-deps.sh \
-      lib syslib ffmpeg plugins decoder assist %{buildroot}%{bda_home}/
+      lib syslib ffmpeg plugins decoder assist yt-transcode %{buildroot}%{bda_home}/
 
 # The binary is reached through the launcher, never directly - see packaging/common/bd-analyzer.
 install -d %{buildroot}%{_bindir}
@@ -132,6 +136,7 @@ fi
 %{bda_home}/plugins
 %{bda_home}/decoder
 %{bda_home}/assist
+%{bda_home}/yt-transcode
 %{_bindir}/%{name}
 %{_datadir}/applications/%{name}.desktop
 %{_datadir}/icons/hicolor/*/apps/%{name}.png

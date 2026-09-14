@@ -117,6 +117,13 @@ mkdir -p "$OUT/assist"
 cp -r "$ROOT/assets/assist/." "$OUT/assist/"
 chmod +x "$OUT/assist"/launch-*.sh
 
+echo "== 6c. YouTube transcode 자산 =="
+# YtTranscodeWidget 은 applicationDirPath()/yt-transcode/yt-transcode.sh 를 찾는다.
+# 없으면 pane 이 이유를 표시하고 비활성화된다.
+mkdir -p "$OUT/yt-transcode"
+cp -r "$ROOT/assets/yt-transcode/." "$OUT/yt-transcode/"
+chmod +x "$OUT/yt-transcode/yt-transcode.sh"
+
 echo "== 7. qt.conf =="
 # Qt 가 플러그인을 Qt 빌드 시점의 prefix 대신 실행 파일 옆에서 찾게 한다.
 cat > "$OUT/qt.conf" <<'EOF'
@@ -190,6 +197,7 @@ done
 check "$HERE/decoder/libdav1d-internals.so"     "dav1d analyzer 디코더"
 check "$HERE/assist/launch-claude.sh"           "AI 어시스턴트 런처"
 check "$HERE/assist/system-prompt.md"           "AI 어시스턴트 앱 레퍼런스"
+check "$HERE/yt-transcode/yt-transcode.sh"      "YouTube transcode 스크립트"
 [[ $problems -eq 0 ]] && echo "  (없음)"
 
 echo
