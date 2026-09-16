@@ -32,6 +32,7 @@ SKIP_EXISTING=0
 STOP_ON_ERROR=0
 PLAYLIST=0
 PREFETCH=0
+DOWNLOAD_ONLY=0
 LIMIT=0
 DRYRUN=0
 URLARG=""
@@ -86,6 +87,8 @@ BEHAVIOUR
       --playlist        Expand a playlist URL into all of its videos
       --prefetch        Download with yt-dlp first, then encode from the
                         local file. Needed when ffmpeg cannot read https.
+      --download-only   Just download into the output folder. No ffmpeg,
+                        no re-encode; keeps YouTube's own container.
       --limit N         With --playlist, take only the first N videos
   -n, --dry-run         Print the ffmpeg command instead of running it
   -h, --help            This text
@@ -94,6 +97,7 @@ EXAMPLES
   yt-transcode.sh dQw4w9WgXcQ
   yt-transcode.sh 'https://youtu.be/XXXXXXXX' -H 720 -q 20
   yt-transcode.sh -l links.txt -d /data/encoded -s
+  yt-transcode.sh -l links.txt -d /data/source --download-only
   yt-transcode.sh -l links.txt -j 4 -e nvenc
   yt-transcode.sh 'https://www.youtube.com/playlist?list=PLxxxx' --playlist -s
 EOF
@@ -120,6 +124,7 @@ while [[ $# -gt 0 ]]; do
         --play)             PLAY=1;          shift ;;
         --playlist)         PLAYLIST=1;      shift ;;
         --prefetch)         PREFETCH=1;      shift ;;
+        --download-only)    DOWNLOAD_ONLY=1; shift ;;
         --limit)            LIMIT="$2";    shift 2 ;;
         -n|--dry-run)       DRYRUN=1;        shift ;;
         -h|--help)          usage; exit 0 ;;
@@ -296,6 +301,58 @@ convert_one() {
 
     title="${F[0]}"; vid="${F[1]}"; nstreams="${F[2]}"
     local -a INPUTS=("${F[@]:3}")
+
+    # ---- download only: no ffmpeg at all
+    #
+    # Different from "-e copy", which still runs ffmpeg to remux into mp4. Here yt-dlp writes
+    # straight into the output folder and keeps whatever container and codec YouTube served - the
+    # untouched original, which is what you want as the reference source for an encoder comparison
+    # or when the encode is going to happen later with different settings.
+    if (( DOWNLOAD_ONLY )); then
+        local safe_dl template
+        safe_dl="$(sanitize "$title")"
+        [[ -z "$safe_dl" ]] && safe_dl="$vid"
+
+        # Let yt-dlp choose the extension: it depends on which streams it picked and whether they
+        # had to be merged, and naming the file .mp4 up front would be a lie half the time.
+        template="$OUTDIR/$safe_dl.%(ext)s"
+
+        if (( SKIP_EXISTING )); then
+            local existing
+            existing="$(ls "$OUTDIR/$safe_dl".* 2>/dev/null | head -1)"
+            if [[ -n "$existing" ]]; then
+                printf '  %s[SKIP]%s %s\n' "$C_DIM" "$C_RST" "$existing"
+                return 3
+            fi
+        fi
+
+        printf '  Title  : %s\n' "$title"
+        printf '  Output : %s%s%s\n' "$C_GRN" "$OUTDIR/$safe_dl.*" "$C_RST"
+
+        if (( DRYRUN )); then
+            printf '  %syt-dlp' "$C_CYN"
+            printf ' %q' "${YT_BASE[@]}" -f "bv*[height<=$HEIGHT]+ba/b[height<=$HEIGHT]/b" \
+                         --merge-output-format mkv -o "$template" "$link"
+            printf '%s\n' "$C_RST"
+            return 0
+        fi
+
+        if ! yt-dlp "${YT_BASE[@]}" \
+                    -f "bv*[height<=$HEIGHT]+ba/b[height<=$HEIGHT]/b" \
+                    --merge-output-format mkv -o "$template" "$link"; then
+            err "Download failed: $link"
+            return 1
+        fi
+
+        local produced
+        produced="$(ls "$OUTDIR/$safe_dl".* 2>/dev/null | head -1)"
+        if [[ -z "$produced" ]]; then
+            err "yt-dlp reported success but produced no file for: $link"
+            return 1
+        fi
+        ok "$(numfmt --to=iec --suffix=B "$(stat -c%s "$produced")" 2>/dev/null || stat -c%s "$produced")  $produced"
+        return 0
+    fi
 
     # ---- output path
     if [[ -n "$forced_out" ]]; then

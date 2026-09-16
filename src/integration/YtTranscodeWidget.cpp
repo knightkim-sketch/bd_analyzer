@@ -34,6 +34,12 @@ struct EncoderChoice
   const char *ffmpegEncoder; //!< What must exist in ffmpeg for this to work. Empty = always.
 };
 
+/* The script name for "do not encode at all". Not an -e value: it is --download-only, which skips
+ * ffmpeg entirely and keeps whatever container YouTube served. Kept in this list anyway so the one
+ * dropdown answers the whole question of "what do I want out of this".
+ */
+constexpr const char *kDownloadOnly = "download-only";
+
 const std::vector<EncoderChoice> &encoderChoices()
 {
   static const std::vector<EncoderChoice> choices{
@@ -43,6 +49,10 @@ const std::vector<EncoderChoice> &encoderChoices()
       {"x264", "H.264 (x264)", "libx264"},
       {"nvenc", "H.264 (NVENC)", "h264_nvenc"},
       {"copy", "Copy - no re-encode", ""},
+      /* Last, so the default selection is an encoder: transcoding is what the pane is for, and
+       * downloading is the thing you reach for deliberately.
+       */
+      {kDownloadOnly, "Download only - no encoding", ""},
   };
   return choices;
 }
@@ -190,11 +200,28 @@ YtTranscodeWidget::YtTranscodeWidget(QWidget *parent) : QWidget(parent)
   connect(this->startButton, &QPushButton::clicked, this, &YtTranscodeWidget::startTranscode);
   connect(this->stopButton, &QPushButton::clicked, this, &YtTranscodeWidget::stopTranscode);
 
+  /* CRF is meaningless with no encode, and a control that still accepts a number it will ignore
+   * is worse than one that is plainly off. Height stays live: yt-dlp honours it when choosing
+   * which stream to fetch.
+   */
+  const auto syncCrfEnabled = [this]() {
+    const bool downloadOnly =
+        this->encoderBox->currentData().toString() == QLatin1String(kDownloadOnly);
+    this->crfBox->setEnabled(!downloadOnly);
+    this->startButton->setText(downloadOnly ? tr("Download") : tr("Download and encode"));
+  };
+  connect(this->encoderBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+          [syncCrfEnabled](int) { syncCrfEnabled(); });
+
   // --- what this machine can actually do -------------------------------------------------------
+  // Once, not once per choice: each call runs ffmpeg.
+  const auto present = availableEncoders();
   for (const auto &choice : encoderChoices())
-    if (availableEncoders().contains(QString::fromLatin1(choice.scriptName)))
+    if (present.contains(QString::fromLatin1(choice.scriptName)))
       this->encoderBox->addItem(QString::fromLatin1(choice.label),
                                 QString::fromLatin1(choice.scriptName));
+
+  syncCrfEnabled(); // The list was just filled, so the first entry decides the initial state.
 
   if (const auto reason = this->unavailableReason(); !reason.isEmpty())
   {
@@ -370,15 +397,38 @@ void YtTranscodeWidget::startTranscode()
    * is the TLS layer. A pane cannot ask the user to diagnose their ffmpeg build, and the download
    * is going to disk either way here.
    */
-  const QStringList arguments{
-      QStringLiteral("-l"),         listPath,
-      QStringLiteral("-d"),         this->outDirEdit->text(),
-      QStringLiteral("-e"),         this->encoderBox->currentData().toString(),
-      QStringLiteral("-q"),         QString::number(this->crfBox->value()),
-      QStringLiteral("-H"),         this->heightBox->currentText(),
-      QStringLiteral("--prefetch"),
+  const auto encoder      = this->encoderBox->currentData().toString();
+  const bool downloadOnly = encoder == QLatin1String(kDownloadOnly);
+
+  QStringList arguments{
+      QStringLiteral("-l"), listPath,
+      QStringLiteral("-d"), this->outDirEdit->text(),
+      QStringLiteral("-H"), this->heightBox->currentText(),
       QStringLiteral("--skip-existing"),
   };
+
+  if (downloadOnly)
+  {
+    /* Straight into the output folder, in YouTube's own container. No encoder and no CRF: there
+     * is no encode to apply them to, and --prefetch would only name a temporary file that is
+     * immediately the answer.
+     */
+    arguments << QStringLiteral("--download-only");
+  }
+  else
+  {
+    arguments << QStringLiteral("-e") << encoder << QStringLiteral("-q")
+              << QString::number(this->crfBox->value());
+
+    /* --prefetch: yt-dlp downloads to a local file and ffmpeg encodes from that, rather than
+     * ffmpeg reading the googlevideo URLs itself.
+     *
+     * Not a preference. The static ffmpeg 7.0.2 on this machine segfaults on *any* https input -
+     * reproduced against media.xiph.org as well as YouTube, with no headers and with -c copy, so
+     * it is the TLS layer. A pane cannot ask the user to diagnose their ffmpeg build.
+     */
+    arguments << QStringLiteral("--prefetch");
+  }
 
   this->queued = int(links.size());
   this->progress->setRange(0, 0); // The script reports per video; until then, show it is alive.
@@ -386,13 +436,24 @@ void YtTranscodeWidget::startTranscode()
   this->startButton->setEnabled(false);
   this->stopButton->setEnabled(true);
 
-  this->appendLog(tr("--- %1 link(s), encoder %2, crf %3, max %4p ---")
-                      .arg(this->queued)
-                      .arg(this->encoderBox->currentText())
-                      .arg(this->crfBox->value())
-                      .arg(this->heightBox->currentText()));
-  this->appendLog(tr("Each video is downloaded to a temporary file first, then encoded. The "
-                     "download is deleted once the encode finishes."));
+  if (downloadOnly)
+  {
+    this->appendLog(tr("--- %1 link(s), download only, max %2p ---")
+                        .arg(this->queued)
+                        .arg(this->heightBox->currentText()));
+    this->appendLog(tr("Saved straight to the output folder in YouTube's own container, with no "
+                       "re-encoding."));
+  }
+  else
+  {
+    this->appendLog(tr("--- %1 link(s), encoder %2, crf %3, max %4p ---")
+                        .arg(this->queued)
+                        .arg(this->encoderBox->currentText())
+                        .arg(this->crfBox->value())
+                        .arg(this->heightBox->currentText()));
+    this->appendLog(tr("Each video is downloaded to a temporary file first, then encoded. The "
+                       "download is deleted once the encode finishes."));
+  }
 
   this->process = new QProcess(this);
   this->process->setProcessChannelMode(QProcess::MergedChannels);
