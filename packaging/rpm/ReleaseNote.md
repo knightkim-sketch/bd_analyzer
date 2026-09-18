@@ -8,6 +8,54 @@
 
 ---
 
+## 0.3.0 (2026-09-18)
+
+0.2.0 이후 추가된 내용. 상세는 `docs/ai/30-designs/` 의 설계 문서에 있다.
+
+### SB / Frame / Sequence BD-rate
+
+- **View → SB BD-rate from Selection (`Ctrl+R`)** — 선택한 스트림들을 하나의 RD 곡선(group)으로 묶고, group 간 BD-rate 를 superblock / frame / sequence 세 단위로 계산해 popup 의 그래프와 table 로 보여준다.
+- 같은 수식을 세 단위에 각각 적용한다 — "시퀀스 전체로는 이득인데 이 superblock 에서는 손해" 를 한 화면에서 판단할 수 있다.
+- `Sequence` 체크박스가 곧 스위치다. 켜면 전 프레임 sweep 이 시작되고 끄면 취소된다. GUI 스레드에서 프레임 단위로 슬라이스하므로 창이 멈추지 않고, 진행 중에도 부분 결과를 그린다.
+- group table 에서 이름을 편집하고 anchor 를 바꾼다. anchor 변경은 수집값을 재사용하고 BD-rate 만 다시 계산한다.
+- BD-rate 가 정의되지 않는 경우를 구분해 표시한다 — `no PSNR overlap`, `too few points`, `lossless`. superblock 단위에서는 값이 안 나오는 것이 정상인 블록이 많다.
+- rate 축은 `bits + 1` (log) 이다. skip 된 superblock 은 0 bits 라 로그 축에서 사라지는데, "그 화질을 공짜로 얻었다" 가 그 블록의 가장 중요한 정보다. table 은 실제 bits 를 그대로 보여준다.
+- 그래프 양 축에 눈금·수치·격자를 넣었다. rate 축은 로그지만 눈금은 bit 단위로 round 한 값(1, 2, 5, 10 …)에만 찍는다.
+- dav1d analyzer 디코더가 아닌 스트림, 격자가 다른 스트림, 점이 2개 미만인 group 은 이유를 붙여 거절한다.
+
+### MP4 컨테이너 분석
+
+- Bitstream Analysis 패널에 **Container 탭** 추가 — box 계층 트리(오프셋·크기·비고)와 샘플 목록(파일 오프셋·크기·sync·decode time).
+- libavformat 은 패킷만 주고 컨테이너 구조는 보여주지 않는다. `stsc`/`stco`/`stsz` 를 직접 풀어 **샘플이 파일 어디에 있는지**까지 낸다.
+- fragmented MP4 지원 — 샘플이 sample table 이 아니라 `moof/traf` 의 `trun` 에 있는 경우도 `tfhd`/`trex`/`tfdt` 를 읽어 찾아낸다.
+- 64-bit chunk offset(`co64`), 다중 트랙, 오디오 샘플 엔트리, version 1 `mdhd` 를 처리한다.
+- 큰 파일을 위해 파일을 읽지 않고 매핑한다 — 헤더를 보려고 `mdat` 을 메모리로 끌어오지 않는다.
+
+### AI 어시스턴트 패널
+
+- **View → Dock Panels → Show AI Assistant (`Ctrl+K`)** — 화면에 열린 스트림·프레임·클릭한 superblock 을 컨텍스트로 넘겨 질문할 수 있다.
+- 무엇을 첨부할지 체크박스로 고르고, **실제로 보낸 내용을 그대로 보여준다.** 잘못된 수치로 그럴듯한 오답이 나오는 것에 대한 방어책이다.
+- 세 가지 접근 모드 — 읽기 전용 / 이 프로젝트 안에서 편집 / 전체 접근. 현재 모드를 패널이 항상 표시한다.
+- CLI 나 로그인이 없으면 이유를 붙여 비활성화된다.
+
+### YouTube 다운로드·트랜스코딩 패널
+
+- **View → Dock Panels → Show YouTube Transcode (`Ctrl+Y`)** — `links.txt` 를 목록으로 보여주고, 추가·삭제·저장한 뒤 일괄 다운로드/인코딩한다.
+- 코덱 선택: AV1(libaom / SVT-AV1), H.265, H.264, copy, **다운로드 전용**. ffmpeg 에 실제로 있는 인코더만 노출한다.
+- 다운로드 전용은 ffmpeg 을 거치지 않고 YouTube 가 준 컨테이너 그대로 출력 폴더에 저장한다 — 인코더 비교의 기준 소스로 쓸 수 있다.
+- 다운로드를 먼저 파일로 받은 뒤 인코딩한다. ffmpeg 빌드에 따라 HTTPS 입력에서 죽는 경우가 있어 그 경로를 피한다.
+
+### 버그 수정
+
+- 분석 중인 playlist 항목을 삭제하면 **SIGSEGV** 로 죽던 문제 — 백그라운드 파싱 스레드에서 오는 시그널을 받는 슬롯 하나가 파서 null 검사를 빼먹고 있었다.
+- 시퀀스 전체를 디코딩할 때 **`std::bad_alloc`** 로 죽던 문제 — dav1d 의 transform size 테이블을 블록 데이터의 raw 바이트로 인덱싱해, 범위 밖 값을 읽으면 루프가 끝나지 않고 통계 벡터가 GB 단위로 불어났다. BD-rate 없이 디코딩만 해도 재현됐다.
+- BD-rate group 에 속한 스트림을 삭제하면 **use-after-free** 로 죽던 문제 — group 이 raw 포인터를 들고 있었다.
+- 150프레임 스트림이 **151프레임으로 보고**되던 문제 — 프레임 개수를 inclusive 인덱스로 넘기고 있었다. 존재하지 않는 프레임에 sweep 이 재시도 예산을 낭비했다.
+- 같은 클립을 두 인코더로 만든 곡선의 **이름이 구분되지 않던** 문제 — 파일명이 같으면 디렉토리명으로 구분한다.
+- playlist 와 BD-rate 표에서 **긴 이름이 구분되지 않던** 문제 — 이름은 끝부분이 다른데 그 끝이 잘려나갔다. 가운데를 생략하고 tooltip 에 전체를 담는다.
+
+---
+
 ## 0.2.0 (2026-09-06)
 
 최초 RPM(0.1.0, 2026-08-20) 이후 추가된 내용.

@@ -21,7 +21,7 @@ WORK="${WORK:-$ROOT/build/pkg}"
 DIST="${DIST:-$ROOT/build/dist}"
 UPSTREAM="$ROOT/third_party/yuview/upstream"
 
-VERSION="${BDA_VERSION:-0.2.0}"
+VERSION="${BDA_VERSION:-0.3.0}"
 RELEASE="${BDA_RELEASE:-1.git$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 
 what="all"; refresh=0
@@ -49,7 +49,7 @@ mkdir -p "$STAGE" "$DIST"
 
 echo "== 1. 페이로드 스테이징 =="
 # 번들의 실체를 그대로 옮긴다. -a 로 심볼릭 링크(SONAME 링크)와 퍼미션을 보존한다.
-for item in YUView qt.conf check-deps.sh lib syslib ffmpeg plugins decoder; do
+for item in YUView qt.conf check-deps.sh lib syslib ffmpeg plugins decoder assist yt-transcode; do
     [[ -e "$BUNDLE/$item" ]] || die "번들에 없음: $item"
     cp -a "$BUNDLE/$item" "$STAGE/"
 done

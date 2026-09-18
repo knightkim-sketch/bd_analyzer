@@ -33,7 +33,7 @@
 %global __requires_exclude ^(%{__requires_exclude_bundled}|%{__requires_exclude_optional})$
 
 Name:           bd-analyzer
-Version:        %{?bda_version}%{!?bda_version:0.2.0}
+Version:        %{?bda_version}%{!?bda_version:0.3.0}
 Release:        %{?bda_release}%{!?bda_release:1}%{?dist}
 Summary:        Video bitstream and YUV analysis toolset
 Summary(ko):    비디오 비트스트림·YUV 분석 도구
@@ -142,6 +142,19 @@ fi
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Fri Sep 18 2026 knight.kim <knight.kim@blue-dot.io> - 0.3.0-1
+- SB / Frame / Sequence BD-rate from a playlist selection (Ctrl+R): grouped RD curves,
+  a cancellable sequence sweep, and axis ticks in bits rather than in log space.
+- MP4 container tab: the box tree and located samples, including fragmented files whose
+  samples live in trun rather than in the sample table.
+- AI assistant dock (Ctrl+K) that answers about the stream on screen, showing exactly what
+  it was sent, under a selectable access mode.
+- YouTube download and transcode dock (Ctrl+Y): a link list encoded to AV1, H.265, H.264,
+  or downloaded untouched.
+- Fixes: a crash and a use-after-free when deleting the item being analysed, an unbounded
+  allocation while decoding a sequence, a frame count reported one too high, and long
+  stream names that were indistinguishable once elided.
+
 * Sun Sep 06 2026 knight.kim <knight.kim@blue-dot.io> - 0.2.0-1
 - Motion estimation analysis: SVT-AV1 integer ME and odyssey open-loop ME reproduced,
   drawn through the statistics overlay and readable per block in the Block Info pane.
@@ -151,5 +164,5 @@ fi
 - Fixes: abort on quit, abort when switching items with the overlay on, a raw YUV whose
   name carries no resolution, and Y4M originals being read at the wrong offsets.
 
-* Wed Aug 20 2026 knight.kim <knight.kim@blue-dot.io> - 0.1.0-1
+* Thu Aug 20 2026 knight.kim <knight.kim@blue-dot.io> - 0.1.0-1
 - First packaged release: RPM and tar.gz built from the bin/ deployment bundle.

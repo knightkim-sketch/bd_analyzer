@@ -42,6 +42,9 @@ for f in "$HERE"/ffmpeg/lib*.so.*[0-9]; do
     [[ -L "$f" ]] || check "$f" "ffmpeg/$(basename "$f")"
 done
 check "$HERE/decoder/libdav1d-internals.so"     "dav1d analyzer 디코더"
+check "$HERE/assist/launch-claude.sh"           "AI 어시스턴트 런처"
+check "$HERE/assist/system-prompt.md"           "AI 어시스턴트 앱 레퍼런스"
+check "$HERE/yt-transcode/yt-transcode.sh"      "YouTube transcode 스크립트"
 [[ $problems -eq 0 ]] && echo "  (없음)"
 
 echo
