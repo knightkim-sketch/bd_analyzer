@@ -1,0 +1,450 @@
+diff --git a/YUViewLib/src/parser/AV1/ParserAV1OBU.h b/YUViewLib/src/parser/AV1/ParserAV1OBU.h
+index bc0426da..ed9c8a93 100644
+--- a/YUViewLib/src/parser/AV1/ParserAV1OBU.h
++++ b/YUViewLib/src/parser/AV1/ParserAV1OBU.h
+@@ -36,6 +36,7 @@
+ #include <video/yuv/videoHandlerYUV.h>
+ 
+ #include "GlobalDecodingValues.h"
++#include "frame_header_obu.h"
+ #include "sequence_header_obu.h"
+ 
+ namespace parser
+@@ -68,6 +69,9 @@ public:
+ protected:
+   av1::GlobalDecodingValues                 decValues;
+   std::shared_ptr<av1::sequence_header_obu> active_sequence_header;
++  // A tile group can arrive in its own OBU, after the frame header it belongs to. Its tile sizes
++  // cannot be read without that header's tile grid, so the last one parsed is kept here.
++  std::shared_ptr<av1::frame_header_obu> active_frame_header;
+ };
+ 
+ } // namespace parser
+diff --git a/YUViewLib/src/parser/AV1/tile_group_obu.cpp b/YUViewLib/src/parser/AV1/tile_group_obu.cpp
+new file mode 100644
+index 00000000..94d79762
+--- /dev/null
++++ b/YUViewLib/src/parser/AV1/tile_group_obu.cpp
+@@ -0,0 +1,122 @@
++/*  This file is part of YUView - The YUV player with advanced analytics toolset
++ *   <https://github.com/IENT/YUView>
++ *   Copyright (C) 2015  Institut f�r Nachrichtentechnik, RWTH Aachen University, GERMANY
++ *
++ *   This program is free software; you can redistribute it and/or modify
++ *   it under the terms of the GNU General Public License as published by
++ *   the Free Software Foundation; either version 3 of the License, or
++ *   (at your option) any later version.
++ *
++ *   In addition, as a special exception, the copyright holders give
++ *   permission to link the code of portions of this program with the
++ *   OpenSSL library under certain conditions as described in each
++ *   individual source file, and distribute linked combinations including
++ *   the two.
++ *
++ *   You must obey the GNU General Public License in all respects for all
++ *   of the code used other than OpenSSL. If you modify file(s) with this
++ *   exception, you may extend this exception to your version of the
++ *   file(s), but you are not obligated to do so. If you do not wish to do
++ *   so, delete this exception statement from your version. If you delete
++ *   this exception statement from all source files in the program, then
++ *   also delete it here.
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ *   GNU General Public License for more details.
++ *
++ *   You should have received a copy of the GNU General Public License
++ *   along with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "tile_group_obu.h"
++
++#include <common/Typedef.h>
++
++#include <stdexcept>
++
++namespace parser::av1
++{
++
++using namespace reader;
++
++namespace
++{
++
++/* Spec 5.3.5 byte_alignment(). The padding is required to be zero and carries nothing, so a
++ * conformant stream logs no line for it - a bit per line here would bury the tile sizes. A
++ * non-zero bit is a conformance error, and that one does get a line.
++ */
++void byte_alignment(reader::SubByteReaderLogging &reader)
++{
++  while (!reader.byte_aligned())
++    if (reader.readBitsSilent(1))
++      reader.logArbitrary("byte_alignment_bit", "1", "f(1)", "1", "should be zero");
++}
++
++} // namespace
++
++void tile_group_obu::parse(SubByteReaderLogging &reader, const tile_info &tileInfo, size_t sz)
++{
++  SubByteReaderLoggingSubLevel subLevel(reader, "tile_group_obu()");
++
++  // Spec 5.9.1 aligns after the frame header and before the tile group. A tile group that has an
++  // OBU to itself already starts aligned, so this is a no-op there. nrBytesRead() rounds a partial
++  // byte up either way, so the caller's sz is the same before and after.
++  byte_alignment(reader);
++
++  const auto NumTiles    = tileInfo.TileCols * tileInfo.TileRows;
++  const auto startBitPos = reader.nrBitsRead();
++
++  if (NumTiles == 0)
++    throw std::logic_error("Tile group with no tiles - the frame header was not parsed.");
++
++  this->tile_start_and_end_present_flag = false;
++  if (NumTiles > 1)
++    this->tile_start_and_end_present_flag = reader.readFlag("tile_start_and_end_present_flag");
++
++  if (NumTiles == 1 || !this->tile_start_and_end_present_flag)
++  {
++    this->tg_start = 0;
++    this->tg_end   = NumTiles - 1;
++  }
++  else
++  {
++    const auto tileBits = tileInfo.TileColsLog2 + tileInfo.TileRowsLog2;
++    this->tg_start      = unsigned(reader.readBits("tg_start", tileBits));
++    this->tg_end        = unsigned(reader.readBits("tg_end", tileBits));
++  }
++
++  byte_alignment(reader);
++  const auto headerBytes = (reader.nrBitsRead() - startBitPos) / 8;
++  if (sz < headerBytes)
++    throw std::logic_error("Tile group header is larger than the OBU that carries it.");
++  sz -= headerBytes;
++
++  if (this->tg_end < this->tg_start || this->tg_end >= NumTiles)
++    throw std::logic_error("Tile group range is outside the frame's tile grid.");
++
++  for (auto TileNum = this->tg_start; TileNum <= this->tg_end; TileNum++)
++  {
++    size_t tileSize;
++    if (TileNum == this->tg_end)
++    {
++      // The last tile of the group has no size field - it is whatever is left of the OBU.
++      tileSize = sz;
++      sz       = 0;
++    }
++    else
++    {
++      const auto tile_size_minus_1 = reader.readLE("tile_size_minus_1", tileInfo.TileSizeBytes);
++      tileSize                     = size_t(tile_size_minus_1) + 1;
++      if (sz < tileSize + tileInfo.TileSizeBytes)
++        throw std::logic_error("Tile is larger than the bytes left in the OBU.");
++      sz -= tileSize + tileInfo.TileSizeBytes;
++    }
++    this->tileSizes.push_back(tileSize);
++    reader.skipBytes(tileSize);
++  }
++}
++
++} // namespace parser::av1
+diff --git a/YUViewLib/src/parser/AV1/tile_group_obu.h b/YUViewLib/src/parser/AV1/tile_group_obu.h
+new file mode 100644
+index 00000000..1d88b3ec
+--- /dev/null
++++ b/YUViewLib/src/parser/AV1/tile_group_obu.h
+@@ -0,0 +1,64 @@
++/*  This file is part of YUView - The YUV player with advanced analytics toolset
++ *   <https://github.com/IENT/YUView>
++ *   Copyright (C) 2015  Institut f�r Nachrichtentechnik, RWTH Aachen University, GERMANY
++ *
++ *   This program is free software; you can redistribute it and/or modify
++ *   it under the terms of the GNU General Public License as published by
++ *   the Free Software Foundation; either version 3 of the License, or
++ *   (at your option) any later version.
++ *
++ *   In addition, as a special exception, the copyright holders give
++ *   permission to link the code of portions of this program with the
++ *   OpenSSL library under certain conditions as described in each
++ *   individual source file, and distribute linked combinations including
++ *   the two.
++ *
++ *   You must obey the GNU General Public License in all respects for all
++ *   of the code used other than OpenSSL. If you modify file(s) with this
++ *   exception, you may extend this exception to your version of the
++ *   file(s), but you are not obligated to do so. If you do not wish to do
++ *   so, delete this exception statement from your version. If you delete
++ *   this exception statement from all source files in the program, then
++ *   also delete it here.
++ *
++ *   This program is distributed in the hope that it will be useful,
++ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ *   GNU General Public License for more details.
++ *
++ *   You should have received a copy of the GNU General Public License
++ *   along with this program. If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#pragma once
++
++#include "OpenBitstreamUnit.h"
++#include "parser/common/SubByteReaderLogging.h"
++#include "tile_info.h"
++
++namespace parser::av1
++{
++
++/* Spec 5.11.1 general_tile_group_obu().
++ *
++ * We read the tile group header and the size of each tile, and step over the tile payloads - the
++ * entropy coded blocks inside them are dav1d's job, not this parser's. The sizes are what makes a
++ * tiled stream legible: they say how the frame's bits were actually split across the tile grid,
++ * which the frame header only describes in the abstract.
++ */
++class tile_group_obu : public ObuPayload
++{
++public:
++  tile_group_obu() = default;
++
++  // sz is the number of payload bytes left in the OBU at the point this is called - after the OBU
++  // header, and for an OBU_FRAME after the frame header and its byte alignment.
++  void parse(reader::SubByteReaderLogging &reader, const tile_info &tileInfo, size_t sz);
++
++  bool     tile_start_and_end_present_flag{};
++  unsigned tg_start{};
++  unsigned tg_end{};
++  vector<size_t> tileSizes;
++};
++
++} // namespace parser::av1
+diff --git a/YUViewLib/src/parser/common/SubByteReader.cpp b/YUViewLib/src/parser/common/SubByteReader.cpp
+index 1ad65c96..92037e7f 100644
+--- a/YUViewLib/src/parser/common/SubByteReader.cpp
++++ b/YUViewLib/src/parser/common/SubByteReader.cpp
+@@ -181,6 +181,34 @@ std::tuple<int64_t, std::string> SubByteReader::readSE_V()
+     return {int64_t((val + 1) / 2), coding};
+ }
+ 
++void SubByteReader::skipBytes(size_t nrBytes)
++{
++  if (this->posInBufferBits != 0 && this->posInBufferBits != 8)
++    throw std::logic_error("When skipping bytes in the bitstream, it must be byte aligned.");
++
++  if (this->posInBufferBits == 8)
++    if (!this->gotoNextByte())
++      throw std::logic_error("Trying to skip over the buffer boundary.");
++
++  for (size_t i = 0; i < nrBytes; i++)
++    if (!this->gotoNextByte())
++      if (i < nrBytes - 1)
++        throw std::logic_error("Trying to skip over the buffer boundary.");
++}
++
++std::tuple<uint64_t, std::string> SubByteReader::readLE(size_t nrBytes)
++{
++  uint64_t    value = 0;
++  std::string coding;
++  for (size_t i = 0; i < nrBytes; i++)
++  {
++    auto [byte, byteCoding] = this->readBits(8);
++    coding += byteCoding;
++    value |= (byte << (i * 8));
++  }
++  return {value, coding};
++}
++
+ std::tuple<uint64_t, std::string> SubByteReader::readLEB128()
+ {
+   // We will read full bytes (up to 8)
+diff --git a/YUViewLib/src/parser/common/SubByteReader.h b/YUViewLib/src/parser/common/SubByteReader.h
+index 3192982c..06d88575 100644
+--- a/YUViewLib/src/parser/common/SubByteReader.h
++++ b/YUViewLib/src/parser/common/SubByteReader.h
+@@ -63,6 +63,11 @@ public:
+ 
+   [[nodiscard]] ByteVector peekBytes(unsigned nrBytes) const;
+ 
++  // Advance over nrBytes without producing a value or a coding string. readBytes() builds eight
++  // characters of coding per byte, which is fine for a handful of bytes and hopeless for a tile
++  // payload of several kilobytes that we only need to step over.
++  void skipBytes(size_t nrBytes);
++
+   void disableEmulationPrevention() { skipEmulationPrevention = false; }
+ 
+ protected:
+@@ -72,6 +77,8 @@ protected:
+   std::tuple<uint64_t, std::string> readUE_V();
+   std::tuple<int64_t, std::string>  readSE_V();
+   std::tuple<uint64_t, std::string> readLEB128();
++  // le(n) - spec 4.10.5. n bytes, least significant byte first. Byte aligned by definition.
++  std::tuple<uint64_t, std::string> readLE(size_t nrBytes);
+   std::tuple<uint64_t, std::string> readUVLC();
+   std::tuple<uint64_t, std::string> readNS(uint64_t maxVal);
+   std::tuple<int64_t, std::string>  readSU(unsigned nrBits);
+diff --git a/YUViewLib/src/parser/common/SubByteReaderLogging.cpp b/YUViewLib/src/parser/common/SubByteReaderLogging.cpp
+index 41b348fe..0c5ab1dd 100644
+--- a/YUViewLib/src/parser/common/SubByteReaderLogging.cpp
++++ b/YUViewLib/src/parser/common/SubByteReaderLogging.cpp
+@@ -243,6 +243,38 @@ int64_t SubByteReaderLogging::readSEV(const std::string &symbolName, const Optio
+   }
+ }
+ 
++uint64_t SubByteReaderLogging::readBitsSilent(size_t numBits)
++{
++  try
++  {
++    auto [value, code] = SubByteReader::readBits(numBits);
++    (void) code;
++    return value;
++  }
++  catch (const std::exception &ex)
++  {
++    this->logExceptionAndThrowError(ex, std::to_string(numBits) + " bits");
++  }
++}
++
++uint64_t
++SubByteReaderLogging::readLE(const std::string &symbolName, size_t nrBytes, const Options &options)
++{
++  try
++  {
++    if (!this->byte_aligned())
++      throw std::logic_error("Trying to read a le(n) value while not byte aligned.");
++
++    auto [value, code] = SubByteReader::readLE(nrBytes);
++    checkAndLog(this->currentTreeLevel, "le(v)", symbolName, options, value, code);
++    return value;
++  }
++  catch (const std::exception &ex)
++  {
++    this->logExceptionAndThrowError(ex, "le(" + std::to_string(nrBytes) + ") symbol " + symbolName);
++  }
++}
++
+ uint64_t SubByteReaderLogging::readLEB128(const std::string &symbolName, const Options &options)
+ {
+   try
+diff --git a/YUViewLib/src/parser/AV1/ParserAV1OBU.cpp b/YUViewLib/src/parser/AV1/ParserAV1OBU.cpp
+index 428a50ee..d1bfa231 100644
+--- a/YUViewLib/src/parser/AV1/ParserAV1OBU.cpp
++++ b/YUViewLib/src/parser/AV1/ParserAV1OBU.cpp
+@@ -34,6 +34,7 @@
+ 
+ #include "OpenBitstreamUnit.h"
+ #include "frame_header_obu.h"
++#include "tile_group_obu.h"
+ #include "parser/common/SubByteReaderLogging.h"
+ 
+ namespace parser
+@@ -47,6 +48,39 @@ ParserAV1OBU::ParserAV1OBU(QObject *parent) : Parser(parent)
+   decValues.PrevFrameID = -1;
+ }
+ 
++namespace
++{
++
++/* How many payload bytes of this OBU the reader has not consumed yet.
++ *
++ * obu_size counts the payload only, so the OBU header bytes come off the reader's total. An OBU
++ * without a size field runs to the end of what we were handed.
++ */
++size_t obuPayloadBytesLeft(const parser::av1::obu_header &header,
++                           const size_t                   dataSize,
++                           const size_t                   nrHeaderBytes,
++                           const parser::reader::SubByteReaderLogging &reader)
++{
++  const auto payloadBytes =
++      header.obu_has_size_field ? size_t(header.obu_size) : dataSize - nrHeaderBytes;
++  const auto consumed = reader.nrBytesRead() - nrHeaderBytes;
++  return payloadBytes > consumed ? payloadBytes - consumed : 0;
++}
++
++/* Spec 5.3.4 trailing_bits(), called from 5.3.1 for every OBU that is not a tile group, a tile
++ * list or a frame. A single one bit, then zeroes to the end of the OBU. It is the only thing that
++ * says where the payload really ended, so a parser that skips it cannot tell a short read from a
++ * complete one.
++ */
++void trailing_bits(parser::reader::SubByteReaderLogging &reader, size_t nbBitsLeft)
++{
++  reader.readFlag("trailing_one_bit");
++  for (nbBitsLeft--; nbBitsLeft > 0; nbBitsLeft--)
++    reader.readFlag("trailing_zero_bit");
++}
++
++} // namespace
++
+ std::pair<size_t, std::string> ParserAV1OBU::parseAndAddOBU(int                       obuID,
+                                                             ByteVector &              data,
+                                                             std::shared_ptr<TreeItem> parent,
+@@ -98,8 +132,20 @@ std::pair<size_t, std::string> ParserAV1OBU::parseAndAddOBU(int
+                               obu.header.temporal_id,
+                               obu.header.spatial_id);
+ 
+-      obuTypeName = "Frame";
+-      obu.payload = new_frame_header;
++      obuTypeName               = "Frame";
++      obu.payload               = new_frame_header;
++      this->active_frame_header = new_frame_header;
++
++      // Spec 5.9.1 frame_obu(): the frame header is followed by byte_alignment() and then the
++      // tile group. A show_existing_frame header codes no picture, so it carries no tiles.
++      if (obu.header.obu_type == ObuType::OBU_FRAME &&
++          !new_frame_header->uncompressedHeader.show_existing_frame)
++      {
++        auto tileGroup = std::make_shared<tile_group_obu>();
++        tileGroup->parse(reader,
++                         new_frame_header->uncompressedHeader.tileInfo,
++                         obuPayloadBytesLeft(obu.header, data.size(), nrHeaderBytes, reader));
++      }
+ 
+       // An OBU_FRAME carries its tile group inline, and spec 5.11.1 runs decode_frame_wrapup()
+       // at the end of the last tile, which clears SeenFrameHeader. We do not parse tile groups,
+@@ -110,6 +156,32 @@ std::pair<size_t, std::string> ParserAV1OBU::parseAndAddOBU(int
+       if (obu.header.obu_type == ObuType::OBU_FRAME)
+         this->decValues.SeenFrameHeader = false;
+     }
++    else if (obu.header.obu_type == ObuType::OBU_TILE_GROUP)
++    {
++      if (!this->active_frame_header)
++        throw std::logic_error("Tile group without a frame header before it.");
++
++      auto tileGroup = std::make_shared<tile_group_obu>();
++      tileGroup->parse(reader,
++                       this->active_frame_header->uncompressedHeader.tileInfo,
++                       obuPayloadBytesLeft(obu.header, data.size(), nrHeaderBytes, reader));
++
++      obuTypeName = "Tile Group";
++      obu.payload = tileGroup;
++
++      // Spec 5.11.1 runs decode_frame_wrapup() once the last tile of the frame has been read.
++      this->decValues.SeenFrameHeader = false;
++    }
++
++
++    if (obu.header.obu_has_size_field && obu.header.obu_type != ObuType::OBU_TILE_GROUP &&
++        obu.header.obu_type != ObuType::OBU_TILE_LIST && obu.header.obu_type != ObuType::OBU_FRAME)
++    {
++      const auto payloadBits  = size_t(obu.header.obu_size) * 8;
++      const auto consumedBits = reader.nrBitsRead() - nrHeaderBytes * 8;
++      if (payloadBits > consumedBits)
++        trailing_bits(reader, payloadBits - consumedBits);
++    }
+   }
+   catch (const std::exception &e)
+   {
+diff --git a/YUViewLib/src/parser/common/SubByteReaderLogging.h b/YUViewLib/src/parser/common/SubByteReaderLogging.h
+index 535cc9e5..05ba5565 100644
+--- a/YUViewLib/src/parser/common/SubByteReaderLogging.h
++++ b/YUViewLib/src/parser/common/SubByteReaderLogging.h
+@@ -73,6 +73,10 @@ public:
+   uint64_t readUEV(const std::string &symbolName, const Options &options = {});
+   int64_t  readSEV(const std::string &symbolName, const Options &options = {});
+   uint64_t readLEB128(const std::string &symbolName, const Options &options = {});
++  uint64_t readLE(const std::string &symbolName, size_t nrBytes, const Options &options = {});
++  // Consume bits without logging a line for them. Only for padding whose value the spec fixes -
++  // the caller checks what came back and logs anything that should not have been there.
++  uint64_t readBitsSilent(size_t numBits);
+   uint64_t readNS(const std::string &symbolName, uint64_t maxVal, const Options &options = {});
+   int64_t  readSU(const std::string &symbolName, unsigned nrBits, const Options &options = {});
+ 

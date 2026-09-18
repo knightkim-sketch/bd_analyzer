@@ -1,0 +1,18 @@
+diff --git a/YUViewLib/src/parser/AV1/ParserAV1OBU.cpp b/YUViewLib/src/parser/AV1/ParserAV1OBU.cpp
+index d1bfa231..2242f3f1 100644
+--- a/YUViewLib/src/parser/AV1/ParserAV1OBU.cpp
++++ b/YUViewLib/src/parser/AV1/ParserAV1OBU.cpp
+@@ -97,6 +97,13 @@ std::pair<size_t, std::string> ParserAV1OBU::parseAndAddOBU(int
+ 
+   SubByteReaderLogging reader(data, obuRoot);
+ 
++  // AV1 has no emulation prevention - that is an AVC/HEVC concept, and the shared reader honours
++  // it by default. Left on, the reader drops an 0x03 byte after any 00 00 it walks past. Nothing
++  // in the streams tested here trips it, so this changes no output we have measured; it is here
++  // because walking kilobytes of tile payload through a reader that can silently skip a byte is
++  // not something to leave to luck.
++  reader.disableEmulationPrevention();
++
+   // Read the OBU header
+   OpenBitstreamUnit obu(obuID, obuStartEndPosFile);
+   obu.header.parse(reader);

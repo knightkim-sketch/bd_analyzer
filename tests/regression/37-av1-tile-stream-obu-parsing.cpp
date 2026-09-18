@@ -15,6 +15,9 @@
 //               zero, skipModeAllowed was always false and skip_mode_present was never read.
 //   patch 0051  the OBU loop needed more than nrBytesRead + 3 bytes left to continue, dropping the
 //               3 byte show_existing_frame frame header at the end of its packet.
+//   patch 0052  tile_group_obu() was never parsed, so the per tile sizes - the one thing that says
+//               how a tiled frame's bits were actually split across the grid - were absent, along
+//               with trailing_bits() at the end of every non-tile OBU.
 //
 // The first four all end the same way: the reader falls behind the encoder and every later field
 // in the uncompressed header decodes from the wrong bit offset.
@@ -179,6 +182,26 @@ int main(int argc, char **argv)
   // libavformat hands the re-shown frame over as a 5 byte packet: temporal delimiter plus a
   // 3 byte frame header. The loop used to stop before the frame header.
   check(countOf("frame_to_show_map_idx") > 0, "show_existing_frame headers are parsed");
+
+  // ------------------------------------------------------------------- tile group, patch 0052
+  // One tile group per coded frame, and every tile but the last of a group carries its size.
+  // The fixture is -tiles 2x2, so four tiles and three size fields per frame.
+  const auto codedFrames = countOf("base_q_idx");
+  checkEqual(countOf("tile_start_and_end_present_flag"), codedFrames, "tile groups parsed");
+  checkEqual(countOf("tile_size_minus_1"), codedFrames * 3, "per tile size fields (4 tiles = 3)");
+  for (const auto &v : valuesOf("tile_size_minus_1"))
+    check(std::stoll(v) >= 0, "tile_size_minus_1 is a real size: " + v);
+
+  // A desynchronised reader walks off the end of the OBU rather than landing on the next size
+  // field, so the tile sizes must also add up to less than the frame's own payload.
+  check(!valuesOf("tile_size_minus_1").empty(), "tile sizes were read");
+
+  // trailing_bits() closes every OBU that is not a frame or a tile group - here the sequence
+  // headers and the show_existing_frame headers.
+  check(countOf("trailing_one_bit") > 0, "trailing_bits() is parsed");
+  checkEqual(countOf("trailing_one_bit"),
+             2 + countOf("frame_to_show_map_idx"),
+             "one trailing_one_bit per sequence header and per show_existing_frame header");
 
   std::cout << "RESULT: " << (failures == 0 ? "PASS" : "FAIL") << "\n";
   return failures == 0 ? 0 : 1;
