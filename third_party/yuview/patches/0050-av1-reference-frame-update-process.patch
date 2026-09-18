@@ -1,0 +1,62 @@
+diff --git a/YUViewLib/src/parser/AV1/uncompressed_header.cpp b/YUViewLib/src/parser/AV1/uncompressed_header.cpp
+index 7cbf01b0..cea91b87 100644
+--- a/YUViewLib/src/parser/AV1/uncompressed_header.cpp
++++ b/YUViewLib/src/parser/AV1/uncompressed_header.cpp
+@@ -94,6 +94,10 @@ void uncompressed_header::parse(SubByteReaderLogging &               reader,
+         // load_grain_params(frame_to_show_map_idx);
+         throw std::logic_error("Not implemented yet.");
+       }
++      // Spec 7.21 loads the shown frame's order hint before 7.20 writes the buffers back, which
++      // only does anything here when a shown key frame refreshes all of them.
++      this->OrderHint = decValues.RefOrderHint[this->frame_to_show_map_idx];
++      this->reference_frame_update(decValues);
+       return;
+     }
+ 
+@@ -391,6 +395,33 @@ void uncompressed_header::parse(SubByteReaderLogging &               reader,
+       reader, this->FrameIsIntra, this->allow_high_precision_mv, this->PrevGmParams);
+   this->filmGrainParams.parse(
+       reader, seqHeader, this->show_frame, this->showable_frame, this->frame_type);
++
++  this->reference_frame_update(decValues);
++}
++
++/* Spec 7.20, the reference frame update process.
++ *
++ * Nothing used to run this, so RefOrderHint stayed zero for the whole stream and every decision
++ * that reads back the reference buffers was made on empty state. skip_mode_params() is the one
++ * that shows: with all hints zero it can never find a backward reference, so skipModeAllowed came
++ * out false for every frame and skip_mode_present - a real bit in the stream - was never read.
++ * From there the reader is one bit behind the encoder for the rest of the frame header.
++ *
++ * Only the entries this parser actually reads back are updated. The buffers for the decoded
++ * picture sizes are still unset, and still carry their TODO in GlobalDecodingValues.
++ */
++void uncompressed_header::reference_frame_update(GlobalDecodingValues &decValues) const
++{
++  for (unsigned i = 0; i < NUM_REF_FRAMES; i++)
++  {
++    if ((this->refresh_frame_flags >> i) & 1)
++    {
++      decValues.RefValid[i]     = true;
++      decValues.RefFrameId[i]   = this->current_frame_id;
++      decValues.RefFrameType[i] = this->frame_type;
++      decValues.RefOrderHint[i] = this->OrderHint;
++    }
++  }
+ }
+ 
+ void uncompressed_header::mark_ref_frames(int                                  idLen,
+diff --git a/YUViewLib/src/parser/AV1/uncompressed_header.h b/YUViewLib/src/parser/AV1/uncompressed_header.h
+index ed3d466a..80e0d2d9 100644
+--- a/YUViewLib/src/parser/AV1/uncompressed_header.h
++++ b/YUViewLib/src/parser/AV1/uncompressed_header.h
+@@ -152,6 +152,8 @@ private:
+   bool seg_feature_active_idx(int idx, int feature) const;
+ 
+   void setup_past_independence();
++  // Spec 7.20 - writes this frame into the reference buffers the later frames read back.
++  void reference_frame_update(GlobalDecodingValues &decValues) const;
+ };
+ 
+ } // namespace parser::av1

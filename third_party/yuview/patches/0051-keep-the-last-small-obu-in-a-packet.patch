@@ -1,0 +1,32 @@
+diff --git a/YUViewLib/src/parser/AVFormat/ParserAVFormat.cpp b/YUViewLib/src/parser/AVFormat/ParserAVFormat.cpp
+index e0f7e22e..47a18323 100644
+--- a/YUViewLib/src/parser/AVFormat/ParserAVFormat.cpp
++++ b/YUViewLib/src/parser/AVFormat/ParserAVFormat.cpp
+@@ -383,6 +383,8 @@ bool ParserAVFormat::parseAVPacket(unsigned         packetID,
+   // Log all the packet info
+   itemTree->createChildItem("stream_index", packet.getStreamIndex());
+   itemTree->createChildItem("Global AVPacket Count", packetID);
++  if (packet.getPacketType() == PacketType::VIDEO)
++    itemTree->createChildItem("YUView frame index", streamPacketID);
+   itemTree->createChildItem("pts", formatTimestamp(packet.getPTS(), timeBase));
+   itemTree->createChildItem("dts", formatTimestamp(packet.getDTS(), timeBase));
+   itemTree->createChildItem("duration", formatTimestamp(packet.getDuration(), timeBase));
+@@ -436,9 +438,15 @@ bool ParserAVFormat::parseAVPacket(unsigned         packetID,
+           if (!obuTypeName.empty())
+             unitNames[obuTypeName]++;
+ 
+-          constexpr auto minOBUSize = 3u;
+-          auto           remaining  = std::distance(posInData, avpacketData.end());
+-          if (remaining < 0 || nrBytesRead + minOBUSize >= size_t(std::abs(remaining)))
++          // The smallest legal OBU is two bytes: the header, and a size field holding zero. A
++          // temporal delimiter is exactly that, and a show_existing_frame frame header is three.
++          // The old test asked for strictly more than nrBytesRead + 3 bytes to be left, so the
++          // last OBU of a packet was dropped whenever it was that small - which is every
++          // show_existing_frame header, since libavformat hands those over in a 5 byte packet
++          // alongside the temporal delimiter. Those frames were missing from the dump entirely.
++          constexpr auto minOBUSize = 2u;
++          const auto     remaining  = std::distance(posInData, avpacketData.end());
++          if (remaining <= 0 || size_t(remaining) < nrBytesRead + minOBUSize)
+             break;
+           posInData += nrBytesRead;
+         }

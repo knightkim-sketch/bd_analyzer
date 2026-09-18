@@ -1,0 +1,20 @@
+diff --git a/YUViewLib/src/parser/AV1/ParserAV1OBU.cpp b/YUViewLib/src/parser/AV1/ParserAV1OBU.cpp
+index 6f45462a..428a50ee 100644
+--- a/YUViewLib/src/parser/AV1/ParserAV1OBU.cpp
++++ b/YUViewLib/src/parser/AV1/ParserAV1OBU.cpp
+@@ -100,6 +100,15 @@ std::pair<size_t, std::string> ParserAV1OBU::parseAndAddOBU(int
+ 
+       obuTypeName = "Frame";
+       obu.payload = new_frame_header;
++
++      // An OBU_FRAME carries its tile group inline, and spec 5.11.1 runs decode_frame_wrapup()
++      // at the end of the last tile, which clears SeenFrameHeader. We do not parse tile groups,
++      // so nothing else ever clears it and only a temporal delimiter did. Packets that hold
++      // several frames - any stream with hidden alternate-reference frames - therefore parsed
++      // the first frame header and reported every later one as frame_header_copy(), with no
++      // syntax at all. An OBU_FRAME_HEADER is the real thing this flag is for, so leave it be.
++      if (obu.header.obu_type == ObuType::OBU_FRAME)
++        this->decValues.SeenFrameHeader = false;
+     }
+   }
+   catch (const std::exception &e)

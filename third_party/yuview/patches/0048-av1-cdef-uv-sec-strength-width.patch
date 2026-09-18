@@ -1,0 +1,16 @@
+diff --git a/YUViewLib/src/parser/AV1/cdef_params.cpp b/YUViewLib/src/parser/AV1/cdef_params.cpp
+index 8eb62354..4a68fa22 100644
+--- a/YUViewLib/src/parser/AV1/cdef_params.cpp
++++ b/YUViewLib/src/parser/AV1/cdef_params.cpp
+@@ -72,7 +72,10 @@ void cdef_params::parse(reader::SubByteReaderLogging &       reader,
+     if (seqHeader->colorConfig.NumPlanes > 1)
+     {
+       this->cdef_uv_pri_strength[i] = reader.readBits(formatArray("cdef_uv_pri_strength", i), 4);
+-      this->cdef_uv_sec_strength[i] = reader.readBits(formatArray("cdef_uv_sec_strength", i), 4);
++      // f(2), not f(4) - spec 5.9.19. The luma twin two lines up reads 2 bits correctly; this one
++      // took its width from cdef_uv_pri_strength above it. Two bits too many here desynchronises
++      // the rest of cdef_params() and everything after it in the uncompressed header.
++      this->cdef_uv_sec_strength[i] = reader.readBits(formatArray("cdef_uv_sec_strength", i), 2);
+       if (this->cdef_uv_sec_strength[i] == 3)
+         this->cdef_uv_sec_strength[i]++;
+     }

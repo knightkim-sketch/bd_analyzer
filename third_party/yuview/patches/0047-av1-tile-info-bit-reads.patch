@@ -1,0 +1,39 @@
+diff --git a/YUViewLib/src/parser/AV1/tile_info.cpp b/YUViewLib/src/parser/AV1/tile_info.cpp
+index 58894928..b054dac3 100644
+--- a/YUViewLib/src/parser/AV1/tile_info.cpp
++++ b/YUViewLib/src/parser/AV1/tile_info.cpp
+@@ -94,7 +94,14 @@ void tile_info::parse(reader::SubByteReaderLogging &       reader,
+     }
+     this->MiColStarts.push_back(MiCols);
+ 
+-    this->minLog2TileRows = std::max(this->minLog2Tiles - this->TileColsLog2, 0u);
++    // Spec 5.9.15 computes Max(minLog2Tiles - TileColsLog2, 0) in signed arithmetic. Both
++    // operands are unsigned here, so whenever the stream chose more tile columns than the
++    // minimum tile count requires - any -tiles 2x2 stream does - the subtraction wraps to ~0u
++    // and std::max picks that. The increment_tile_rows_log2 loop below then never runs, the
++    // parser stops reading bits the encoder wrote, and every field after tile_info() in the
++    // uncompressed header decodes from the wrong bit offset.
++    this->minLog2TileRows =
++        this->minLog2Tiles > this->TileColsLog2 ? this->minLog2Tiles - this->TileColsLog2 : 0u;
+     this->TileRowsLog2    = this->minLog2TileRows;
+     while (this->TileRowsLog2 < this->maxLog2TileRows)
+     {
+@@ -152,9 +159,15 @@ void tile_info::parse(reader::SubByteReaderLogging &       reader,
+   }
+   if (this->TileColsLog2 > 0 || this->TileRowsLog2 > 0)
+   {
+-    this->context_update_tile_id =
+-        reader.readNS("context_update_tile_id", this->TileRowsLog2 + this->TileColsLog2);
+-    this->tile_size_bytes_minus_1 = reader.readNS("tile_size_bytes_minus_1", 2);
++    // Spec 5.9.15 reads both of these as f(n) - plain fixed-width bit fields. readNS() is the
++    // ns(n) coding and it takes a maximum value, not a bit count, so these calls were wrong
++    // twice over: the wrong coding, driven by a number that meant something else. ns(n) reads
++    // one bit fewer than f(n) for every value below its midpoint, so the reader silently fell
++    // behind the encoder here and decoded the whole quantization/segmentation tail of the
++    // uncompressed header from a shifted bit offset.
++    this->context_update_tile_id = reader.readBits(
++        "context_update_tile_id", this->TileRowsLog2 + this->TileColsLog2);
++    this->tile_size_bytes_minus_1 = reader.readBits("tile_size_bytes_minus_1", 2);
+     this->TileSizeBytes           = tile_size_bytes_minus_1 + 1;
+   }
+   else

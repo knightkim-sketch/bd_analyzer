@@ -52,6 +52,24 @@ ensure_stream() {
     echo "$out"
 }
 
+# 2x2 타일 스트림. 기본 test.ivf (176x144, 단일 타일) 는 tile_info() 의 증분 루프도,
+# 한 패킷에 여러 프레임이 담기는 경로도 지나가지 않는다 - 거기서 실제로 5개의 버그가 나왔다.
+# 640x360 은 superblock 이 10x6 이라 2x2 로 나뉘고, -g 5 가 hidden ARF 와 show_existing_frame 을
+# 만든다.
+ensure_tile_stream() {
+    local out="$DATA/test_tiles_2x2.ivf"
+    if [[ -s "$out" ]]; then echo "$out"; return 0; fi
+    local ff
+    ff="$(command -v ffmpeg || echo /usr/local/bin/ffmpeg)"
+    [[ -x "$ff" ]] || return 1
+    "$ff" -hide_banner -loglevel error -y \
+          -f lavfi -i "testsrc2=size=640x360:rate=25:duration=0.4" \
+          -c:v libaom-av1 -crf 30 -cpu-used 8 -g 5 \
+          -tiles 2x2 -tile-columns 1 -tile-rows 1 -pix_fmt yuv420p "$out" >/dev/null 2>&1 || return 1
+    [[ -s "$out" ]]
+    echo "$out"
+}
+
 # AV1-in-MP4. 컨테이너 파서 검증용이며, 없으면 그 테스트만 SKIP 한다.
 ensure_mp4() {
     local out="$DATA/test.mp4"
@@ -291,6 +309,16 @@ echo "== AV1 분석 경로 =="
 run_test "$ROOT/tests/regression/01-av1-obu-parsing.cpp"              "$STREAM"
 run_test "$ROOT/tests/regression/02-obu-packet-split.cpp"             "$STREAM"
 run_test "$ROOT/tests/regression/04-ffmpeg-av1-decode.cpp"            "$STREAM"
+
+# 타일 스트림의 OBU 구문 요소를 값 단위로 검사한다. VQ Analyzer 와의 덤프 대조에서 나온
+# 회귀들이며, 전부 크래시 없이 조용히 틀린 값을 내던 것들이다 (patch 0047-0051).
+TILESTREAM="$(ensure_tile_stream || true)"
+if [[ -n "$TILESTREAM" && -s "$TILESTREAM" ]]; then
+    run_test "$ROOT/tests/regression/37-av1-tile-stream-obu-parsing.cpp" "$TILESTREAM"
+else
+    echo "  SKIP  37-av1-tile-stream-obu-parsing (타일 스트림 생성 실패)"
+    ((skip_count++))
+fi
 
 echo
 echo "== 디코더 선택 / 라이브러리 수명 =="
