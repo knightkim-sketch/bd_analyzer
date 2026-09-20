@@ -119,12 +119,16 @@ elif MOUNT="/${INSTALL_ROOT#/}"; MOUNT="/${MOUNT%%/*}"; [[ ! -d "$MOUNT" ]]; the
 else
     SHARE="$INSTALL_ROOT/bd-analyzer-v$VERSION"
     if mkdir -p "$SHARE" 2>/dev/null; then
-        # 릴리스 노트를 함께 둔다 - rpm 만 골라 가져가는 경우가 많고, 그때 무엇이 바뀌었는지가
+        # rpm 과 tar.gz 을 둘 다 둔다 - 설치 권한이 없는 머신은 tar.gz 을 가져간다.
+        # 릴리스 노트도 함께 둔다. 패키지만 골라 가져가는 경우가 많고, 그때 무엇이 바뀌었는지가
         # 저장소에만 있으면 찾아볼 수 없다.
         find "$TOP/RPMS" -name '*.rpm' -exec install -m644 {} "$SHARE/" \;
+        install -m644 "$TARBALL" "$SHARE/$(basename "$TARBALL")"
         install -m644 "$ROOT/packaging/rpm/ReleaseNote.md" "$SHARE/ReleaseNote.md"
         echo "   $SHARE"
-        for f in "$SHARE"/*.rpm; do echo "     $(basename "$f") ($(du -h "$f" | cut -f1))"; done
+        for f in "$SHARE"/*.rpm "$SHARE"/*.tar.gz; do
+            [[ -e "$f" ]] && echo "     $(basename "$f") ($(du -h "$f" | cut -f1))"
+        done
     else
         echo "   $SHARE 에 쓸 수 없습니다. 건너뜁니다." >&2
     fi
