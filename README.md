@@ -11,7 +11,7 @@
 bd_analyzer/
 ├── docs/
 │   ├── ai/                    AI·사람 공용 문서 (조사·결정·설계·작업)  ← docs/ai/README.md 부터 읽을 것
-│   ├── dev/                   빌드/기여 가이드
+│   ├── dev/                   빌드/기여 가이드 + feature-verification.md (기능 검증 리스트)
 │   └── user/                  사용자 매뉴얼
 │
 ├── third_party/
@@ -98,6 +98,17 @@ CentOS 7.x 에서는 RPM 설치가 자동으로 거부된다.
 [docs/deploy/package-README.md](docs/deploy/package-README.md) — 이 파일이 패키지 안에
 `README.md`로 동봉된다. 패키징 구현 기록은
 [TASK-0008](docs/ai/40-tasks/TASK-0008-installable-package.md).
+
+## 동작이 이상할 때
+
+```bash
+./scripts/build.sh && ./tests/run-regression.sh
+```
+
+회귀가 전부 통과하는데도 증상이 남으면 **[docs/dev/feature-verification.md](docs/dev/feature-verification.md)**
+를 본다. 회귀 스위트는 전부 offscreen 헤드리스라 창·단축키·오버레이·네트워크·패키지 형태는 한 번도
+지나가지 않는다. 그 문서에 자동 커버리지 맵(어느 테스트가 무엇을 지키는지), 수동 확인 목록, 그리고
+증상별 진입점이 있다.
 
 ## 라이선스
 

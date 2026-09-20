@@ -518,4 +518,15 @@ echo
 echo "-------------------------------------------"
 printf "PASS %d   FAIL %d   SKIP %d\n" "$pass_count" "$fail_count" "$skip_count"
 echo "로그: $OUT"
+echo
+# 이 스위트는 전부 offscreen 헤드리스다. 통과했다고 앱이 멀쩡한 것은 아니므로, 끝날 때마다
+# 무엇이 검증되지 않았는지 알려 준다. 그 목록이 docs/dev/feature-verification.md 다.
+if (( fail_count > 0 )); then
+    echo "실패한 테스트를 먼저 본다. 증상으로 범위를 좁히려면:"
+    echo "  docs/dev/feature-verification.md  §3 증상별 진입점"
+else
+    echo "여기까지는 전부 헤드리스다 - 창·단축키·오버레이·네트워크·패키지는 검증되지 않았다."
+    echo "동작이 이상하면 수동 항목을 돈다:"
+    echo "  docs/dev/feature-verification.md  §2 수동 확인 목록"
+fi
 [[ $fail_count -eq 0 ]]
