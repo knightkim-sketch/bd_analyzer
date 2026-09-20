@@ -8,6 +8,54 @@
 
 ---
 
+## 0.3.1 (2026-09-20)
+
+AV1 비트스트림 파서 정확도 수정이 중심이다. 전부 크래시 없이 **조용히 틀린 값**을 내던 것들이라,
+0.3.0 으로 읽은 타일 스트림의 프레임 헤더 값은 신뢰할 수 없다.
+
+### AV1 구문 파싱 수정
+
+타일이 있는 스트림을 VQ Analyzer 와 필드 단위로 대조해 찾은 결함 5건이다. 앞의 넷은 결과가 같다 —
+리더가 인코더보다 비트가 뒤처지고, 그 뒤 uncompressed header 전체가 어긋난 오프셋에서 해석된다.
+
+- `tile_info()` 의 `minLog2TileRows` 가 unsigned 언더플로로 감싸 **`increment_tile_rows_log2` 를 한 번도
+  읽지 않았다.** 타일 행이 있는 모든 스트림이 해당된다.
+- 같은 함수에서 `context_update_tile_id` 와 `tile_size_bytes_minus_1` 을 `f(n)` 이 아닌 ns(n) 코딩으로,
+  그것도 비트 수를 최대값 자리에 넘겨 읽었다.
+- `cdef_uv_sec_strength` 를 `f(2)` 가 아닌 `f(4)` 로 읽었다. 바로 위 luma 쌍둥이는 정상이었다.
+- `SeenFrameHeader` 를 temporal delimiter 에서만 초기화해, 한 패킷에 여러 프레임이 담기면
+  **둘째 이후 프레임의 구문이 전혀 나오지 않았다.** hidden ARF 가 있는 스트림 전부가 해당된다.
+- 참조 프레임 갱신 과정(spec 7.20)이 통째로 빠져 `RefOrderHint` 가 늘 0 이었고, 그 결과
+  `skip_mode_present` 라는 실재하는 비트를 한 번도 읽지 않았다.
+- OBU 루프의 경계 검사가 패킷 끝의 작은 OBU 를 버렸다. `show_existing_frame` 프레임 헤더가
+  정확히 3바이트라 **매번 통째로 사라졌다.**
+
+### tile group 파싱 추가
+
+- `tile_group_obu()` 와 `trailing_bits()` 를 파싱한다. **타일별 `tile_size_minus_1`** 이 비트스트림
+  패널에 나온다 — 타일 그리드에 비트가 실제로 어떻게 갈렸는지는 프레임 헤더만으로는 알 수 없다.
+- 이로써 파싱하는 구문 요소가 VQ Analyzer 와 값까지 일치한다.
+- AV1 에는 emulation prevention 이 없는데 공용 리더가 기본으로 적용하고 있었다. 껐다.
+  테스트한 스트림에서는 출력 차이가 없었으나, 수 KB 의 타일 페이로드를 지나가는 경로가
+  새로 생겼으므로 운에 맡기지 않는다.
+
+### 그 외
+
+- **헤드리스 `sb-bdrate-export`** 추가 — GUI 전용이던 SB BD-rate 를 창 없이 돌려 superblock 당
+  CSV 로 뽑는다. 배치 귀속 분석용이다. 빌드는 `tests/tools/build-tool.sh sb-bdrate-export`.
+- **기능 검증 리스트** (`docs/dev/feature-verification.md`) 추가 — 회귀 스위트가 지키는 것과
+  지키지 않는 것을 갈라 적었다. 회귀는 전부 헤드리스라 창·단축키·오버레이·네트워크·패키지는
+  지나가지 않는다. 회귀를 돌리면 끝에서 이 문서를 가리킨다.
+- 패키징이 rpm 을 공유 설치 위치(`/fs2/install_develop/YUView/bd-analyzer-<버전>/`)에 복사한다.
+  해당 마운트가 없는 머신에서는 건너뛴다.
+
+### 알려진 제한
+
+- 타일 구문 검증은 uniform tile spacing · 8-bit 4:2:0 · libaom 인코딩 기준이다.
+  non-uniform spacing 과 `tg_start` 가 0 이 아닌 다중 tile group 경로는 **미검증**이다.
+
+---
+
 ## 0.3.0 (2026-09-18)
 
 0.2.0 이후 추가된 내용. 상세는 `docs/ai/30-designs/` 의 설계 문서에 있다.

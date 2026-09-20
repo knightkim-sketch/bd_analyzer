@@ -21,7 +21,7 @@ WORK="${WORK:-$ROOT/build/pkg}"
 DIST="${DIST:-$ROOT/build/dist}"
 UPSTREAM="$ROOT/third_party/yuview/upstream"
 
-VERSION="${BDA_VERSION:-0.3.0}"
+VERSION="${BDA_VERSION:-0.3.1}"
 # 만들어진 rpm 은 팀이 설치해 가는 공유 위치에도 버전 폴더를 만들어 복사한다.
 # 이 머신에만 있는 마운트이므로 없으면 조용히 건너뛴다 (다른 빌드 머신에서 실패하면 안 된다).
 # 다른 곳에 두려면 BDA_INSTALL_ROOT 로 덮어쓰고, 끄려면 빈 값을 준다.

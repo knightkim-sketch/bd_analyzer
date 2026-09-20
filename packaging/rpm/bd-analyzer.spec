@@ -33,7 +33,7 @@
 %global __requires_exclude ^(%{__requires_exclude_bundled}|%{__requires_exclude_optional})$
 
 Name:           bd-analyzer
-Version:        %{?bda_version}%{!?bda_version:0.3.0}
+Version:        %{?bda_version}%{!?bda_version:0.3.1}
 Release:        %{?bda_release}%{!?bda_release:1}%{?dist}
 Summary:        Video bitstream and YUV analysis toolset
 Summary(ko):    비디오 비트스트림·YUV 분석 도구
@@ -142,6 +142,18 @@ fi
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Sun Sep 20 2026 knight.kim <knight.kim@blue-dot.io> - 0.3.1-1
+- AV1 syntax parsing fixes found by diffing a tiled stream against VQ Analyzer field for
+  field. All five were silent: the reader fell behind the encoder and every later field in
+  the uncompressed header decoded from the wrong bit offset. Tile rows were never read, two
+  tile fields used the wrong coding, cdef_uv_sec_strength read two bits too many, frames
+  after the first in a packet produced no syntax at all, and skip_mode_present was never
+  read because the reference frame update process was missing.
+- The show_existing_frame frame header, exactly three bytes, was dropped by the OBU loop.
+- Tile groups are parsed, so the per tile sizes now reach the bitstream panel.
+- sb-bdrate-export: the superblock BD-rate, headless, one CSV row per superblock.
+- A feature verification list naming what the headless regression suite does not cover.
+
 * Fri Sep 18 2026 knight.kim <knight.kim@blue-dot.io> - 0.3.0-1
 - SB / Frame / Sequence BD-rate from a playlist selection (Ctrl+R): grouped RD curves,
   a cancellable sequence sweep, and axis ticks in bits rather than in log space.
