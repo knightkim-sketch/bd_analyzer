@@ -22,6 +22,10 @@ DIST="${DIST:-$ROOT/build/dist}"
 UPSTREAM="$ROOT/third_party/yuview/upstream"
 
 VERSION="${BDA_VERSION:-0.3.0}"
+# 만들어진 rpm 은 팀이 설치해 가는 공유 위치에도 버전 폴더를 만들어 복사한다.
+# 이 머신에만 있는 마운트이므로 없으면 조용히 건너뛴다 (다른 빌드 머신에서 실패하면 안 된다).
+# 다른 곳에 두려면 BDA_INSTALL_ROOT 로 덮어쓰고, 끄려면 빈 값을 준다.
+INSTALL_ROOT="${BDA_INSTALL_ROOT-/fs2/install_develop/YUView}"
 RELEASE="${BDA_RELEASE:-1.git$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 
 what="all"; refresh=0
@@ -101,6 +105,28 @@ rpmbuild -bb "$ROOT/packaging/rpm/bd-analyzer.spec" \
     --define "bda_release $RELEASE"
 
 find "$TOP/RPMS" -name '*.rpm' -exec cp {} "$DIST/" \;
+
+echo "== 6. 공유 위치로 복사 =="
+if [[ -z "$INSTALL_ROOT" ]]; then
+    echo "   BDA_INSTALL_ROOT 가 비어 있어 건너뜁니다."
+elif MOUNT="/${INSTALL_ROOT#/}"; MOUNT="/${MOUNT%%/*}"; [[ ! -d "$MOUNT" ]]; then
+    # 마운트 자체가 없으면 이 머신은 대상이 아니다. 그 아래 경로는 없으면 만든다 - 첫 배포
+    # 때는 버전 폴더는 물론 그 위 디렉토리도 아직 없다.
+    echo "   $MOUNT 이 없습니다. 건너뜁니다 (이 머신에는 해당 마운트가 없음)."
+else
+    SHARE="$INSTALL_ROOT/$NAME"
+    if mkdir -p "$SHARE" 2>/dev/null; then
+        # 릴리스 노트를 함께 둔다 - rpm 만 골라 가져가는 경우가 많고, 그때 무엇이 바뀌었는지가
+        # 저장소에만 있으면 찾아볼 수 없다.
+        find "$TOP/RPMS" -name '*.rpm' -exec install -m644 {} "$SHARE/" \;
+        install -m644 "$ROOT/packaging/rpm/ReleaseNote.md" "$SHARE/ReleaseNote.md"
+        echo "   $SHARE"
+        for f in "$SHARE"/*.rpm; do echo "     $(basename "$f") ($(du -h "$f" | cut -f1))"; done
+    else
+        echo "   $SHARE 에 쓸 수 없습니다. 건너뜁니다." >&2
+    fi
+fi
+
 echo
 echo "완료:"
 for f in "$DIST/$NAME"*; do echo "   $f ($(du -h "$f" | cut -f1))"; done
