@@ -16,9 +16,14 @@ QT="$QT_DIR/$QT_VERSION/gcc_64"
 TOOLSET="${TOOLSET:-gcc-toolset-13}"
 OUT="${OUT:-$ROOT/build/tools}"
 
+# Tools live in two places: tests/tools/ for things that inspect a parse, tools/cli/ for headless
+# drivers of the GUI's own features. Both build against libYUViewLib.a the same way.
 name="${1:?usage: build-tool.sh <name without .cpp>}"
-src="$ROOT/tests/tools/$name.cpp"
-[[ -f "$src" ]] || { echo "no such tool: $src" >&2; exit 2; }
+src=""
+for d in "$ROOT/tests/tools" "$ROOT/tools/cli"; do
+    [[ -f "$d/$name.cpp" ]] && { src="$d/$name.cpp"; break; }
+done
+[[ -n "$src" ]] || { echo "no such tool: $name.cpp (looked in tests/tools/ and tools/cli/)" >&2; exit 2; }
 [[ -f "$LIB/libYUViewLib.a" ]] || { echo "run ./scripts/build.sh first" >&2; exit 2; }
 
 mkdir -p "$OUT"
