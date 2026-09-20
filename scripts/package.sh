@@ -23,9 +23,12 @@ UPSTREAM="$ROOT/third_party/yuview/upstream"
 
 VERSION="${BDA_VERSION:-0.3.1}"
 # 만들어진 rpm 은 팀이 설치해 가는 공유 위치에도 버전 폴더를 만들어 복사한다.
+# 폴더명은 그 위치에 이미 있는 것들과 같은 표기를 쓴다 - 버전 앞에 v 가 붙는다
+# (bd-analyzer-v0.2.0, bd-analyzer-v0.3.0 ...). 여기만 v 를 쓰고, tar.gz 이름과 rpm 의
+# Version 필드는 붙이지 않는다.
 # 이 머신에만 있는 마운트이므로 없으면 조용히 건너뛴다 (다른 빌드 머신에서 실패하면 안 된다).
 # 다른 곳에 두려면 BDA_INSTALL_ROOT 로 덮어쓰고, 끄려면 빈 값을 준다.
-INSTALL_ROOT="${BDA_INSTALL_ROOT-/fs2/install_develop/YUView}"
+INSTALL_ROOT="${BDA_INSTALL_ROOT-/fs2/install_devel/YUViewer}"
 RELEASE="${BDA_RELEASE:-1.git$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 
 what="all"; refresh=0
@@ -114,7 +117,7 @@ elif MOUNT="/${INSTALL_ROOT#/}"; MOUNT="/${MOUNT%%/*}"; [[ ! -d "$MOUNT" ]]; the
     # 때는 버전 폴더는 물론 그 위 디렉토리도 아직 없다.
     echo "   $MOUNT 이 없습니다. 건너뜁니다 (이 머신에는 해당 마운트가 없음)."
 else
-    SHARE="$INSTALL_ROOT/$NAME"
+    SHARE="$INSTALL_ROOT/bd-analyzer-v$VERSION"
     if mkdir -p "$SHARE" 2>/dev/null; then
         # 릴리스 노트를 함께 둔다 - rpm 만 골라 가져가는 경우가 많고, 그때 무엇이 바뀌었는지가
         # 저장소에만 있으면 찾아볼 수 없다.
