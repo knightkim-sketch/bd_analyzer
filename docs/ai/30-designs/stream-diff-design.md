@@ -31,25 +31,37 @@ verified: partial
 | 헤더 구문 트리 | `PacketItemModel` / `TreeItem` (이름·값·coding·code) |
 | recon 차분 | File → **Add Difference Sequence** (두 영상의 차분 아이템) |
 | 배치 덤프 | `tools/cli/av1-block-dump.cpp` — 같은 경로를 CSV 로 |
+| 블록 선택 브로드캐스트 | `splitViewWidget::blockSelected(item, pixelPos, frameIdx)` → Mainwindow 가 Block Info / Frame Info / hexdump 패널로 팬아웃 |
+| 패널 측 수신구 | `BlockInfoWidget::setSelectedBlock(item, pixelPos, frameIdx)` — **public slot** 이라 직접 호출 가능 |
+| 프레임 이동 | `PlaybackController::setCurrentFrameAndUpdate(frameIdx)` |
 
 **즉 데이터는 이미 다 있다.** 없는 것은 두 스트림을 나란히 놓고 비교하는 계층과 UI 다.
 
-## 3. 먼저 고쳐야 하는 것 — 블록 덤프의 프레임 동기화
+## 3. 블록 수가 프레임마다 크게 다른 것은 정상이다
 
-`av1-block-dump` 로 512x288 스트림을 6프레임 덤프한 결과:
+처음에는 `av1-block-dump` 이 첫 프레임만 온전하다고 판단했다. **틀린 판단이었다.**
+512x288 스트림을 측정한 결과:
 
-| frame | 0 | 1 | 2 | 3 | 4 | 5 |
+| frame | queried | invalid | wrongFrame | ok | distinct blocks | 픽셀 커버리지 |
 |---|---|---|---|---|---|---|
-| blocks | **792** | 43 | 60 | 45 | 94 | 44 |
+| 0 | 9216 | 104 | **0** | 9112 | 792 | 98.9% |
+| 1 | 9216 | 0 | **0** | 9216 | 43 | 100.0% |
+| 2 | 9216 | 256 | **0** | 8960 | 60 | 97.2% |
+| 3 | 9216 | 128 | **0** | 9088 | 45 | 98.6% |
+| 4 | 9216 | 32 | **0** | 9184 | 94 | 99.7% |
+| 5 | 9216 | 0 | **0** | 9216 | 44 | 100.0% |
 
-프레임 0 만 온전하고 이후는 5~12% 만 나온다. `loadFrame()` 직후 바로 질의하는데 통계가 비동기로
-따라오고, `info.frameIndex != frameIdx` 필터가 아직 도착하지 않은 블록을 버린다. 프레임 0 은
-우연히 대기가 걸려 온전할 뿐이다.
+`wrongFrame` 이 전 프레임 0 이다 — 통계는 지연되지 않는다. 프레임 0 은 intra 라 작은 블록이 792개
+나오고, 이후 inter 프레임은 **큰 블록 43~94개가 화면을 100% 가까이 덮는다.** 정지된 뉴스 클립에서는
+당연한 결과다.
 
-**이 상태로 비교 계층을 얹으면 2번 프레임부터 "차이 없음"이 거짓으로 나온다.** 그래서 1번 작업이다.
+**교훈: 행 수로 완전성을 판단하면 안 된다.** 판단 기준은 **픽셀 커버리지**다. 비교 기능의 자체
+검사도 커버리지로 한다 — 커버리지가 낮으면 그때가 실제로 통계가 덜 온 것이다.
 
-수정 방향: 질의 전에 해당 프레임의 통계가 도착할 때까지 기다린다. 무한 대기를 막기 위해 상한을
-두고, 상한에 걸리면 **그 프레임을 "불완전"으로 표시**한다 — 조용히 적게 내보내는 것이 지금의 문제다.
+한편 `av1-block-dump` 은 `loadFrame()` 을 **메인 스레드에서** 부른다. 그 함수 첫 줄은
+`Q_ASSERT(QThread::currentThread() != QApplication::instance()->thread())` 로 "메인 스레드에서
+부르지 말라"는 계약이다. release 빌드라 assert 가 사라져 통과할 뿐이다. 지금 증상의 원인은
+아니지만, 비교 기능이 같은 경로를 쓰기 전에 정리해야 한다.
 
 ## 4. 비교 계층
 
@@ -116,9 +128,43 @@ export 를 구현하고 `libdav1d-internals.so` 와 YUViewLib 이 공유하는 A
     프레임·좌표로 이동
   - 체크박스: **CDF 비교** (비활성, 사유 표시), **recon 비교** (D)
 
+### 5.1 최종 mismatch 지점으로 이동하고 활성화한다
+
+C 가 최초 불일치 블록을 확정하면, 사용자가 다시 찾아 클릭하지 않도록 **앱을 그 지점 상태로 만든다.**
+
+1. playlist 선택을 해당 스트림(A 또는 B — 아래 토글을 따른다)으로 바꾼다.
+2. `PlaybackController::setCurrentFrameAndUpdate(frame)` 으로 그 프레임으로 이동한다.
+3. 그 블록을 **선택된 상태로 만든다** — 화면의 하이라이트와 Block Info / Frame Info / hexdump
+   패널이 동시에 그 블록을 가리켜야 한다.
+
+3번은 마우스 이벤트를 흉내내지 않는다. 클릭이 최종적으로 하는 일은
+`splitViewWidget::blockSelected` 를 내보내는 것이고, Mainwindow 가 그것을 세 패널로 팬아웃한다.
+**같은 신호를 쓰면 클릭과 구분되지 않는 상태가 된다.**
+
+단, 화면 위 하이라이트는 `splitViewWidget::blockSelection` 에 들어 있고 **public setter 가 없다.**
+`mousePressEvent` 가 하는 일(좌표 해석 → 블록 질의 → 캐시 갱신 → repaint → 신호 방출)에서
+좌표 해석만 건너뛰는 **public slot 하나를 upstream 패치로 추가한다.** 그 슬롯이 단일 진입점이 되고,
+Find diff 창은 그것만 부른다.
+
+패널이 안 열려 있을 수 있으므로, 이동 시 Block Info dock 이 닫혀 있으면 함께 띄운다.
+
+### 5.2 A / B 토글 — 어느 쪽 정보를 볼 것인가
+
+불일치 블록은 **양쪽 값이 모두 궁금한 대상**이다. 그래서 결과 창 상단에 스트림 선택을 둔다.
+
+- **Syntax info: A / B** — 헤더·구문 트리를 어느 스트림 것으로 볼지
+- **Block info: A / B** — 이동·활성화 대상 스트림, 즉 Block Info 패널에 뜨는 쪽
+
+두 토글은 **독립**이다. 한쪽 구문 트리를 보면서 다른 쪽 블록을 활성화하는 조합이 실제로 쓰인다.
+
+- 토글을 바꾸면 **현재 선택된 불일치 지점을 유지한 채** 대상 스트림만 바꿔 다시 활성화한다
+  (프레임·좌표는 그대로).
+- 불일치 표의 각 행은 이미 양쪽 값을 나란히 보여준다. 토글은 **표가 아니라 앱 본체의 패널**이
+  어느 쪽을 가리킬지를 정한다 — 그 구분을 UI 문구에 넣는다.
+
 ## 6. 작업 순서
 
-1. `av1-block-dump` 프레임 동기화 수정 + 커밋 (3장)
+1. 블록 조회를 계약대로(메인 스레드 밖에서) 부르고, 완전성을 **픽셀 커버리지**로 자체 검사 (3장)
 2. Find diff 다이얼로그 + 헤더 구문 비교 (A)
 3. SB 24bit 비교 (B)
 4. 블록 구문 비교 (C)
@@ -137,3 +183,8 @@ export 를 구현하고 `libdav1d-internals.so` 와 YUViewLib 이 공유하는 A
 - `bitstreamRange` 는 analyzer dav1d 디코더에서만 나온다. FFmpeg 폴백 스트림은 B 를 못 쓴다 —
   그 경우 A 와 C 만 돌린다.
 - 프레임 수가 많고 해상도가 크면 C 는 비싸다. 4x4 격자 전수 훑기의 비용을 재지 않았다.
+- 5.1 의 이동·활성화는 **upstream 패치가 필요하다** (`splitViewWidget` 에 블록 선택 public slot).
+  `blockSelected` 신호와 `setSelectedBlock` 슬롯은 이미 있으므로 추가 범위는 그 하나다.
+- A/B 토글을 바꿀 때 **해당 스트림에 그 좌표의 블록이 없을 수 있다** (partition 불일치 행).
+  그 경우 무엇을 활성화할지 규칙 미정 — 좌표는 유지하고 "이 스트림에는 블록 없음" 을 표시하는
+  쪽으로 기울어 있으나 확정하지 않았다.
