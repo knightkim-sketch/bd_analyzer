@@ -121,6 +121,49 @@ int main()
     checkEqual(compareSyntax(empty, a).diffs.size(), std::size_t(1), "everything only in B");
   }
 
+  // ---------------------------------------------------------------- section-wise comparison
+  {
+    const std::vector<SyntaxSection> a{{"frame 0", seq({{"base_q_idx", "26"}})},
+                                       {"frame 1", seq({{"base_q_idx", "40"}})}};
+    const auto                       r = compareSections(a, a);
+    check(r.identical(), "identical sections report no difference");
+    check(r.firstDiffering() == nullptr, "no first differing section");
+    checkEqual(r.sections.size(), std::size_t(2), "both sections reported");
+  }
+
+  {
+    // The point of sections: a difference is attributed to the frame it happened in.
+    const std::vector<SyntaxSection> a{{"frame 0", seq({{"base_q_idx", "26"}})},
+                                       {"frame 1", seq({{"base_q_idx", "40"}})}};
+    const std::vector<SyntaxSection> b{{"frame 0", seq({{"base_q_idx", "26"}})},
+                                       {"frame 1", seq({{"base_q_idx", "41"}})}};
+    const auto                       r = compareSections(a, b);
+    checkEqual(r.totalDiffs, std::size_t(1), "one difference in total");
+    check(r.firstDiffering() != nullptr, "a section differs");
+    checkEqual(r.firstDiffering()->label, std::string("frame 1"), "names the frame that differs");
+    check(!r.sections[0].differs(), "the earlier frame is clean");
+  }
+
+  {
+    // A codes a frame B does not. The extra section is reported, not dropped.
+    const std::vector<SyntaxSection> a{{"frame 0", seq({{"q", "1"}})},
+                                       {"frame 1", seq({{"q", "2"}})}};
+    const std::vector<SyntaxSection> b{{"frame 0", seq({{"q", "1"}})}};
+    const auto                       r = compareSections(a, b);
+    checkEqual(r.sections.size(), std::size_t(2), "both sections still listed");
+    check(r.sections[1].onlyInA, "the extra section is marked only in A");
+    checkEqual(r.totalDiffs, std::size_t(1), "and counts as a difference");
+    checkEqual(r.firstDiffering()->label, std::string("frame 1"), "and is the first difference");
+  }
+
+  {
+    const std::vector<SyntaxSection> a{{"frame 0", seq({{"q", "1"}})}};
+    const std::vector<SyntaxSection> b{{"frame 0", seq({{"q", "1"}})},
+                                       {"frame 1", seq({{"q", "2"}})}};
+    const auto                       r = compareSections(a, b);
+    check(r.sections[1].onlyInB, "the extra section on B is marked only in B");
+  }
+
   std::cout << (failures == 0 ? "RESULT: PASS\n" : "RESULT: FAIL\n");
   return failures == 0 ? 0 : 1;
 }

@@ -68,4 +68,56 @@ SyntaxDiffResult compareSyntax(const std::vector<SyntaxElement> &a,
                                const std::vector<SyntaxElement> &b,
                                const SyntaxDiffOptions &         options = {});
 
+/* A named run of elements - one OBU, one frame header, whatever the caller wants to compare as a
+ * unit.
+ *
+ * Comparing a whole stream as one sequence is both slower and less useful than comparing it
+ * section by section. A 24 frame clip flattens to roughly 13000 elements, which puts the exact
+ * alignment far past any sane table size; split into frames it is a few hundred per section, so
+ * the alignment stays exact. The report also gains the locality that matters - "frame 7 differs"
+ * rather than "element 8412 differs".
+ */
+struct SyntaxSection
+{
+  std::string                label;
+  std::vector<SyntaxElement> elements;
+};
+
+struct SectionDiff
+{
+  std::string      label;
+  bool             onlyInA{}; //!< A has this section and B has no counterpart.
+  bool             onlyInB{};
+  SyntaxDiffResult result;    //!< Empty when the section exists on one side only.
+
+  bool differs() const { return this->onlyInA || this->onlyInB || !this->result.identical(); }
+};
+
+struct SectionDiffResult
+{
+  std::vector<SectionDiff> sections;
+  std::size_t              totalDiffs{};
+
+  bool identical() const { return this->totalDiffs == 0; }
+
+  const SectionDiff *firstDiffering() const
+  {
+    for (const auto &s : this->sections)
+      if (s.differs())
+        return &s;
+    return nullptr;
+  }
+};
+
+/* Compare section by section, pairing them by position.
+ *
+ * Position, not label: the labels repeat ("Frame", "Frame", ...) so matching on them would pair
+ * arbitrary frames. Both streams are expected to code the same source in the same order, and the
+ * caller is expected to have refused the comparison when the frame counts differ; sections past
+ * the shorter side are reported as present on one side only rather than silently dropped.
+ */
+SectionDiffResult compareSections(const std::vector<SyntaxSection> &a,
+                                  const std::vector<SyntaxSection> &b,
+                                  const SyntaxDiffOptions &         options = {});
+
 } // namespace bda::diff

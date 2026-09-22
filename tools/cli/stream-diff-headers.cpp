@@ -42,7 +42,13 @@ void collect(const QAbstractItemModel &         model,
     collect(model, model.index(row, 0, index), out);
 }
 
-bool readSyntax(const std::string &path, std::vector<bda::diff::SyntaxElement> &out)
+/* One section per OBU, labelled so a difference can be named rather than numbered.
+ *
+ * Splitting matters: flattened whole, a 24 frame clip is ~13000 elements and the exact alignment
+ * is out of reach. Per OBU it is a few hundred, so the alignment stays exact and the report says
+ * which OBU diverged.
+ */
+bool readSections(const std::string &path, std::vector<bda::diff::SyntaxSection> &out)
 {
   parser::ParserAVFormat parser;
   parser.enableModel();
@@ -60,8 +66,16 @@ bool readSyntax(const std::string &path, std::vector<bda::diff::SyntaxElement> &
     for (int child = 0; child < model->rowCount(packetIdx); ++child)
     {
       const auto childIdx = model->index(child, 0, packetIdx);
-      if (model->data(childIdx).toString().startsWith("OBU"))
-        collect(*model, childIdx, out);
+      const auto name     = model->data(childIdx).toString();
+      if (!name.startsWith("OBU"))
+        continue;
+      bda::diff::SyntaxSection section;
+      section.label = "packet " + std::to_string(packet) + " / " + name.toStdString();
+      collect(*model, childIdx, section.elements);
+      // An OBU with no syntax of its own - a temporal delimiter - would pair with anything and
+      // says nothing. Keeping it would only shift the positional alignment.
+      if (!section.elements.empty())
+        out.push_back(std::move(section));
     }
   }
   return true;
@@ -111,16 +125,29 @@ int main(int argc, char **argv)
     return 1;
   }
 
-  std::vector<bda::diff::SyntaxElement> a, b;
-  if (!readSyntax(files[0], a)) { std::cerr << "could not parse " << files[0] << "\n"; return 1; }
-  if (!readSyntax(files[1], b)) { std::cerr << "could not parse " << files[1] << "\n"; return 1; }
+  std::vector<bda::diff::SyntaxSection> a, b;
+  if (!readSections(files[0], a)) { std::cerr << "could not parse " << files[0] << "\n"; return 1; }
+  if (!readSections(files[1], b)) { std::cerr << "could not parse " << files[1] << "\n"; return 1; }
 
-  std::cout << "A " << files[0] << "  (" << a.size() << " syntax elements)\n";
-  std::cout << "B " << files[1] << "  (" << b.size() << " syntax elements)\n";
+  auto elementCount = [](const std::vector<bda::diff::SyntaxSection> &s) {
+    std::size_t n = 0;
+    for (const auto &section : s)
+      n += section.elements.size();
+    return n;
+  };
+  std::cout << "A " << files[0] << "  (" << a.size() << " OBUs, " << elementCount(a)
+            << " syntax elements)\n";
+  std::cout << "B " << files[1] << "  (" << b.size() << " OBUs, " << elementCount(b)
+            << " syntax elements)\n";
 
-  const auto result = bda::diff::compareSyntax(a, b);
-  std::cout << "aligned pairs: " << result.alignedPairs
-            << (result.degraded ? "   (alignment degraded to the windowed scan)" : "") << "\n";
+  const auto result = bda::diff::compareSections(a, b);
+  std::size_t degraded = 0;
+  for (const auto &section : result.sections)
+    if (section.result.degraded)
+      ++degraded;
+  if (degraded > 0)
+    std::cout << "WARNING " << degraded
+              << " sections were too large to align exactly and used the windowed scan\n";
 
   if (result.identical())
   {
@@ -128,26 +155,54 @@ int main(int argc, char **argv)
     return 0;
   }
 
-  const auto *first = result.first();
-  std::cout << "\nfirst divergence: " << first->name << "  [" << kindName(first->kind) << "]\n";
-  if (first->kind == bda::diff::DiffKind::ValueMismatch)
-    std::cout << "    A = " << first->valueA << "\n    B = " << first->valueB << "\n";
-
-  std::cout << "\n" << result.diffs.size() << " differences"
-            << (reportAll ? "" : ", showing the first " + std::to_string(maxReported)) << ":\n";
-  std::size_t shown = 0;
-  for (const auto &d : result.diffs)
+  const auto *firstSection = result.firstDiffering();
+  std::cout << "\nfirst divergence in: " << firstSection->label << "\n";
+  if (firstSection->onlyInA)
+    std::cout << "    this OBU has no counterpart in B\n";
+  else if (firstSection->onlyInB)
+    std::cout << "    this OBU has no counterpart in A\n";
+  else if (const auto *d = firstSection->result.first())
   {
-    if (!reportAll && shown++ >= maxReported)
+    std::cout << "    " << d->name << "  [" << kindName(d->kind) << "]\n";
+    if (d->kind == bda::diff::DiffKind::ValueMismatch)
+      std::cout << "    A = " << d->valueA << "\n    B = " << d->valueB << "\n";
+  }
+
+  std::size_t differingSections = 0;
+  for (const auto &section : result.sections)
+    if (section.differs())
+      ++differingSections;
+  std::cout << "\n" << result.totalDiffs << " differences across " << differingSections << " of "
+            << result.sections.size() << " OBUs"
+            << (reportAll ? "" : ", showing the first " + std::to_string(maxReported)) << ":\n";
+
+  std::size_t shown = 0;
+  for (const auto &section : result.sections)
+  {
+    if (!section.differs())
+      continue;
+    if (!reportAll && shown >= maxReported)
       break;
-    std::cout << "  " << d.name << "  [" << kindName(d.kind) << "]";
-    if (d.kind == bda::diff::DiffKind::ValueMismatch)
-      std::cout << "  A=" << d.valueA << "  B=" << d.valueB;
-    else if (d.kind == bda::diff::DiffKind::OnlyInA)
-      std::cout << "  A=" << d.valueA;
+    std::cout << "  " << section.label;
+    if (section.onlyInA)      std::cout << "  [only in A]\n";
+    else if (section.onlyInB) std::cout << "  [only in B]\n";
     else
-      std::cout << "  B=" << d.valueB;
-    std::cout << "\n";
+    {
+      std::cout << "  (" << section.result.diffs.size() << " differences)\n";
+      for (const auto &d : section.result.diffs)
+      {
+        if (!reportAll && shown++ >= maxReported)
+          break;
+        std::cout << "      " << d.name << "  [" << kindName(d.kind) << "]";
+        if (d.kind == bda::diff::DiffKind::ValueMismatch)
+          std::cout << "  A=" << d.valueA << "  B=" << d.valueB;
+        else if (d.kind == bda::diff::DiffKind::OnlyInA)
+          std::cout << "  A=" << d.valueA;
+        else
+          std::cout << "  B=" << d.valueB;
+        std::cout << "\n";
+      }
+    }
   }
   return 0;
 }

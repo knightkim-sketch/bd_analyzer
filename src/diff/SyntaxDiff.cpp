@@ -151,4 +151,32 @@ SyntaxDiffResult compareSyntax(const std::vector<SyntaxElement> &a,
   return result;
 }
 
+SectionDiffResult compareSections(const std::vector<SyntaxSection> &a,
+                                  const std::vector<SyntaxSection> &b,
+                                  const SyntaxDiffOptions &         options)
+{
+  SectionDiffResult result;
+  const auto        common = std::min(a.size(), b.size());
+
+  for (std::size_t i = 0; i < common; ++i)
+  {
+    SectionDiff section;
+    section.label  = a[i].label;
+    section.result = compareSyntax(a[i].elements, b[i].elements, options);
+    result.totalDiffs += section.result.diffs.size();
+    result.sections.push_back(std::move(section));
+  }
+  for (std::size_t i = common; i < a.size(); ++i)
+  {
+    result.sections.push_back({a[i].label, true, false, {}});
+    ++result.totalDiffs;
+  }
+  for (std::size_t i = common; i < b.size(); ++i)
+  {
+    result.sections.push_back({b[i].label, false, true, {}});
+    ++result.totalDiffs;
+  }
+  return result;
+}
+
 } // namespace bda::diff
