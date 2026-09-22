@@ -279,6 +279,10 @@ BDA_TEST_IVF="$STREAM" run_unit_test "$ROOT/tests/unit/av1-obu-scan.cpp" \
 # 화면에 보이는 목록과 실제로 인코딩되는 목록이 달라진다 (주석 처리한 링크가 큐에 들어가는 등).
 run_unit_test "$ROOT/tests/unit/yt-link-list.cpp" "$ROOT/src/yt/LinkList.cpp"
 
+# 두 스트림 비교의 정렬 규칙. 값 비교는 쉬운 부분이고, 한쪽에만 있는 요소를 짝지어 주지 못하면
+# 그 뒤 전부가 한 칸씩 밀려 "다 달라졌다" 로 읽힌다 - 그 경계가 여기서 검사된다.
+run_unit_test "$ROOT/tests/unit/syntax-diff.cpp" "$ROOT/src/diff/SyntaxDiff.cpp"
+
 # MP4 컨테이너. box 트리와 sample table(stsc/stco/stsz)을 실제 ffmpeg 산출물로 검증한다 -
 # 손으로 만든 픽스처는 "내가 생각하는 포맷" 과의 일치만 증명하기 때문이다.
 MP4="$(ensure_mp4)" || MP4=""
