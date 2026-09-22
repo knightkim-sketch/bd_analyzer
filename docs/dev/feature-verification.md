@@ -112,6 +112,16 @@ Qt 없이 도는 코어 단위 테스트 (`tests/unit/`):
 - [ ] `sb-bdrate-export` — org y4m + anchor 2점↑ + test 2점↑ 로 CSV 두 개가 나온다.
       검산: `raw.csv` 행 수 = SB 수 × 프레임 수 × 그룹 수 × 점 수, 가장자리 SB 의 `samples` 가
       부분 블록 크기와 맞아야 한다
+- [ ] `av1-block-dump` — 스트림 하나의 코딩 블록별 구문을 CSV 로 덤프한다 (`frame,x,y,w,h,bit_start,bit_end,syntax`).
+      검산: 같은 `(frame,x,y)` 가 중복되지 않고, `bit_start/bit_end` 가 그 프레임 타일 데이터
+      범위 안에 들어간다. 두 인코딩의 CSV 를 `(frame,y,x)` 키로 diff 하면 블록 단위로 갈라지는
+      첫 지점이 나온다
+- [ ] `av1-block-dump` 의 **프레임별 커버리지가 95% 이상**인지 stderr 에서 확인한다.
+      **블록 개수로 판단하지 않는다** — intra 프레임은 작은 블록 수백 개, inter 프레임은 큰 블록
+      수십 개가 같은 화면을 덮으므로 개수는 정상적으로 10배 넘게 흔들린다. 덜 온 통계를 잡아내는
+      지표는 커버리지뿐이고, 낮으면 도구가 WARNING 을 찍는다
+- [ ] `probe-blockinfo-coverage` — 위 커버리지를 원인별로 쪼개 본다 (블록 없음 / 다른 프레임 /
+      정상). "다른 프레임" 이 0 이 아니면 그때가 실제 통계 지연이다
 - [ ] `dump-obu-headers` — VQ Analyzer 의 `-dump_headers_filter all` 출력과 구문 요소가 일치한다
 
 ## 3. 증상별 진입점
