@@ -283,6 +283,10 @@ run_unit_test "$ROOT/tests/unit/yt-link-list.cpp" "$ROOT/src/yt/LinkList.cpp"
 # 그 뒤 전부가 한 칸씩 밀려 "다 달라졌다" 로 읽힌다 - 그 경계가 여기서 검사된다.
 run_unit_test "$ROOT/tests/unit/syntax-diff.cpp" "$ROOT/src/diff/SyntaxDiff.cpp"
 
+# SB 24bit 창 비교. 비트 0 이 바이트 0 의 최상위 비트라는 순서를 뒤집어도 그럴듯한 수가 나오므로,
+# 기대값은 계산하지 않고 비트 패턴에서 손으로 적었다.
+run_unit_test "$ROOT/tests/unit/bit-window.cpp" "$ROOT/src/diff/BitWindow.cpp"
+
 # MP4 컨테이너. box 트리와 sample table(stsc/stco/stsz)을 실제 ffmpeg 산출물로 검증한다 -
 # 손으로 만든 픽스처는 "내가 생각하는 포맷" 과의 일치만 증명하기 때문이다.
 MP4="$(ensure_mp4)" || MP4=""
