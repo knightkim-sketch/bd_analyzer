@@ -1,0 +1,26 @@
+diff --git a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+index 8bc98677..8657a938 100644
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+@@ -506,6 +506,21 @@ playlistItemCompressedVideo::newPlaylistItemCompressedVideo(const YUViewDomEleme
+   // We can still not be sure that the file really exists, but we gave our best to try to find it.
+   auto newFile = new playlistItemCompressedVideo(filePath, displaySignal, input, decoder);
+ 
++  /* The constructor gives up on a file it cannot open - libavcodec refusing it, an unknown raw
++   * format, no frame size, no usable pixel format - and returns before it creates the video
++   * handler. Everything below dereferences that handler.
++   *
++   * Without this check a file that merely fails to open takes the application down, and because
++   * the failing item is in the autosaved playlist it does so on every start: the only way out is
++   * editing the settings by hand. Returning nullptr is what this function already does when the
++   * file cannot be found at all, so the callers know how to drop the entry.
++   */
++  if (!newFile->video)
++  {
++    delete newFile;
++    return nullptr;
++  }
++
+   newFile->video->loadPlaylist(root);
+   auto n = root.firstChild();
+   while (!n.isNull())

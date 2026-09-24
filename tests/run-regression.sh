@@ -512,6 +512,12 @@ if [[ ! -s "$RAWAV1" ]]; then
 fi
 if [[ -s "$RAWAV1" ]]; then
     run_test "$ROOT/tests/regression/15-raw-av1-extension.cpp"           "$STREAM" "$RAWAV1"
+
+# 열 수 없는 파일이 자동저장 playlist 에 들어 있으면 시작할 때마다 죽었다. 깨진 파일 하나면
+# 재현되므로 픽스처를 생성한다 - 스펙을 위반한 AV1 도 같은 경로를 탄다.
+BROKEN="$DATA/broken_stream.av1"
+printf 'this is not an AV1 stream at all, just text\n' > "$BROKEN"
+run_test "$ROOT/tests/regression/38-restore-item-that-cannot-open.cpp" "$BROKEN"
 else
     echo "  SKIP  15-raw-av1-extension (raw AV1 생성 실패)"
     ((skip_count++))
