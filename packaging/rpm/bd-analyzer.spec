@@ -33,7 +33,7 @@
 %global __requires_exclude ^(%{__requires_exclude_bundled}|%{__requires_exclude_optional})$
 
 Name:           bd-analyzer
-Version:        %{?bda_version}%{!?bda_version:0.3.1}
+Version:        %{?bda_version}%{!?bda_version:0.3.2}
 Release:        %{?bda_release}%{!?bda_release:1}%{?dist}
 Summary:        Video bitstream and YUV analysis toolset
 Summary(ko):    비디오 비트스트림·YUV 분석 도구
@@ -142,6 +142,12 @@ fi
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Thu Sep 24 2026 knight.kim <knight.kim@blue-dot.io> - 0.3.2-1
+- Fix a SIGSEGV on every start when the autosaved playlist held a file that would not open.
+  Restoring an item dereferenced the video handler the constructor never created; such an item
+  is now dropped instead. A stream whose sequence header breaks conformance is exactly such a
+  file, and there was no way out of the crash but editing the settings by hand.
+
 * Sun Sep 20 2026 knight.kim <knight.kim@blue-dot.io> - 0.3.1-1
 - AV1 syntax parsing fixes found by diffing a tiled stream against VQ Analyzer field for
   field. All five were silent: the reader fell behind the encoder and every later field in

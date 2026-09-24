@@ -21,7 +21,7 @@ WORK="${WORK:-$ROOT/build/pkg}"
 DIST="${DIST:-$ROOT/build/dist}"
 UPSTREAM="$ROOT/third_party/yuview/upstream"
 
-VERSION="${BDA_VERSION:-0.3.1}"
+VERSION="${BDA_VERSION:-0.3.2}"
 # 만들어진 rpm 은 팀이 설치해 가는 공유 위치에도 버전 폴더를 만들어 복사한다.
 # 폴더명은 그 위치에 이미 있는 것들과 같은 표기를 쓴다 - 버전 앞에 v 가 붙는다
 # (bd-analyzer-v0.2.0, bd-analyzer-v0.3.0 ...). 여기만 v 를 쓰고, tar.gz 이름과 rpm 의
