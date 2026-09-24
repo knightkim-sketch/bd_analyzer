@@ -63,6 +63,25 @@ bool readSections(const std::string &path, std::vector<bda::diff::SyntaxSection>
   for (int packet = 0; packet < model->rowCount(); ++packet)
   {
     const auto packetIdx = model->index(packet, 0);
+
+    /* Label the packet with the index the parser logged, not with the row number.
+     *
+     * The two are not the same, and a label that silently disagrees with what the Bitstream
+     * Analysis panel shows sends the reader to the wrong packet.
+     */
+    auto packetLabel = "row " + std::to_string(packet);
+    for (int child = 0; child < model->rowCount(packetIdx); ++child)
+    {
+      const auto childIdx = model->index(child, 0, packetIdx);
+      if (model->data(childIdx).toString() == "Global AVPacket Count")
+      {
+        packetLabel =
+            "packet " +
+            model->data(model->index(child, 1, packetIdx)).toString().toStdString();
+        break;
+      }
+    }
+
     for (int child = 0; child < model->rowCount(packetIdx); ++child)
     {
       const auto childIdx = model->index(child, 0, packetIdx);
@@ -70,7 +89,7 @@ bool readSections(const std::string &path, std::vector<bda::diff::SyntaxSection>
       if (!name.startsWith("OBU"))
         continue;
       bda::diff::SyntaxSection section;
-      section.label = "packet " + std::to_string(packet) + " / " + name.toStdString();
+      section.label = packetLabel + " / " + name.toStdString();
       collect(*model, childIdx, section.elements);
       // An OBU with no syntax of its own - a temporal delimiter - would pair with anything and
       // says nothing. Keeping it would only shift the positional alignment.
