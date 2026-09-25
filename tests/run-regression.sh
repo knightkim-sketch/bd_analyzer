@@ -444,6 +444,16 @@ fi
 # RD curve 축 눈금. 틀린 눈금은 그럴듯하게 그려지므로 값으로 고정한다.
 run_test_bda "$ROOT/tests/regression/34-rd-curve-axis-ticks.cpp"
 
+# Find diff 창: 같은 소스를 다른 품질로 인코딩한 두 스트림의 헤더 구문이 갈리는 곳을 찾는다.
+# 거절 경로(0개/1개/같은 파일)도 함께 검사한다 - 메뉴를 눌러서 들어오는 동작이라 이유가
+# 문장으로 나와야 한다.
+if [[ ${#BDQ[@]} -ge 2 ]]; then
+    run_test_bda "$ROOT/tests/regression/39-find-diff-window.cpp" "${BDQ[0]}" "${BDQ[1]}"
+else
+    echo "  SKIP  39-find-diff-window (비교할 스트림이 2개 미만)"
+    ((skip_count++))
+fi
+
 echo
 echo "== MP4 컨테이너 =="
 # Container 탭. 파서는 단위 테스트가 보고, 여기서는 위젯이 파일을 매핑해 트리를 채우는지와

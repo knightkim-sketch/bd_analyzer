@@ -1,0 +1,74 @@
+diff --git a/YUViewLib/src/ui/Mainwindow.h b/YUViewLib/src/ui/Mainwindow.h
+index da267b43..5ad4303a 100644
+--- a/YUViewLib/src/ui/Mainwindow.h
++++ b/YUViewLib/src/ui/Mainwindow.h
+@@ -42,6 +42,7 @@
+ #include <memory>
+ 
+ #include <integration/BdRatePlotWindow.h>
++#include <integration/StreamDiffWindow.h>
+ #include <integration/MeRunner.h>
+ 
+ #include <handler/UpdateHandler.h>
+@@ -109,6 +110,7 @@ private slots:
+    * One press, one curve - pressing it again with a different selection adds a second.
+    */
+   void addBdRateGroupFromSelection();
++  void findDiffFromSelection();
+   void takeMotionEstimation();
+   void closeAndClearSettings();
+ 
+@@ -224,6 +226,7 @@ private:
+    * gathering them is the expensive part and losing them on a stray close would be unkind.
+    */
+   QPointer<bda::integration::BdRatePlotWindow>     bdRateWindow;
++  QPointer<bda::integration::StreamDiffWindow>     streamDiffWindow;
+ 
+   bool showNormalMaximized;     // When going to full screen: Was this windows maximized?
+   bool panelsVisible[8]{false}; // Which panels are visible when going to full-screen mode?
+diff --git a/YUViewLib/src/ui/Mainwindow.cpp b/YUViewLib/src/ui/Mainwindow.cpp
+index 1b8bf8da..23b3ff7c 100644
+--- a/YUViewLib/src/ui/Mainwindow.cpp
++++ b/YUViewLib/src/ui/Mainwindow.cpp
+@@ -784,6 +784,14 @@ void MainWindow::createMenusAndActions()
+                   this,
+                   &MainWindow::addBdRateGroupFromSelection,
+                   Qt::CTRL | Qt::Key_R);
++  /* Also a comparison of a selection rather than a panel, so it sits next to the BD-rate action.
++   * Two streams in, one answer out: where their syntax first parts company.
++   */
++  addActionToMenu(viewMenu,
++                  "Find di&ff between two Streams",
++                  this,
++                  &MainWindow::findDiffFromSelection,
++                  Qt::CTRL | Qt::Key_J);
+   viewMenu->addSeparator();
+ 
+   auto dockPanelsMenu = viewMenu->addMenu("Dock Panels");
+@@ -957,6 +965,26 @@ void MainWindow::cancelMotionEstimation()
+   }
+ }
+ 
++void MainWindow::findDiffFromSelection()
++{
++  if (!this->streamDiffWindow)
++    this->streamDiffWindow = new bda::integration::StreamDiffWindow(this);
++
++  const auto result =
++      this->streamDiffWindow->compare(ui.playlistTreeWidget->getAllSelectedItems());
++  if (!result.ok())
++  {
++    /* A dialog rather than a status line, for the same reason the BD-rate action uses one: the
++     * action was a deliberate press and the reason says what to select instead.
++     */
++    QMessageBox::information(this, "Find diff", result.message);
++    return;
++  }
++
++  this->streamDiffWindow->show();
++  this->streamDiffWindow->raise();
++}
++
+ void MainWindow::addBdRateGroupFromSelection()
+ {
+   if (!this->bdRateWindow)
