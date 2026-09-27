@@ -33,7 +33,7 @@
 %global __requires_exclude ^(%{__requires_exclude_bundled}|%{__requires_exclude_optional})$
 
 Name:           bd-analyzer
-Version:        %{?bda_version}%{!?bda_version:0.3.2}
+Version:        %{?bda_version}%{!?bda_version:0.3.3}
 Release:        %{?bda_release}%{!?bda_release:1}%{?dist}
 Summary:        Video bitstream and YUV analysis toolset
 Summary(ko):    비디오 비트스트림·YUV 분석 도구
@@ -142,6 +142,13 @@ fi
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Sun Sep 27 2026 knight.kim <knight.kim@blue-dot.io> - 0.3.3-1
+- Find diff (View menu, Ctrl+J): select two compressed streams and see where their syntax first
+  parts company, reported per OBU with both values side by side. Sequence and frame header
+  syntax only in this step - the tile payload is not compared yet, so identical headers do not
+  mean identical streams, and the window says so. The CDF and recon comparisons are shown
+  disabled with the reason rather than omitted.
+
 * Thu Sep 24 2026 knight.kim <knight.kim@blue-dot.io> - 0.3.2-1
 - Fix a SIGSEGV on every start when the autosaved playlist held a file that would not open.
   Restoring an item dereferenced the video handler the constructor never created; such an item
