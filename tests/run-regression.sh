@@ -287,6 +287,10 @@ run_unit_test "$ROOT/tests/unit/syntax-diff.cpp" "$ROOT/src/diff/SyntaxDiff.cpp"
 # 기대값은 계산하지 않고 비트 패턴에서 손으로 적었다.
 run_unit_test "$ROOT/tests/unit/bit-window.cpp" "$ROOT/src/diff/BitWindow.cpp"
 
+# OBU 분리와 payload 비교. 워커는 스트림에서 읽은 길이만큼 전진하므로, 크기를 잘못 읽어도
+# 실패하지 않고 그 뒤 전부를 조용히 어긋난 경계로 다시 자른다 - 그래서 거절 경로까지 검사한다.
+run_unit_test "$ROOT/tests/unit/obu-payload-diff.cpp" "$ROOT/src/diff/ObuPayloadDiff.cpp"
+
 # MP4 컨테이너. box 트리와 sample table(stsc/stco/stsz)을 실제 ffmpeg 산출물로 검증한다 -
 # 손으로 만든 픽스처는 "내가 생각하는 포맷" 과의 일치만 증명하기 때문이다.
 MP4="$(ensure_mp4)" || MP4=""
