@@ -1,0 +1,43 @@
+diff --git a/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.cpp b/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.cpp
+index 87a93576..16e49d13 100644
+--- a/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.cpp
++++ b/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.cpp
+@@ -309,8 +309,36 @@ void BitstreamAnalysisWidget::stopAndDeleteParserBlocking()
+ 
+ void BitstreamAnalysisWidget::backgroundParsingFunction()
+ {
+-  if (this->parser)
+-    this->parser->runParsingOfFile(this->currentCompressedVideo->properties().name.toStdString());
++  /* This runs on a QtConcurrent thread, so nothing may leave it.
++   *
++   * QtConcurrent only carries exceptions derived from QException. Anything else that escapes the
++   * task unwinds out of the worker and the process dies inside the unwinder - far from the throw,
++   * which is why the crash address landed in this function's exception-cleanup code rather than at
++   * any statement of it. The AV1 parser does throw std::logic_error on syntax it will not accept,
++   * and a stream with a broken header is exactly what this tool gets pointed at, so an ordinary
++   * file was enough to take the application down.
++   *
++   * currentCompressedVideo is a QPointer and clears itself when the item is destroyed. Only the
++   * parser was checked here; the item was dereferenced straight through.
++   */
++  const auto item = this->currentCompressedVideo;
++  if (!this->parser || item.isNull())
++    return;
++
++  try
++  {
++    this->parser->runParsingOfFile(item->properties().name.toStdString());
++  }
++  catch (const std::exception &e)
++  {
++    // The panel already shows what the parser managed to read; a stream it cannot finish is a
++    // result, not a reason to stop the program.
++    qWarning("Bitstream analysis stopped: %s", e.what());
++  }
++  catch (...)
++  {
++    qWarning("Bitstream analysis stopped on an unknown error.");
++  }
+ }
+ 
+ void BitstreamAnalysisWidget::currentSelectedItemsChanged(playlistItem *item1, playlistItem *, bool)

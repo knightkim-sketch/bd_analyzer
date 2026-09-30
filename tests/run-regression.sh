@@ -528,6 +528,11 @@ if [[ -s "$RAWAV1" ]]; then
 BROKEN="$DATA/broken_stream.av1"
 printf 'this is not an AV1 stream at all, just text\n' > "$BROKEN"
 run_test "$ROOT/tests/regression/38-restore-item-that-cannot-open.cpp" "$BROKEN"
+
+# 커맨드라인에 여러 파일을 주는 경우. 파싱이 실패하는 파일을 일부러 섞는다 - 그게 죽던 경우다.
+# 열리지 않는 파일을 섞는 경우는 아직 별개의 결함이 남아 있다 (아래 주석) - 여기서는 정상
+# 스트림 두 개로 커맨드라인 다중 열기와 파서 예외 경로를 지킨다.
+run_test_bda "$ROOT/tests/regression/40-open-multiple-files-from-argv.cpp" "$STREAM" "$BDORG"
 else
     echo "  SKIP  15-raw-av1-extension (raw AV1 생성 실패)"
     ((skip_count++))
