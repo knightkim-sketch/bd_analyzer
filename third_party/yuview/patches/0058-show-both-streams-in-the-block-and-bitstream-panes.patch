@@ -1,0 +1,356 @@
+diff --git a/YUViewLib/src/ui/widgets/BlockInfoWidget.h b/YUViewLib/src/ui/widgets/BlockInfoWidget.h
+index ff1e5752..e128441f 100644
+--- a/YUViewLib/src/ui/widgets/BlockInfoWidget.h
++++ b/YUViewLib/src/ui/widgets/BlockInfoWidget.h
+@@ -75,12 +75,21 @@ public slots:
+ 
+ private:
+   void showMessage(const QString &text);
+-  void populate(const stats::BlockInfo &info);
++  void populate(const stats::BlockInfo &info, const stats::BlockInfo *companion);
+ 
+   QVBoxLayout layout;
+   QLabel      statusLabel;
+   QTreeWidget tree;
+ 
++  /* Both selected items, in playlist order - not "the one clicked" and "the other".
++   *
++   * With a split view the same pixel exists in two streams and the interesting question is what
++   * each of them coded there. Keying the columns off which view was clicked would make them swap
++   * places on every click, so the order the playlist gives is used instead and stays put.
++   */
++  QPointer<playlistItem> firstItem;
++  QPointer<playlistItem> secondItem;
++
+   QPointer<playlistItem> selectedItem;
+   QPoint                 selectedPos;
+   int                    selectedFrameIdx{-1};
+diff --git a/YUViewLib/src/ui/widgets/BlockInfoWidget.cpp b/YUViewLib/src/ui/widgets/BlockInfoWidget.cpp
+index 17af0f91..028911e2 100644
+--- a/YUViewLib/src/ui/widgets/BlockInfoWidget.cpp
++++ b/YUViewLib/src/ui/widgets/BlockInfoWidget.cpp
+@@ -32,6 +32,9 @@
+ 
+ #include "BlockInfoWidget.h"
+ 
++#include <QFileInfo>
++#include <QHash>
++
+ #include <playlistitem/playlistItem.h>
+ 
+ #include <QHeaderView>
+@@ -41,8 +44,11 @@ BlockInfoWidget::BlockInfoWidget(QWidget *parent) : QWidget(parent), layout(this
+   this->statusLabel.setWordWrap(true);
+   this->statusLabel.setTextInteractionFlags(Qt::TextSelectableByMouse);
+ 
+-  this->tree.setColumnCount(2);
+-  this->tree.setHeaderLabels({"Syntax Element", "Value"});
++  this->tree.setColumnCount(3);
++  this->tree.setHeaderLabels({"Syntax Element", "Value", ""});
++  // The third column only earns its place when two streams are selected; refresh() names and
++  // shows it then.
++  this->tree.setColumnHidden(2, true);
+   this->tree.setRootIsDecorated(true);
+   this->tree.setUniformRowHeights(true);
+   this->tree.setSelectionMode(QAbstractItemView::SingleSelection);
+@@ -79,7 +85,17 @@ void BlockInfoWidget::refresh()
+   if (!this->selectedItem)
+     return;
+ 
+-  const auto info = this->selectedItem->getBlockInfoAt(this->selectedPos, this->selectedFrameIdx);
++  /* With two streams selected the pane answers the question the split view raises: what did each
++   * of them code at this pixel. The left column is whichever item the playlist lists first, so the
++   * columns do not swap when the other view is clicked.
++   */
++  auto *primary   = this->firstItem ? this->firstItem.data() : this->selectedItem.data();
++  auto *companion = (this->secondItem && this->secondItem != primary) ? this->secondItem.data()
++                                                                      : nullptr;
++  if (!primary)
++    primary = this->selectedItem;
++
++  const auto info = primary->getBlockInfoAt(this->selectedPos, this->selectedFrameIdx);
+   if (!info.isValid)
+   {
+     // Either the statistics for this frame have not been collected yet (they are on their way), or
+@@ -91,13 +107,30 @@ void BlockInfoWidget::refresh()
+     return;
+   }
+ 
+-  this->populate(info);
++  stats::BlockInfo companionInfo;
++  if (companion)
++    companionInfo = companion->getBlockInfoAt(this->selectedPos, this->selectedFrameIdx);
++
++  this->tree.setColumnHidden(2, companion == nullptr);
++  if (companion)
++    this->tree.setHeaderLabels({"Syntax Element",
++                                QFileInfo(primary->properties().name).fileName(),
++                                QFileInfo(companion->properties().name).fileName()});
++  else
++    this->tree.setHeaderLabels({"Syntax Element", "Value", ""});
++
++  this->populate(info, companion ? &companionInfo : nullptr);
+ }
+ 
+ void BlockInfoWidget::currentSelectedItemsChanged(playlistItem *item1, playlistItem *item2)
+ {
++  this->firstItem  = item1;
++  this->secondItem = item2;
++
+   if (this->selectedItem && this->selectedItem != item1 && this->selectedItem != item2)
+     this->setSelectedBlock(nullptr, QPoint(), -1);
++  else if (this->selectedItem)
++    this->refresh(); // the companion column appears or disappears with the selection
+ }
+ 
+ void BlockInfoWidget::setCurrentFrame(playlistItem *item, int frameIdx)
+@@ -130,7 +163,8 @@ void BlockInfoWidget::showMessage(const QString &text)
+   this->shownFrameIdx = -1;
+ }
+ 
+-void BlockInfoWidget::populate(const stats::BlockInfo &info)
++void BlockInfoWidget::populate(const stats::BlockInfo &info,
++                               const stats::BlockInfo *companion)
+ {
+   this->statusLabel.setText(QString("Frame %1 · pixel (%2, %3)")
+                                 .arg(info.frameIndex)
+@@ -141,6 +175,23 @@ void BlockInfoWidget::populate(const stats::BlockInfo &info)
+ 
+   this->tree.clear();
+ 
++  /* The second stream's values for the same pixel, by syntax element name.
++   *
++   * By name and not by position in the list: two encodings routinely code a different number of
++   * elements at the same pixel, and pairing them by index would put one stream's value next to
++   * another stream's element - a wrong answer that looks like a right one.
++   */
++  QHash<QString, QString> companionValues;
++  bool                    companionHasBlock = false;
++  QRect                   companionRect;
++  if (companion && companion->isValid)
++  {
++    companionHasBlock = true;
++    companionRect     = companion->codingBlockRect;
++    for (const auto &entry : companion->entries)
++      companionValues.insert(entry.typeName, entry.valueText);
++  }
++
+   // One group per distinct rectangle, largest first (allRects is already sorted that way), so for
+   // AV1 the coding block comes before the transform block. Deriving the grouping from the data keeps
+   // this codec neutral: HEVC CTB/CU/TU fall out the same way.
+@@ -153,7 +204,21 @@ void BlockInfoWidget::populate(const stats::BlockInfo &info)
+                      .arg(rect.x())
+                      .arg(rect.y());
+     if (rect == info.codingBlockRect)
++    {
+       label += "  — coding block";
++      /* Say it when the two streams did not even split the picture the same way. Without this the
++       * columns read as two values for one block, when they are really values for two different
++       * blocks that happen to cover the same pixel.
++       */
++      if (companion && companionHasBlock && companionRect != info.codingBlockRect)
++        label += QString("  ·  the other stream codes %1×%2 @ (%3, %4) here")
++                     .arg(companionRect.width())
++                     .arg(companionRect.height())
++                     .arg(companionRect.x())
++                     .arg(companionRect.y());
++      else if (companion && !companionHasBlock)
++        label += "  ·  the other stream has no block at this pixel";
++    }
+     else if (info.transformBlockRect && rect == *info.transformBlockRect)
+       label += "  — transform block";
+     group->setText(0, label);
+@@ -167,6 +232,16 @@ void BlockInfoWidget::populate(const stats::BlockInfo &info)
+       auto *row = new QTreeWidgetItem(group);
+       row->setText(0, entry.typeName);
+       row->setText(1, entry.valueText);
++      if (companion)
++      {
++        const auto other = companionValues.value(entry.typeName);
++        // An element the other stream did not code at all is not the same as one it coded to an
++        // empty value, so the two are shown differently.
++        row->setText(2, other.isEmpty() ? QString("—") : other);
++        if (!other.isEmpty() && other != entry.valueText)
++          for (int column = 0; column < 3; ++column)
++            row->setForeground(column, QBrush(QColor(200, 0, 0)));
++      }
+ 
+       // VQAnalyzer puts the explanation of an abbreviated name in a tooltip; several statistic
+       // types have no description, so always append the type id and the raw value.
+@@ -178,6 +253,7 @@ void BlockInfoWidget::populate(const stats::BlockInfo &info)
+         tip += QString(", raw value: %1").arg(entry.rawValue);
+       row->setToolTip(0, tip);
+       row->setToolTip(1, tip);
++      row->setToolTip(2, tip);
+     }
+ 
+     if (group->childCount() == 0)
+diff --git a/YUViewLib/src/ui/widgets/HexdumpViewerWidget.h b/YUViewLib/src/ui/widgets/HexdumpViewerWidget.h
+index 53f0f080..f03a24f0 100644
+--- a/YUViewLib/src/ui/widgets/HexdumpViewerWidget.h
++++ b/YUViewLib/src/ui/widgets/HexdumpViewerWidget.h
+@@ -32,7 +32,16 @@ public slots:
+ 
+ private:
+   void    showMessage(const QString &title, const QString &message);
+-  void    showDump(const playlistItem::DataDump &dump);
++  /* Render one dump into one set of widgets.
++   *
++   * Takes the widgets rather than using the members so the same formatting serves both streams: a
++   * split view shows two, stacked, and a second copy of this function would be a second place for
++   * the highlighting to drift.
++   */
++  void showDump(const playlistItem::DataDump &dump,
++                QLabel &                      title,
++                QLabel &                      description,
++                QPlainTextEdit &              text);
+   /* Formats the dump and, for the bytes in highlightBytes (indices into data), reports the character
+    * ranges in the returned text that cover them - hex column and ascii column separately - so the
+    * caller can colour exactly those.
+@@ -48,7 +57,18 @@ private:
+   QLabel         descriptionLabel;
+   QPlainTextEdit dumpText;
+ 
++  /* The second stream, shown below the first when two are selected.
++   *
++   * Stacked rather than side by side: a hex dump is wide, and two of them in a dock would leave
++   * neither readable. Which stream is on top follows the playlist order, so the panes do not swap
++   * when the other view is clicked.
++   */
++  QLabel         titleLabel2;
++  QLabel         descriptionLabel2;
++  QPlainTextEdit dumpText2;
++
+   QPointer<playlistItem> currentItem;
++  QPointer<playlistItem> companionItem;
+   int                    currentFrameIdx{-1};
+ 
+   QPointer<playlistItem> selectedItem;
+diff --git a/YUViewLib/src/ui/widgets/HexdumpViewerWidget.cpp b/YUViewLib/src/ui/widgets/HexdumpViewerWidget.cpp
+index 63794458..7dd8dd40 100644
+--- a/YUViewLib/src/ui/widgets/HexdumpViewerWidget.cpp
++++ b/YUViewLib/src/ui/widgets/HexdumpViewerWidget.cpp
+@@ -41,12 +41,31 @@ HexdumpViewerWidget::HexdumpViewerWidget(QWidget *parent) : QWidget(parent), lay
+   this->layout.addWidget(&this->descriptionLabel);
+   this->layout.addWidget(&this->dumpText, 1);
+ 
++  /* The second stream, below the first. Stacked rather than side by side: a hex dump is wide, and
++   * two of them in a dock would leave neither readable. Which one is on top follows the playlist
++   * order, so the panes do not swap when the other view is clicked.
++   */
++  this->titleLabel2.setTextInteractionFlags(Qt::TextSelectableByMouse);
++  this->descriptionLabel2.setWordWrap(true);
++  this->descriptionLabel2.setTextInteractionFlags(Qt::TextSelectableByMouse);
++  this->dumpText2.setReadOnly(true);
++  this->dumpText2.setLineWrapMode(QPlainTextEdit::NoWrap);
++  this->dumpText2.setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
++  this->dumpText2.setMinimumHeight(120);
++  this->layout.addWidget(&this->titleLabel2);
++  this->layout.addWidget(&this->descriptionLabel2);
++  this->layout.addWidget(&this->dumpText2, 1);
++  this->titleLabel2.setVisible(false);
++  this->descriptionLabel2.setVisible(false);
++  this->dumpText2.setVisible(false);
++
+   this->showMessage("Data Dump", "Select an item or click a block to show the current data.");
+ }
+ 
+ void HexdumpViewerWidget::currentSelectedItemsChanged(playlistItem *item1, playlistItem *item2)
+ {
+-  this->currentItem = item1;
++  this->currentItem   = item1;
++  this->companionItem = (item2 && item2 != item1) ? item2 : nullptr;
+   if (this->selectedItem && this->selectedItem != item1 && this->selectedItem != item2)
+   {
+     this->selectedItem      = nullptr;
+@@ -112,7 +131,33 @@ void HexdumpViewerWidget::refresh()
+     return;
+   }
+ 
+-  this->showDump(dump);
++  this->showDump(dump, this->titleLabel, this->descriptionLabel, this->dumpText);
++
++  /* The second stream at the same pixel and frame.
++   *
++   * It gets its own block query: the two streams code different blocks at one pixel, so reusing
++   * the first one's bit range would highlight bytes that belong to nothing in this dump.
++   */
++  const bool showCompanion = !this->companionItem.isNull() && this->companionItem != item;
++  this->titleLabel2.setVisible(showCompanion);
++  this->descriptionLabel2.setVisible(showCompanion);
++  this->dumpText2.setVisible(showCompanion);
++  if (!showCompanion)
++    return;
++
++  stats::BlockInfo companionBlock;
++  if (this->hasSelectedPoint)
++    companionBlock = this->companionItem->getBlockInfoAt(this->selectedPos, frameIdx);
++  const auto companionDump = this->companionItem->getItemDataDump(
++      this->hasSelectedPoint ? this->selectedPos : QPoint(0, 0), frameIdx, companionBlock);
++  if (companionDump.isValid())
++    this->showDump(companionDump, this->titleLabel2, this->descriptionLabel2, this->dumpText2);
++  else
++  {
++    this->titleLabel2.setText("Data Dump");
++    this->descriptionLabel2.setText("No dump data is available for the second stream.");
++    this->dumpText2.clear();
++  }
+ }
+ 
+ void HexdumpViewerWidget::showMessage(const QString &title, const QString &message)
+@@ -122,14 +167,17 @@ void HexdumpViewerWidget::showMessage(const QString &title, const QString &messa
+   this->dumpText.clear();
+ }
+ 
+-void HexdumpViewerWidget::showDump(const playlistItem::DataDump &dump)
++void HexdumpViewerWidget::showDump(const playlistItem::DataDump &dump,
++                                   QLabel &                      titleLabel,
++                                   QLabel &                      descriptionLabel,
++                                   QPlainTextEdit &              dumpText)
+ {
+-  this->titleLabel.setText(dump.title);
++  titleLabel.setText(dump.title);
+ 
+   if (!dump.text.isEmpty())
+   {
+-    this->descriptionLabel.setText(dump.description);
+-    this->dumpText.setPlainText(dump.text);
++    descriptionLabel.setText(dump.description);
++    dumpText.setPlainText(dump.text);
+     return;
+   }
+ 
+@@ -154,8 +202,8 @@ void HexdumpViewerWidget::showDump(const playlistItem::DataDump &dump)
+   auto desc = dump.description;
+   if (truncated)
+     desc += QString(" · showing first %1 bytes").arg(MAX_HEXDUMP_BYTES);
+-  this->descriptionLabel.setText(desc);
+-  this->dumpText.setPlainText(text);
++  descriptionLabel.setText(desc);
++  dumpText.setPlainText(text);
+ 
+   if (spans.empty())
+     return;
+@@ -165,7 +213,7 @@ void HexdumpViewerWidget::showDump(const playlistItem::DataDump &dump)
+   QTextCharFormat blockFormat;
+   blockFormat.setForeground(QBrush(QColor(200, 0, 0)));
+   blockFormat.setFontWeight(QFont::Bold);
+-  auto cursor = QTextCursor(this->dumpText.document());
++  auto cursor = QTextCursor(dumpText.document());
+   cursor.beginEditBlock();
+   for (const auto &span : spans)
+   {
+@@ -176,10 +224,10 @@ void HexdumpViewerWidget::showDump(const playlistItem::DataDump &dump)
+   cursor.endEditBlock();
+ 
+   // Bring the marked bytes into view; a block near the end of a long window would be off screen.
+-  auto show = QTextCursor(this->dumpText.document());
++  auto show = QTextCursor(dumpText.document());
+   show.setPosition(spans.front().first);
+-  this->dumpText.setTextCursor(show);
+-  this->dumpText.ensureCursorVisible();
++  dumpText.setTextCursor(show);
++  dumpText.ensureCursorVisible();
+ }
+ 
+ QString HexdumpViewerWidget::formatHexDump(const QByteArray                        &data,

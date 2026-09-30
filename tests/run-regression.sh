@@ -533,6 +533,15 @@ run_test "$ROOT/tests/regression/38-restore-item-that-cannot-open.cpp" "$BROKEN"
 # 열리지 않는 파일을 섞는 경우는 아직 별개의 결함이 남아 있다 (아래 주석) - 여기서는 정상
 # 스트림 두 개로 커맨드라인 다중 열기와 파서 예외 경로를 지킨다.
 run_test_bda "$ROOT/tests/regression/40-open-multiple-files-from-argv.cpp" "$STREAM" "$BDORG"
+
+# split view 로 두 스트림을 열었을 때 Block Info 패널이 양쪽을 보여주는지. 같은 소스를 다른
+# 품질로 인코딩한 두 스트림이 있어야 한다.
+if [[ ${#BDQ[@]} -ge 2 && -e "$APPDIR/decoder/libdav1d-internals.so" ]]; then
+    run_test_bda "$ROOT/tests/regression/41-block-info-two-streams.cpp" "${BDQ[0]}" "${BDQ[1]}"
+else
+    echo "  SKIP  41-block-info-two-streams (스트림 2개 또는 dav1d analyzer 필요)"
+    ((skip_count++))
+fi
 else
     echo "  SKIP  15-raw-av1-extension (raw AV1 생성 실패)"
     ((skip_count++))
