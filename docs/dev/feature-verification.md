@@ -123,6 +123,20 @@ Qt 없이 도는 코어 단위 테스트 (`tests/unit/`):
 - [ ] `probe-blockinfo-coverage` — 위 커버리지를 원인별로 쪼개 본다 (블록 없음 / 다른 프레임 /
       정상). "다른 프레임" 이 0 이 아니면 그때가 실제 통계 지연이다
 - [ ] `dump-obu-headers` — VQ Analyzer 의 `-dump_headers_filter all` 출력과 구문 요소가 일치한다
+- [ ] **Find diff 파이프라인** — 세 도구를 순서대로 돌린다. 설계: `docs/ai/30-designs/stream-diff-design.md` §4.5
+      1. `stream-diff-headers <a> <b>` — seq/frame header 가 갈라지는 OBU
+      2. `stream-diff-payload <a> <b>` — OBU payload 를 바이트로 비교, **첫 갈림 TU/OBU 와 바이트 위치**
+      3. `stream-diff-blocks <a> <b> --frame N` — 그 프레임만 디코딩해 `SB(row, col)` / `MI(row, col)` 특정
+- [ ] `stream-diff-blocks` 검산 — 기본값은 **첫 차이 SB 에서 중단**이므로 커버리지가 낮게 나오는
+      것이 정상이다 (`only the scanned part was loaded`). `--all` 로 전체를 훑을 때만 양쪽
+      커버리지가 100% 근처여야 하고, 95% 미만이면 도구가 WARNING 을 찍는다. payload 가 동일한
+      프레임(예: 두 스트림의 키프레임)을 넣어 `identical` 이 나오는지로 도구 자체를 먼저 확인한다
+- [ ] `stream-diff-blocks` 비용 — 4K 한 프레임 기준 **20초대**여야 한다. 분 단위로 걸리면
+      블록당 1회 질의나 조기 중단이 깨진 것이다. `decoder queries` 와 `superblocks scanned` 줄을
+      본다 (4K 실측: 질의 2,484 / 2,487, 스캔 31 / 2040)
+- [ ] `stream-diff-blocks` 의 두 답을 **구분해서 읽는다** — `first superblock with a differing block`
+      이 찾던 답이고, `earliest superblock differing at all` 은 `sb_bitcount` 같은 SB 집계만 다른
+      경우다 (같은 판단, 다른 residual). 둘이 다르면 도구가 둘 다 찍는다
 
 ## 3. 증상별 진입점
 
@@ -131,6 +145,8 @@ Qt 없이 도는 코어 단위 테스트 (`tests/unit/`):
 | 아무 데서나 SIGSEGV | **툴체인 혼용 의심.** `readelf -p .comment` 로 `.o` 들의 GCC 버전이 섞였는지 본다. `scl enable gcc-toolset-13` 밖에서 `make` 를 돌리면 링크는 되고 실행이 죽는다 |
 | 빌드는 됐는데 새 코드가 동작 안 함 | 낡은 `.o`. `make clean` 후 재빌드. `.pro` 의 소스 glob 은 sub-project Makefile 재생성 때만 다시 평가된다 |
 | 블록 통계가 조용히 이상함 | dav1d ABI. `libdav1d-internals.so` 와 YUViewLib 이 `Av1Block` 레이아웃을 공유한다. 둘 중 하나만 다시 빌드하면 어긋난다 (`scripts/setup-dav1d.sh`) |
+| 두 스트림이 어디서 갈라지는지 모름 | `stream-diff-payload` 로 OBU 를 먼저 특정하고, 그 프레임만 `stream-diff-blocks --frame N` 으로 연다. 전체 프레임을 훑지 않는다 — 4K 한 프레임이 MI 조회 518,400회다 |
+| `stream-diff-blocks` 가 SB 를 거의 전부 다르다고 함 | `sb_bitcount` 를 블록 syntax 로 세고 있지 않은지 본다. SB 집계는 그 SB 의 **모든 블록**에 붙어 오므로, 분리하지 않으면 한 블록 차이가 SB 전체로 번진다 (`BlockDiffOptions::superblockElements`) |
 | 비트스트림 패널 값이 틀림 | `dump-obu-headers` 로 덤프해 VQ Analyzer 와 diff. 어긋나기 시작하는 **첫 필드**가 원인 지점이다 |
 | BD-rate 가 안 나옴 / 거절됨 | 거절 사유를 그대로 읽는다 — `no PSNR overlap`, `too few points`, `lossless`, dav1d analyzer 디코더가 아닌 스트림, 격자가 다른 스트림 |
 | 시퀀스 sweep 중 `std::bad_alloc` | transform size 테이블 인덱싱. `35-frame-range-and-statistics-bounds` 가 상한을 지킨다 |

@@ -291,6 +291,12 @@ run_unit_test "$ROOT/tests/unit/bit-window.cpp" "$ROOT/src/diff/BitWindow.cpp"
 # 실패하지 않고 그 뒤 전부를 조용히 어긋난 경계로 다시 자른다 - 그래서 거절 경로까지 검사한다.
 run_unit_test "$ROOT/tests/unit/obu-payload-diff.cpp" "$ROOT/src/diff/ObuPayloadDiff.cpp"
 
+# 디코딩된 한 프레임을 MI 격자로 비교하는 4단계. sb_bitcount 처럼 SB 전체를 설명하는 값이
+# 블록마다 붙어 오므로, 그것을 블록 syntax 로 세면 한 블록의 차이가 그 SB 의 모든 블록으로
+# 번진다 - 실제 스트림에서 차이 MI 가 2594 에서 8208 로 부풀었다. 그 경계를 여기서 고정한다.
+run_unit_test "$ROOT/tests/unit/block-syntax-diff.cpp" \
+              "$ROOT/src/diff/BlockSyntaxDiff.cpp" "$ROOT/src/diff/SyntaxDiff.cpp"
+
 # MP4 컨테이너. box 트리와 sample table(stsc/stco/stsz)을 실제 ffmpeg 산출물로 검증한다 -
 # 손으로 만든 픽스처는 "내가 생각하는 포맷" 과의 일치만 증명하기 때문이다.
 MP4="$(ensure_mp4)" || MP4=""
