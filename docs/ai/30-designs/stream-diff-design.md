@@ -176,6 +176,33 @@ dav1d 는 `sb_bitcount` 와 `sb_qindex` 를 **SB 전체 값인데 그 SB 의 모
 
 둘이 다르면 CLI 가 **둘 다** 찍는다.
 
+### 3단계 → 4단계 프레임 매핑 (Knight 사례에서 걸린 부분)
+
+**3단계는 *코딩* 프레임을, 4단계는 *표시* 프레임 인덱스를 다룬다. 둘은 같은 번호가 아니다.**
+
+PierSeaSide 실측:
+
+| TU 90 | order_hint | show_frame |
+|---|---|---|
+| OBU 1 | 28 | 0 (hidden) |
+| **OBU 2** | **26** | **0 (hidden)** ← 3단계가 지목 |
+| OBU 3 | 25 | 1 |
+
+- `show_frame = 0` 인 hidden ARF 는 **뒤의 어떤 TU 가 `show_existing_frame` 으로** 화면에 올린다.
+- display 90 은 order_hint **25** 를 보여준다. 이 GOP 은 `display = order_hint + 65` 이고
+  (ki65 이므로 2번째 GOP 이 display 65 시작), **order_hint 26 은 display 91** 이다.
+- display 90 으로 비교하면 `SB(10, 29)` 라는 **무관한 답**이 나온다. display 91 로 비교하면
+  `SB(4, 47)` 로 Knight 의 답과 일치한다.
+
+그래서 `stream-diff-blocks` 가 `--tu N --obu N` 을 받아 직접 푼다. 디코더가 하는 대로 참조 슬롯을
+흉내낸다 — 디코딩된 프레임을 `refresh_frame_flags` 가 지목한 모든 슬롯에 쓰고,
+`show_existing_frame` 은 `frame_to_show_map_idx` 가 가리키는 슬롯을 화면에 올린다.
+(검산: OBU 2 의 `refresh_frame_flags = 4` = 슬롯 2, display 91 이 `map_idx = 2`.)
+
+> **함정**: packet item model 의 **행 번호와 `Global AVPacket Count` 가 한 칸 어긋난다.**
+> 3단계가 보고하는 번호는 packet 쪽이므로 행으로 색인하면 옆 TU 를 집는다 — 프레임 구성이 다르다.
+> (레이어 A 에서 한 번 같은 실수를 했고, 여기서 또 걸렸다.)
+
 ### 4단계 비용 — 두 번 줄였다 (실측)
 
 4K 한 프레임을 처음 돌렸을 때 **21분 37초**였다. 두 가지를 고쳤고, 두 번 모두 **출력은 동일**하다.

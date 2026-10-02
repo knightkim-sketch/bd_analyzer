@@ -23,7 +23,15 @@
 #include <unistd.h>
 #include <vector>
 
+#include <QAbstractItemModel>
+
+#include <filesystem>
+#include <map>
+#include <optional>
+
 #include "diff/BlockSyntaxDiff.h"
+#include "ffmpeg/FFmpegVersionHandler.h"
+#include "parser/AVFormat/ParserAVFormat.h"
 #include "playlistitem/playlistItemCompressedVideo.h"
 
 namespace
@@ -49,6 +57,137 @@ std::vector<bda::diff::SyntaxElement> toElements(const stats::BlockInfo &info)
   for (const auto &e : info.entries)
     out.push_back({e.typeName.toStdString(), e.valueText.toStdString()});
   return out;
+}
+
+/* First value of a named syntax element anywhere under this model row.
+ *
+ * The frame header sits a few levels down inside the OBU (frame_obu > frame_header_obu >
+ * uncompressed_header), and the exact nesting is the parser's business, not this tool's.
+ */
+std::optional<int> findValue(const QAbstractItemModel &model,
+                             const QModelIndex &       index,
+                             const QString &           name)
+{
+  for (int row = 0; row < model.rowCount(index); ++row)
+  {
+    const auto child = model.index(row, 0, index);
+    if (model.data(child).toString() == name)
+    {
+      bool       ok    = false;
+      const auto value = model.data(model.index(row, 1, index)).toString().toInt(&ok);
+      if (ok)
+        return value;
+    }
+    if (const auto found = findValue(model, child, name))
+      return found;
+  }
+  return std::nullopt;
+}
+
+/* Turn the (temporal unit, OBU) that step 3 reports into the display frame index step 4 decodes.
+ *
+ * These are not the same number and must not be assumed to be. Step 3 names a *coded* frame; a
+ * coded frame with show_frame = 0 is a hidden alternate reference that some later temporal unit
+ * puts on screen with show_existing_frame. Measured on the stream this was written for: step 3
+ * named TU 90 / OBU 2, order_hint 26, hidden - and display index 90 shows order_hint 25, a
+ * different frame entirely. Comparing it answers with a superblock that has nothing to do with the
+ * divergence.
+ *
+ * So the reference slots are simulated the way the decoder keeps them: a decoded frame is written
+ * into every slot its refresh_frame_flags names, and show_existing_frame displays whatever is in
+ * the slot it points at.
+ */
+int resolveDisplayIndex(const std::string &path, const int tu, const int obu, std::string &error)
+{
+  FFmpeg::FFmpegVersionHandler ff;
+  ff.loadFFmpegLibraries();
+  if (!ff.loadingSuccessfull())
+  {
+    error = "the FFmpeg libraries could not be loaded";
+    return -1;
+  }
+
+  parser::ParserAVFormat parser;
+  parser.enableModel();
+  if (!parser.runParsingOfFile(std::filesystem::path(path)))
+  {
+    error = "could not parse " + path;
+    return -1;
+  }
+  parser.updateNumberModelItems();
+  auto *model = parser.getPacketItemModel();
+  if (model == nullptr)
+  {
+    error = "the parser produced no packet model";
+    return -1;
+  }
+
+  using FrameId = std::pair<int, int>; // (temporal unit, OBU index within it)
+  std::map<FrameId, int> displayOf;
+  FrameId                refSlots[8];
+  // (-1, -1) marks a slot nothing has been written into yet.
+  for (int i = 0; i < 8; ++i)
+    refSlots[i] = {-1, -1};
+
+  int display = 0;
+  for (int row = 0; row < model->rowCount(); ++row)
+  {
+    const auto packetIdx = model->index(row, 0);
+
+    /* Key on the packet index the parser logged, not on the row number. They differ by one on this
+     * model, and the number step 3 reports is the packet, so keying on the row would look up the
+     * temporal unit next door - which holds a different set of frames.
+     */
+    int packet = -1;
+    for (int child = 0; child < model->rowCount(packetIdx); ++child)
+      if (model->data(model->index(child, 0, packetIdx)).toString() == "Global AVPacket Count")
+      {
+        packet = model->data(model->index(child, 1, packetIdx)).toString().toInt();
+        break;
+      }
+    if (packet < 0)
+      continue;
+
+    int obuIndex = -1;
+    for (int child = 0; child < model->rowCount(packetIdx); ++child)
+    {
+      const auto childIdx = model->index(child, 0, packetIdx);
+      if (!model->data(childIdx).toString().startsWith("OBU"))
+        continue;
+      ++obuIndex; // Counts from the temporal delimiter, as step 3 does.
+
+      const auto showExisting = findValue(*model, childIdx, "show_existing_frame");
+      if (!showExisting)
+        continue; // Not a frame OBU.
+
+      const FrameId id{packet, obuIndex};
+      if (*showExisting == 1)
+      {
+        const auto mapIdx = findValue(*model, childIdx, "frame_to_show_map_idx").value_or(-1);
+        if (mapIdx >= 0 && mapIdx < 8 && refSlots[mapIdx].first >= 0)
+          displayOf[refSlots[mapIdx]] = display;
+        ++display;
+        continue;
+      }
+
+      if (findValue(*model, childIdx, "show_frame").value_or(0) == 1)
+        displayOf[id] = display++;
+
+      const auto refresh = findValue(*model, childIdx, "refresh_frame_flags").value_or(0);
+      for (int slot = 0; slot < 8; ++slot)
+        if ((refresh >> slot) & 1)
+          refSlots[slot] = id;
+    }
+  }
+
+  const auto it = displayOf.find({tu, obu});
+  if (it == displayOf.end())
+  {
+    error = "TU " + std::to_string(tu) + " / OBU " + std::to_string(obu) +
+            " is never displayed - it is not a frame, or nothing shows it";
+    return -1;
+  }
+  return it->second;
 }
 
 /* Fills one superblock's MI positions on demand, one query per coding block.
@@ -185,12 +324,17 @@ int main(int argc, char **argv)
 
   std::string pathA, pathB;
   int         frameIdx = -1, sbSize = 0, maxSb = 5;
+  int         tu = -1, obu = -1;
   bool        all = false;
   for (int i = 1; i < argc; ++i)
   {
     const std::string a = argv[i];
     if (a == "--frame" && i + 1 < argc)
       frameIdx = std::stoi(argv[++i]);
+    else if (a == "--tu" && i + 1 < argc)
+      tu = std::stoi(argv[++i]);
+    else if (a == "--obu" && i + 1 < argc)
+      obu = std::stoi(argv[++i]);
     else if (a == "--sb" && i + 1 < argc)
       sbSize = std::stoi(argv[++i]);
     else if (a == "--max-sb" && i + 1 < argc)
@@ -202,9 +346,13 @@ int main(int argc, char **argv)
     else if (pathB.empty())
       pathB = a;
   }
-  if (pathA.empty() || pathB.empty() || frameIdx < 0)
+  if (pathA.empty() || pathB.empty() || (frameIdx < 0 && (tu < 0 || obu < 0)))
   {
-    std::cerr << "usage: stream-diff-blocks <a> <b> --frame N [--sb 64|128] [--max-sb N] [--all]"
+    std::cerr << "usage: stream-diff-blocks <a> <b> (--tu N --obu N | --frame N)\n"
+                 "                          [--sb 64|128] [--max-sb N] [--all]\n"
+                 "\n"
+                 "  --tu N --obu N  the coded frame step 3 named; the display frame is worked out\n"
+                 "  --frame N       a display frame index directly"
               << std::endl;
     return 2;
   }
@@ -212,6 +360,23 @@ int main(int argc, char **argv)
   QCoreApplication::setOrganizationName("bdAnalyzerBlockDiff");
   QCoreApplication::setApplicationName("bdAnalyzerBlockDiff");
   QSettings().clear();
+
+  /* --tu/--obu is the form that matches what step 3 reports. Resolving it here rather than asking
+   * the reader to do it: the arithmetic looks easy (GOP start + order_hint) and is wrong whenever a
+   * hidden frame is involved, which is exactly when this tool gets used.
+   */
+  if (frameIdx < 0)
+  {
+    std::string error;
+    frameIdx = resolveDisplayIndex(pathA, tu, obu, error);
+    if (frameIdx < 0)
+    {
+      std::cerr << "could not place TU " << tu << " / OBU " << obu << ": " << error << std::endl;
+      return 2;
+    }
+    std::cout << "TU " << tu << " / OBU " << obu << " is displayed as frame " << frameIdx
+              << std::endl;
+  }
 
   playlistItemCompressedVideo itemA(QString::fromStdString(pathA), 0, InputFormat::Libav,
                                     decoder::DecoderEngine::Invalid);

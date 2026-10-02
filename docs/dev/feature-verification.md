@@ -126,7 +126,12 @@ Qt 없이 도는 코어 단위 테스트 (`tests/unit/`):
 - [ ] **Find diff 파이프라인** — 세 도구를 순서대로 돌린다. 설계: `docs/ai/30-designs/stream-diff-design.md` §4.5
       1. `stream-diff-headers <a> <b>` — seq/frame header 가 갈라지는 OBU
       2. `stream-diff-payload <a> <b>` — OBU payload 를 바이트로 비교, **첫 갈림 TU/OBU 와 바이트 위치**
-      3. `stream-diff-blocks <a> <b> --frame N` — 그 프레임만 디코딩해 `SB(row, col)` / `MI(row, col)` 특정
+      3. `stream-diff-blocks <a> <b> --tu N --obu N` — 그 프레임만 디코딩해 `SB(row, col)` / `MI(row, col)` 특정
+- [ ] **`--frame N` 을 손으로 계산해 넣지 않는다.** 3단계가 주는 TU/OBU 는 *코딩* 프레임이고
+      `--frame` 은 *표시* 프레임이다. hidden ARF 가 끼면 `GOP 시작 + order_hint` 산수가 틀린다 —
+      PierSeaSide 실측에서 display 90 은 order_hint 25 였고, 찾던 order_hint 26 은 display 91 이었다.
+      틀린 프레임은 거절되지 않고 **그럴듯한 엉뚱한 SB** 를 답으로 낸다 (`SB(10, 29)` vs 정답 `SB(4, 47)`).
+      `--tu/--obu` 를 쓰면 도구가 `refresh_frame_flags` / `show_existing_frame` 을 추적해 직접 푼다
 - [ ] `stream-diff-blocks` 검산 — 기본값은 **첫 차이 SB 에서 중단**이므로 커버리지가 낮게 나오는
       것이 정상이다 (`only the scanned part was loaded`). `--all` 로 전체를 훑을 때만 양쪽
       커버리지가 100% 근처여야 하고, 95% 미만이면 도구가 WARNING 을 찍는다. payload 가 동일한
