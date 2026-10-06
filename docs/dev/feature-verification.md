@@ -157,6 +157,14 @@ Qt 없이 도는 코어 단위 테스트 (`tests/unit/`):
 - [ ] 창의 **Compare reconstructed pictures** — 결과가 나온 뒤 체크하면 D 만 추가로 돈다. 진행 중
       체크 해제는 D 만 멈추고, 창 닫기는 전부 멈춘다
 - [ ] 긴 4K 스트림을 dav1d 로 재생해도 RSS 가 프레임 수에 비례해 늘지 않는다 (YUView `0059`, dav1d `0002`)
+- [ ] **Global motion 창** (raw YUV 또는 원본이 붙은 스트림 선택 → View → Global motion, Ctrl+Shift+G) —
+      Run 후 프레임 행을 고르면 메인 창이 그 프레임으로 가고 4×4 윈도가 그려진다. **눈으로 확인**:
+      화살표가 내용이 온 쪽(ref)을 가리키는지 — 오른쪽으로 패닝하는 장면이면 화살표는 왼쪽,
+      채택(청록)·기각(회색) 색이 구분되는지, 윈도 클릭 시 Block Info 에 GM 행이 나오는지
+- [ ] `gm-estimate <clip.y4m> --csv out.csv` — 프레임당 16행, poc 는 **표시 순서**, ref_poc = poc − 1.
+      1080p 기준 프레임당 ms 단위여야 한다 (실측 2~3 ms). ElFuente_000180 처럼 전역 모션이 없는
+      클립에서는 채택이 0 에 가까워야 한다 — 채택이 뜨면 게이트 고장. odyssey 에 넣을 때는
+      `--gm-mv-file` 의 `[GM] lookups ... hit` 줄로 키 매칭부터 본다
 
 ## 3. 증상별 진입점
 

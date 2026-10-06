@@ -70,6 +70,7 @@ verified: yes | partial | no      # 도구 출력으로 교차검증했는가
 ### 30-designs
 - [sb-bdrate-design](30-designs/sb-bdrate-design.md) — SB 단위 BD-rate: 그룹 모델, 수집 오케스트레이션, PSNR·BD-rate 수식, SB/Frame/Sequence popup (**1-4단계 구현 완료**, CSV·heatmap 미착수)
 - [ai-assistant-panel-design](30-designs/ai-assistant-panel-design.md) — Claude/Codex 대화 패널: 터미널 임베드 4안 기각 근거, 격리 3계층(bwrap + plan mode + 도구 allowlist)과 **MCP 구멍 실측**, stream-json 스키마, 컨텍스트 주입 (**1-2단계 구현 완료**, 컨텍스트 수집 확장 예정)
+- [global-motion-design](30-designs/global-motion-design.md) — integral projection 기반 프레임 단위 global motion: 4×4 윈도 16개, 누적합 평면 2장으로 두 축 커버, DC+gain 보정, 2단 채택 게이트. odyssey ME 후보용 CSV 를 냄 (**구현** — 코어·CLI `gm-estimate`·V1~V3, 원본 ±16 정제, GUI 창. 엄격 V1 은 가장자리·288p 대각에서 미달, §11·§12)
 - MP4 컨테이너 파서는 별도 설계 문서 없이 구현했다 — `src/container/Mp4Parser.h` 헤더 주석이 근거를 담고, `tests/unit/mp4-parser.cpp` 가 ffmpeg 산출물의 ground truth 로 고정한다
 
 ### 40-tasks

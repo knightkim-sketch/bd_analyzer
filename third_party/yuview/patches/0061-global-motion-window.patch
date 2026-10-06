@@ -1,0 +1,90 @@
+--- a/YUViewLib/src/ui/Mainwindow.h
++++ b/YUViewLib/src/ui/Mainwindow.h
+@@ -42,6 +42,7 @@
+ #include <memory>
+ 
+ #include <integration/BdRatePlotWindow.h>
++#include <integration/GlobalMotionWindow.h>
+ #include <integration/StreamDiffWindow.h>
+ #include <integration/MeRunner.h>
+ 
+@@ -111,6 +112,9 @@
+    */
+   void addBdRateGroupFromSelection();
+   void findDiffFromSelection();
++  //!< Open the global motion window on the selected item (raw YUV, or a stream with its original).
++  void globalMotionFromSelection();
++  void showGlobalMotionFrame(playlistItem *item, int frameIdx);
+   //!< Find diff asked for a place to be shown: stream, frame, and the block at pixelPos (x, y).
+   void showStreamDiffLocation(playlistItem *blockStream,
+                               playlistItem *otherStream,
+@@ -233,6 +237,7 @@
+    */
+   QPointer<bda::integration::BdRatePlotWindow>     bdRateWindow;
+   QPointer<bda::integration::StreamDiffWindow>     streamDiffWindow;
++  QPointer<bda::integration::GlobalMotionWindow>   globalMotionWindow;
+ 
+   bool showNormalMaximized;     // When going to full screen: Was this windows maximized?
+   bool panelsVisible[8]{false}; // Which panels are visible when going to full-screen mode?
+--- a/YUViewLib/src/ui/Mainwindow.cpp
++++ b/YUViewLib/src/ui/Mainwindow.cpp
+@@ -792,6 +792,11 @@
+                   this,
+                   &MainWindow::findDiffFromSelection,
+                   Qt::CTRL | Qt::Key_J);
++  addActionToMenu(viewMenu,
++                  "&Global motion of the selected Item",
++                  this,
++                  &MainWindow::globalMotionFromSelection,
++                  Qt::CTRL | Qt::SHIFT | Qt::Key_G);
+   viewMenu->addSeparator();
+ 
+   auto dockPanelsMenu = viewMenu->addMenu("Dock Panels");
+@@ -991,6 +996,47 @@
+   this->streamDiffWindow->raise();
+ }
+ 
++void MainWindow::globalMotionFromSelection()
++{
++  if (!this->globalMotionWindow)
++  {
++    this->globalMotionWindow = new bda::integration::GlobalMotionWindow(this);
++    connect(this->globalMotionWindow,
++            &bda::integration::GlobalMotionWindow::showFrameRequested,
++            this,
++            &MainWindow::showGlobalMotionFrame);
++    // The window redraws its windows for whatever frame the view lands on; a repaint is all it
++    // asks for in return - not SignalItemChanged, which restarts the ME panel (see takeMotionEstimation).
++    connect(ui.displaySplitView,
++            &splitViewWidget::viewFrameChanged,
++            this->globalMotionWindow,
++            &bda::integration::GlobalMotionWindow::setCurrentFrame);
++    connect(this->globalMotionWindow,
++            &bda::integration::GlobalMotionWindow::overlayChanged,
++            ui.displaySplitView,
++            [this] { ui.displaySplitView->update(); });
++  }
++
++  const auto result =
++      this->globalMotionWindow->setTarget(ui.playlistTreeWidget->getAllSelectedItems());
++  if (!result.ok())
++  {
++    QMessageBox::information(this, "Global motion", result.message);
++    return;
++  }
++  this->globalMotionWindow->show();
++  this->globalMotionWindow->raise();
++}
++
++void MainWindow::showGlobalMotionFrame(playlistItem *item, int frameIdx)
++{
++  if (!item)
++    return;
++  ui.playlistTreeWidget->setSelectedItems(item, nullptr);
++  ui.playbackController->setCurrentFrameAndUpdate(frameIdx);
++  ui.displaySplitView->update();
++}
++
+ void MainWindow::showStreamDiffLocation(playlistItem *blockStream,
+                                         playlistItem *otherStream,
+                                         playlistItem *syntaxStream,

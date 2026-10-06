@@ -262,6 +262,12 @@ run_unit_test "$ROOT/tests/unit/me-svt-integer.cpp" \
               "$ROOT/src/me/MePlane.cpp" "$ROOT/src/me/MeCost.cpp" "$ROOT/src/me/SvtIntegerMe.cpp"
 run_unit_test "$ROOT/tests/unit/me-odyssey-openloop.cpp" \
               "$ROOT/src/me/MePlane.cpp" "$ROOT/src/me/MeCost.cpp" "$ROOT/src/me/OdysseyOpenLoopMe.cpp"
+# 프레임 단위 global motion (integral projection, 4x4 윈도). 설계 §5 의 V1(평행이동, 부호 포함)·
+# V2(밝기 변화에도 같은 MV)·V3(같은 프레임은 기각)과 Qt 없는 Y4M/raw 리더. 판정은 설계 문구
+# 그대로 엄격하다 (Knight 결정) — 실패는 알고리즘 한계를 뜻하며 docs 의 global-motion-design 에 기록.
+run_unit_test "$ROOT/tests/unit/gm-estimate.cpp" \
+              "$ROOT/src/me/GlobalMotion.cpp" "$ROOT/src/me/YuvLumaReader.cpp" \
+              "$ROOT/src/me/MePlane.cpp" "$ROOT/src/me/MeCost.cpp"
 
 # BD-rate 수식. 균일 배율 곡선의 정답이 (k-1)*100 이라는 성질로 전체 파이프라인을 검증한다.
 run_unit_test "$ROOT/tests/unit/bdrate-math.cpp" "$ROOT/src/bdrate/BdRateMath.cpp"
@@ -565,6 +571,9 @@ else
     echo "  SKIP  42-find-diff-pipeline-and-jump (스트림 2개 또는 dav1d analyzer 필요)"
     ((skip_count++))
 fi
+# Global motion 창. 합성 패닝 raw YUV 로 실행·프레임 이동·16윈도 오버레이·Block Info·CSV 내보내기,
+# 그리고 원본 없는 압축 스트림을 거절하는지 본다 (인자: 원본이 붙지 않은 압축 스트림).
+run_test_bda "$ROOT/tests/regression/43-global-motion-window.cpp" "$STREAM"
 else
     echo "  SKIP  15-raw-av1-extension (raw AV1 생성 실패)"
     ((skip_count++))
