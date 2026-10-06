@@ -33,7 +33,7 @@
 %global __requires_exclude ^(%{__requires_exclude_bundled}|%{__requires_exclude_optional})$
 
 Name:           bd-analyzer
-Version:        %{?bda_version}%{!?bda_version:0.3.3}
+Version:        %{?bda_version}%{!?bda_version:0.4.0}
 Release:        %{?bda_release}%{!?bda_release:1}%{?dist}
 Summary:        Video bitstream and YUV analysis toolset
 Summary(ko):    비디오 비트스트림·YUV 분석 도구
@@ -142,6 +142,17 @@ fi
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Wed Oct 07 2026 knight.kim <knight.kim@blue-dot.io> - 0.4.0-1
+- Find diff runs its whole pipeline from the window: header syntax, OBU payload bytes, then the
+  frame the first differing payload codes, placed as SB(row, col) / MI(row, col). Rows jump the
+  main window to the stream, frame and block; Block info and Syntax info toggles pick A or B.
+  Optional reconstructed-picture comparison (per-frame PSNR, first differing pixel). IVF accepted.
+- Global motion (View menu, Ctrl+Shift+G): frame-level global motion of a raw YUV item, or of a
+  stream with its original attached, as 16 windows per frame drawn over the picture, with a
+  per-frame table and odyssey's CSV export. Also as the headless gm-estimate CLI.
+- Fix dav1d memory growth: every decoded picture was leaked (~25 MB a frame at 4K), and with block
+  statistics on, its analyzer data as well. Long 4K sessions no longer grow without bound.
+
 * Sun Sep 27 2026 knight.kim <knight.kim@blue-dot.io> - 0.3.3-1
 - Find diff (View menu, Ctrl+J): select two compressed streams and see where their syntax first
   parts company, reported per OBU with both values side by side. Sequence and frame header
