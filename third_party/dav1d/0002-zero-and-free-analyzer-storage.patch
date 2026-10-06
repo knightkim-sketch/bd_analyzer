@@ -1,0 +1,55 @@
+diff --git a/src/picture.c b/src/picture.c
+index e0362f8..751534d 100644
+--- a/src/picture.c
++++ b/src/picture.c
+@@ -90,9 +90,20 @@ struct pic_ctx_context {
+     void *extra_ptr; /* MUST BE AT THE END */
+ };
+ 
++/* The one allocation picture_alloc_analyzer_storage() carved pred, pre_lpf and blk_data out of,
++ * in that order; NULL when none were exported. */
++static void *analyzer_storage_base(const Dav1dPicture *const p) {
++    if (p->pred[0]) return p->pred[0];
++    if (p->pre_lpf[0]) return p->pre_lpf[0];
++    return p->blk_data;
++}
++
+ static void free_buffer(const uint8_t *const data, void *const user_data) {
+     struct pic_ctx_context *pic_ctx = user_data;
+ 
++    /* Freed with the picture it belongs to. It used to be allocated per picture and never freed,
++     * which leaked one blk_data array per decoded frame (about 25 MB at 4K). */
++    dav1d_free_aligned(analyzer_storage_base(&pic_ctx->pic));
+     pic_ctx->allocator.release_picture_callback(&pic_ctx->pic,
+                                                 pic_ctx->allocator.cookie);
+     free(pic_ctx);
+@@ -122,12 +133,20 @@ static int picture_alloc_analyzer_storage(Dav1dPicture *const p,
+     const size_t total_sz = (y_sz + 2 * uv_sz) * frame_mul +
+                             blk_sz + bp_blk_sz + bitsused_sz;
+ 
++    // Nothing exported: allocate nothing. posix_memalign(0) still hands back a chunk, and with no
++    // pointer field set to it free_buffer() could never find it again.
++    if (total_sz == 0) return 0;
++
+     uint8_t *data = dav1d_alloc_aligned(total_sz, 32);
+     if (data == NULL) {
+         fprintf(stderr, "Failed to allocate analyzer memory of size %zu: %s\n",
+                 total_sz, strerror(errno));
+         return -1;
+     }
++    /* Zeroed: the decoder does not write every field of every Av1Block cell (valgrind: intra mode
++     * fields read by the consumer were uninitialised), and an unwritten field must read the same
++     * on every run, not whatever the allocator recycled. Fresh pages hid this while nothing freed. */
++    memset(data, 0, total_sz);
+ 
+     const int has_chroma = p->p.layout != DAV1D_PIXEL_LAYOUT_I400;
+ #define fill_pixmaps(name) \
+@@ -207,6 +226,8 @@ static int picture_alloc_with_edges(Dav1dContext *const c, Dav1dPicture *const p
+     }
+ 
+     picture_alloc_analyzer_storage(p, c->analyzer_flags);
++    // free_buffer() releases from this copy, so it has to know about the analyzer storage too.
++    pic_ctx->pic = *p;
+ 
+     p->seq_hdr_ref = seq_hdr_ref;
+     if (seq_hdr_ref) dav1d_ref_inc(seq_hdr_ref);

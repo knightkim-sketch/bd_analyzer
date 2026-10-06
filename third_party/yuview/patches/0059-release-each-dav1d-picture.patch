@@ -1,0 +1,83 @@
+--- a/YUViewLib/src/decoder/decoderDav1d.h
++++ b/YUViewLib/src/decoder/decoderDav1d.h
+@@ -53,6 +53,7 @@
+   int (*dav1d_get_picture)(Dav1dContext *, Dav1dPicture *){};
+   void (*dav1d_close)(Dav1dContext **){};
+   void (*dav1d_flush)(Dav1dContext *){};
++  void (*dav1d_picture_unref)(Dav1dPicture *){};
+ 
+   uint8_t *(*dav1d_data_create)(Dav1dData *data, size_t sz){};
+ 
+@@ -99,7 +100,8 @@
+   Dav1dFrameHeader    *getFrameHeader() const { return curPicture.frame_hdr; }
+ 
+ private:
+-  Dav1dPicture curPicture;
++  // Zeroed, not left uninitialized: releasing it before the first decode must see no reference.
++  Dav1dPicture curPicture{};
+   bool         internalsSupported{false};
+ };
+ 
+@@ -191,6 +193,10 @@
+   bool decodeFrame();
+ 
+   Dav1dPictureWrapper curPicture;
++  /* Give the reference to curPicture back to the library. Dav1dPictureWrapper::clear() only forgets
++   * the pointers; without this every decoded frame stayed allocated (25 MB a frame at 4K 10-bit).
++   */
++  void releaseCurrentPicture();
+ 
+   // We buffer the current image as a QByteArray so you can call getYUVFrameData as often as
+   // necessary without invoking the copy operation from the libde265 buffer to the QByteArray again.
+--- a/YUViewLib/src/decoder/decoderDav1d.cpp
++++ b/YUViewLib/src/decoder/decoderDav1d.cpp
+@@ -153,6 +153,7 @@
+ {
+   if (decoder != nullptr)
+   {
++    this->releaseCurrentPicture();
+     // Free the decoder
+     this->lib.dav1d_close(&decoder);
+     if (decoder != nullptr)
+@@ -166,6 +167,7 @@
+   if (!decoder)
+     return setError("Resetting the decoder failed. No decoder allocated.");
+ 
++  this->releaseCurrentPicture();
+   this->lib.dav1d_close(&decoder);
+   if (decoder != nullptr)
+     DEBUG_DAV1D(
+@@ -217,6 +219,8 @@
+     return;
+   if (!resolve(this->lib.dav1d_flush, "dav1d_flush"))
+     return;
++  if (!resolve(this->lib.dav1d_picture_unref, "dav1d_picture_unref"))
++    return;
+ 
+   if (!resolve(this->lib.dav1d_data_create, "dav1d_data_create"))
+     return;
+@@ -343,7 +347,8 @@
+   if (decoder == nullptr)
+     return false;
+ 
+-  curPicture.clear();
++  // getRawFrameData() has copied the previous picture by now; it is not read after this point.
++  this->releaseCurrentPicture();
+ 
+   int res = this->lib.dav1d_get_picture(decoder, curPicture.getPicture());
+   if (res >= 0)
+@@ -391,6 +396,14 @@
+   return false;
+ }
+ 
++void decoderDav1d::releaseCurrentPicture()
++{
++  // A picture dav1d_get_picture() never filled has no reference to give back.
++  if (this->curPicture.getPicture()->ref != nullptr && this->lib.dav1d_picture_unref)
++    this->lib.dav1d_picture_unref(this->curPicture.getPicture());
++  this->curPicture.clear();
++}
++
+ QByteArray decoderDav1d::getRawFrameData()
+ {
+   auto s = curPicture.getFrameSize();

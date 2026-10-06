@@ -142,6 +142,7 @@ Qt 없이 도는 코어 단위 테스트 (`tests/unit/`):
 - [ ] `stream-diff-blocks` 의 두 답을 **구분해서 읽는다** — `first superblock with a differing block`
       이 찾던 답이고, `earliest superblock differing at all` 은 `sb_bitcount` 같은 SB 집계만 다른
       경우다 (같은 판단, 다른 residual). 둘이 다르면 도구가 둘 다 찍는다
+- [ ] 긴 4K 스트림을 dav1d 로 재생해도 RSS 가 프레임 수에 비례해 늘지 않는다 (YUView `0059`, dav1d `0002`)
 
 ## 3. 증상별 진입점
 
@@ -151,6 +152,8 @@ Qt 없이 도는 코어 단위 테스트 (`tests/unit/`):
 | 빌드는 됐는데 새 코드가 동작 안 함 | 낡은 `.o`. `make clean` 후 재빌드. `.pro` 의 소스 glob 은 sub-project Makefile 재생성 때만 다시 평가된다 |
 | 블록 통계가 조용히 이상함 | dav1d ABI. `libdav1d-internals.so` 와 YUViewLib 이 `Av1Block` 레이아웃을 공유한다. 둘 중 하나만 다시 빌드하면 어긋난다 (`scripts/setup-dav1d.sh`) |
 | 두 스트림이 어디서 갈라지는지 모름 | `stream-diff-payload` 로 OBU 를 먼저 특정하고, 그 프레임만 `stream-diff-blocks --frame N` 으로 연다. 전체 프레임을 훑지 않는다 — 4K 한 프레임이 MI 조회 518,400회다 |
+| 같은 스트림끼리 블록 통계가 실행마다 다름 | dav1d analyzer 저장소 미초기화. dav1d `0002` 가 적용된 `libdav1d-internals.so` 인지 본다 (`scripts/setup-dav1d.sh`). valgrind 의 `calculateIntraPredDirection ... uninitialised` 가 지문이다 |
+| 재생·D 중 RSS 가 프레임마다 ~25 MB 씩 증가 | dav1d picture 누수. YUView `0059` (unref) 와 dav1d `0002` (analyzer 저장소 해제) 둘 다 필요하다 |
 | `stream-diff-blocks` 가 SB 를 거의 전부 다르다고 함 | `sb_bitcount` 를 블록 syntax 로 세고 있지 않은지 본다. SB 집계는 그 SB 의 **모든 블록**에 붙어 오므로, 분리하지 않으면 한 블록 차이가 SB 전체로 번진다 (`BlockDiffOptions::superblockElements`) |
 | 비트스트림 패널 값이 틀림 | `dump-obu-headers` 로 덤프해 VQ Analyzer 와 diff. 어긋나기 시작하는 **첫 필드**가 원인 지점이다 |
 | BD-rate 가 안 나옴 / 거절됨 | 거절 사유를 그대로 읽는다 — `no PSNR overlap`, `too few points`, `lossless`, dav1d analyzer 디코더가 아닌 스트림, 격자가 다른 스트림 |

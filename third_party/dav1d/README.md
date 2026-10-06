@@ -21,7 +21,20 @@ sha  0a7f210
 git clone --branch 0.2.1.0.analyze \
     https://github.com/ChristianFeldmann/dav1d.git third_party/dav1d/upstream
 git -C third_party/dav1d/upstream apply ../0001-block-bitstream-range.patch
+git -C third_party/dav1d/upstream apply ../0002-zero-and-free-analyzer-storage.patch
 ```
+
+## `0002-zero-and-free-analyzer-storage.patch`
+
+`picture_alloc_analyzer_storage()` 가 picture 마다 pred / pre_lpf / `blk_data` 를 한 덩어리로 할당하는데,
+**해제하는 곳이 없었고 0 으로 채우지도 않았다.**
+
+- 해제: `free_buffer()` (picture 의 마지막 참조가 사라질 때) 가 함께 해제한다. 통계를 켠 4K 디코딩에서
+  프레임당 ~30 MB 씩 늘던 RSS 가 평탄해졌다.
+- 0 채움: 디코더가 모든 셀의 모든 필드를 쓰지는 않는다. YUView 쪽 picture 누수(YUView 패치 `0059`)를
+  고쳐 메모리가 재사용되기 시작하자 hidden ARF 를 다시 보여 주는 프레임의 블록 통계가 **실행마다 달라졌다**
+  (valgrind: `calculateIntraPredDirection` 이 미초기화 값에 의존). 그전에는 해제가 없어 늘 OS 의 새(0)
+  페이지를 받았기 때문에 드러나지 않았다. 0 채움 후 반복 실행 출력이 같고, 수정 전 출력과도 같다.
 
 ## 이 리포가 추가한 것 — `0001-block-bitstream-range.patch`
 
