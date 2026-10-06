@@ -2,7 +2,7 @@
 title: 두 스트림 비교 (Find diff) 설계
 status: draft
 created: 2026-09-22
-updated: 2026-10-01
+updated: 2026-10-04
 author: claude-opus-5
 verified: partial
 ---
@@ -242,6 +242,97 @@ PierSeaSide 실측:
 하므로, 앞에서부터 훑고 첫 hit 에서 멈추는 것이 O(k) 로 최소다. 이진 탐색은 log n 탐침 **더하기**
 앞부분 전수 확인이 필요하다. 실측에서 2040개 중 31개만 보고 끝났다.
 
+## 4.6 마무리 (2026-10-04) — 창에 3·4단계와 D 를 배선하고, 찾은 지점으로 이동한다
+
+Knight 가 정한 범위: **창에 3·4단계 연결, 5.1 이동·활성화, 5.2 A/B 토글, D recon 비교.**
+
+### 코드 배치
+
+| 무엇 | 어디 | 비고 |
+|---|---|---|
+| 프레임 매핑 + 블록 로더 + 4단계 walk | `src/integration/StreamDiffSteps` | CLI 에서 옮겨 왔다. GUI 와 CLI 가 같은 코드를 쓴다 |
+| recon 산수 (plane 별 SSE, 첫 차이 위치) | `src/diff/ReconDiff` (Qt 없음) | 단위 테스트 `tests/unit/recon-diff.cpp` |
+| recon 디코딩 루프 | `StreamDiffSteps::runReconStep` | item 의 자체 디코딩 경로 (`loadFrame` + 핸들러 raw 버퍼) |
+| D CLI | `tools/cli/stream-diff-recon` | `--first` 는 첫 차이 프레임에서 중단 |
+| 창 | `src/integration/StreamDiffWindow` | 1-2 → 3 → 4 → (D) 를 한 워커 스레드에서 차례로 |
+| 이동 | 패치 `0060` | `splitViewWidget::selectBlockAtItemPixel` + `MainWindow::showStreamDiffLocation` |
+
+**리팩터 검증:** `stream-diff-blocks` 를 공유 코드로 옮긴 뒤 WorldCup(`--tu 1 --obu 1`, `--frame 3 --all`),
+PierSeaSide(`--tu 90 --obu 2`) 출력을 이전 바이너리 출력과 diff 했다. **바이트 동일**, 단 하나 —
+`--all` 에서 `earliest superblock differing at all` 줄이 첫 블록 차이 **뒤의** SB 를 가리키던 것을
+고쳤다 (WorldCup 프레임 3: 답 `SB(0, 1)` 인데 `SB(0, 3)` 을 "earliest" 로 찍었다). 이제 답보다 앞설 때만 찍는다.
+
+### 창이 하는 일
+
+- 한 워커가 1-2단계(헤더), 3단계(payload), 4단계(3단계가 지목한 프레임)를 차례로 돌린다.
+  4단계의 프레임 매핑은 1-2단계에서 A 를 파싱한 **같은 모델**로 만든다 — 4K 를 두 번 파싱하지 않는다.
+- 4단계는 **사용자의 playlist item 이 아니라 전용 item** 을 연다. 디코딩은 item 의 디코더를 움직이고,
+  뷰어가 자기 스레드에서 같은 item 을 몰고 있기 때문이다.
+- 결과는 단계별 최상위 노드 4개(헤더 / payload / 블록 / 복원 영상)의 트리. 블록·SB·프레임 행은
+  **더블클릭하면 그 지점으로 이동**한다. 문법 요소 행은 부모 블록 행의 위치로 간다.
+- **Go to first difference**: 4단계의 첫 차이 블록, 없으면 D 의 첫 차이 프레임(첫 차이 luma 픽셀).
+- 창을 닫으면 진행 중인 작업을 취소한다. D 체크를 해제하면 **D 만** 멈춘다.
+
+### 5.1 / 5.2 구현 — 설계에서 바뀐 점
+
+- **Block info 토글 = playlist 선택 순서.** 0058 이후 Block Info·hexdump 패널은 두 스트림을 함께
+  보여 주고, 첫 열은 **playlist 첫 선택**이다. 그래서 토글은 대상 스트림을 첫 선택(왼쪽 뷰, 첫 열)으로
+  두고 다른 스트림을 둘째 선택으로 남긴다. 블록 선택은 view 0 에 한다. B 를 고르면 split view 의
+  좌우가 바뀐다 — 의도된 동작이다.
+- **Syntax info 토글**은 Bitstream Analysis 패널에 `currentSelectedItemsChanged(syntaxStream, …)` 를
+  직접 넣는다. Block info 와 같은 스트림이면 부르지 않는다 (같은 파일을 두 번 파싱하지 않기 위해).
+- 토글을 바꾸면 **마지막으로 이동한 지점**을 새 스트림으로 다시 보여 준다.
+- 이동 자체는 마우스 이벤트를 흉내내지 않는다. `selectBlockAtItemPixel` 은 `selectBlockAt` 에서
+  좌표 해석만 뺀 꼬리이고, 같은 `blockSelected` 신호를 낸다 — 클릭과 구분되지 않는다.
+
+### D — 설계에서 바뀐 점과 실측
+
+설계는 "difference 아이템 경로 재사용"이었다. **디코딩 경로는 재사용하고 산수만 새로 했다.**
+difference 아이템은 MSE 를 **문자열**(`"MSE/PSNR Y"`)로 내고 매 프레임 RGB 변환을 거친다 — 프레임별
+표에는 둘 다 맞지 않는다.
+
+| 스트림 | 범위 | 시간 | 결과 |
+|---|---|---|---|
+| WorldCup 512x288 8-bit | 130 프레임 | 1.0 s | 첫 차이 **프레임 1**, 129/130 차이 |
+| PierSeaSide 4K 10-bit | `--first` | 17 s | 첫 차이 **프레임 90** |
+| PierSeaSide 4K 10-bit | 130 프레임 | 22 s, RSS 0.98 GB | 36/130 차이 |
+
+**독립 검산:** WorldCup 두 스트림을 ffmpeg 로 yuv 디코딩해 Python 으로 계산했다. 프레임 1·3·8 의
+Y SSE(274552 / 377295 / 35039), 차이 샘플 수, 첫 차이 픽셀, 차이 프레임 수(129) 모두 일치.
+
+**D 가 4단계와 다른 답을 내는 것은 정상이다.** WorldCup 은 3단계가 TU 1 / OBU 1 (hidden ARF, 표시
+프레임 16)을 지목하지만 픽셀은 **프레임 1** 부터 다르다 — 프레임 1 이 그 ARF 를 참조하기 때문이다.
+PierSeaSide 도 같다: 비트스트림 첫 차이는 표시 91, 픽셀 첫 차이는 표시 90.
+
+### 함께 고친 것 — dav1d 메모리 (패치 YUView `0059`, dav1d `0002`)
+
+D 를 4K 로 돌리자 RSS 가 **7.2 GB** 였다. 원인이 둘 겹쳐 있었다.
+
+1. **YUView 가 `dav1d_picture_unref` 를 한 번도 부르지 않았다.** `Dav1dPictureWrapper::clear()` 는
+   `memset` 만 한다. 디코딩한 프레임마다 picture 참조가 하나씩 남았다 (4K 10-bit 프레임당 ~25 MB).
+   → `0059`: 다음 picture 를 받기 전과 decoder close 전에 unref. `curPicture` 를 값 초기화 —
+   생성자 경로의 `resetDecoder()` 가 첫 디코딩 전에 불려 쓰레기 `ref` 를 unref 하다 죽었다.
+2. **포크가 analyzer 저장소(`blk_data` / pred / pre_lpf)를 할당만 하고 해제하지 않았다.** 통계를
+   켜면 프레임당 ~30 MB 가 따로 샜다. → dav1d `0002`: picture 와 함께 해제.
+
+1 을 고치자 **숨어 있던 버그가 드러났다.** WorldCup 프레임 16 의 블록 통계가 실행마다 달라졌다 (A 대
+A 비교에서도 차이). valgrind: Invalid read 0건, `calculateIntraPredDirection` 이 **미초기화 값**에
+의존 4196건. 포크가 analyzer 저장소를 0 으로 채우지 않고, 디코더가 모든 셀의 모든 필드를 쓰지는
+않는다. 누수가 있을 때는 해제가 없어 늘 OS 의 새 (0) 페이지를 받았기 때문에 드러나지 않았다.
+→ `0002` 가 할당 시 0 으로 채운다. 이후 5회 반복 출력 동일, 수정 전 기준 출력과 바이트 동일.
+
+| 4K PierSeaSide, 디코딩 40 프레임 | 수정 전 | 수정 후 |
+|---|---|---|
+| 통계 끔 | 1236 MB (계속 증가) | ~450 MB 평탄 |
+| 통계 켬 | 1665 MB (계속 증가) | ~740 MB 평탄 |
+
+### 3단계가 IVF 를 받는다
+
+OBU 워커가 컨테이너 없는 `.av1` 만 받았다. 회귀 테스트와 libaom/ffmpeg 산출물이 전부 IVF 라 창에서
+3·4단계가 돌지 않았다. IVF 프레임 헤더를 건너뛰고, **IVF 프레임 하나를 temporal unit 하나로** 센다
+(delimiter 가 없어도). 오프셋은 파일 오프셋 그대로. 검산: WorldCup `.av1` 쌍을 `ffmpeg -c copy -f ivf`
+로 다시 감싸 돌린 결과가 `.av1` 과 같다 (TU 1 / OBU 1 → 표시 16 → `SB(2, 0)`, `MI(32, 8)`).
+
 ## 5. UI
 
 - playlist 에서 **정확히 2개** 선택 → 우클릭 메뉴 / View 메뉴에 **Find diff**.
@@ -289,11 +380,12 @@ Find diff 창은 그것만 부른다.
 
 ## 6. 작업 순서
 
-1. 블록 조회를 계약대로(메인 스레드 밖에서) 부르고, 완전성을 **픽셀 커버리지**로 자체 검사 (3장)
-2. Find diff 다이얼로그 + 헤더 구문 비교 (A)
-3. SB 24bit 비교 (B)
-4. 블록 구문 비교 (C)
-5. recon 비교 배선 (D)
+1. 블록 조회를 계약대로(메인 스레드 밖에서) 부르고, 완전성을 **픽셀 커버리지**로 자체 검사 (3장) — 완료
+2. Find diff 다이얼로그 + 헤더 구문 비교 (A) — 완료
+3. SB 24bit 비교 (B) — 4.5 에서 payload 비교로 대체
+4. 블록 구문 비교 (C) — 완료 (CLI 10-01, 창 10-04)
+5. recon 비교 배선 (D) — 완료 (10-04, 4.6)
+6. 5.1 이동·활성화, 5.2 A/B 토글 — 완료 (10-04, 4.6)
 
 각 단계마다 회귀 테스트를 하나씩 붙인다. 비교 로직의 알맹이(정규화·정렬·판정)는 Qt 없는
 코어(`src/diff/`)에 두고 단위 테스트한다 — GUI 없이 검증할 수 있어야 한다.
@@ -311,6 +403,12 @@ Find diff 창은 그것만 부른다.
 - `bitstreamRange` 는 analyzer dav1d 디코더에서만 나온다. FFmpeg 폴백 스트림은 B 를 못 쓴다 —
   그 경우 A 와 C 만 돌린다.
 - 프레임 수가 많고 해상도가 크면 C 는 비싸다. 4x4 격자 전수 훑기의 비용을 재지 않았다.
+  → 4.5 에서 측정하고 줄였다 (4K 한 프레임 22.8 s).
+- **이동(5.1)은 헤드리스 회귀 42 로만 확인했다.** 선택 순서·프레임·Block Info 상태 문자열을 본다.
+  화면의 하이라이트와 hexdump 가 실제로 그 블록을 가리키는지는 **GUI 에서 눈으로 확인 미실시**.
+- Syntax info 토글이 Bitstream Analysis 패널을 실제로 바꾸는지는 회귀에서 검사하지 않는다
+  (위젯의 현재 item 이 private). GUI 확인 필요.
+- D 는 두 스트림의 **표시 프레임 수가 다르면 짧은 쪽까지만** 비교한다. 거절하지 않는다.
 - 5.1 의 이동·활성화는 **upstream 패치가 필요하다** (`splitViewWidget` 에 블록 선택 public slot).
   `blockSelected` 신호와 `setSelectedBlock` 슬롯은 이미 있으므로 추가 범위는 그 하나다.
 - A/B 토글을 바꿀 때 해당 스트림에 그 좌표의 블록이 없는 경우는 **정상 스트림에서는 발생하지

@@ -1,0 +1,96 @@
+--- a/YUViewLib/src/ui/views/SplitViewWidget.h
++++ b/YUViewLib/src/ui/views/SplitViewWidget.h
+@@ -160,6 +160,12 @@
+   //!< From the Frame Info grid checkbox. 0 disables the grid. Counts as a user choice.
+   void setGridSize(int size) { this->setRegularGridSize(size, true, true); }
+ 
++  /* Select the block at a pixel of the item shown in view (0 = left/single, 1 = right), exactly as
++   * a click there would: highlight, Block Info, Frame Info and hexdump all follow. For callers that
++   * already know the pixel - Find diff jumping to a mismatch - so they need not fake a mouse event.
++   */
++  void selectBlockAtItemPixel(int view, QPoint pixelPos);
++
+   void triggerActionSeparateView() { actionSeparateView.trigger(); }
+   void toggleFullScreenAction() { actionFullScreen.trigger(); }
+ 
+--- a/YUViewLib/src/ui/views/SplitViewWidget.cpp
++++ b/YUViewLib/src/ui/views/SplitViewWidget.cpp
+@@ -689,7 +689,14 @@
+     return;
+   }
+ 
++  this->selectBlockAtItemPixel(view, pixelPos);
++}
++
++void splitViewWidget::selectBlockAtItemPixel(int view, QPoint pixelPos)
++{
+   const auto item = playlist->getSelectedItems();
++  if (view < 0 || view > 1 || !item[view])
++    return;
+ 
+   // Only one block is selected at a time across the primary and the separate view, otherwise a
+   // stale highlight would sit in the other one while the info pane shows this block.
+--- a/YUViewLib/src/ui/Mainwindow.h
++++ b/YUViewLib/src/ui/Mainwindow.h
+@@ -111,6 +111,12 @@
+    */
+   void addBdRateGroupFromSelection();
+   void findDiffFromSelection();
++  //!< Find diff asked for a place to be shown: stream, frame, and the block at pixelPos (x, y).
++  void showStreamDiffLocation(playlistItem *blockStream,
++                              playlistItem *otherStream,
++                              playlistItem *syntaxStream,
++                              int           frameIdx,
++                              QPoint        pixelPos);
+   void takeMotionEstimation();
+   void closeAndClearSettings();
+ 
+--- a/YUViewLib/src/ui/Mainwindow.cpp
++++ b/YUViewLib/src/ui/Mainwindow.cpp
+@@ -968,7 +968,13 @@
+ void MainWindow::findDiffFromSelection()
+ {
+   if (!this->streamDiffWindow)
++  {
+     this->streamDiffWindow = new bda::integration::StreamDiffWindow(this);
++    connect(this->streamDiffWindow,
++            &bda::integration::StreamDiffWindow::locateRequested,
++            this,
++            &MainWindow::showStreamDiffLocation);
++  }
+ 
+   const auto result =
+       this->streamDiffWindow->compare(ui.playlistTreeWidget->getAllSelectedItems());
+@@ -985,6 +991,32 @@
+   this->streamDiffWindow->raise();
+ }
+ 
++void MainWindow::showStreamDiffLocation(playlistItem *blockStream,
++                                        playlistItem *otherStream,
++                                        playlistItem *syntaxStream,
++                                        int           frameIdx,
++                                        QPoint        pixelPos)
++{
++  if (!blockStream)
++    return;
++
++  /* The stream the block panes follow goes first: it becomes the left view and the first column of
++   * the two-stream panes. The other stays selected so the split view still shows both.
++   */
++  ui.playlistTreeWidget->setSelectedItems(blockStream, otherStream);
++  ui.playbackController->setCurrentFrameAndUpdate(frameIdx);
++  if (pixelPos.x() >= 0 && pixelPos.y() >= 0)
++  {
++    ui.displaySplitView->selectBlockAtItemPixel(0, pixelPos);
++    ui.blockInfoDock->show();
++    ui.blockInfoDock->raise();
++  }
++  // The selection made the Bitstream Analysis pane show blockStream; override it only when the
++  // syntax toggle names the other one, so the same file is not parsed twice.
++  if (syntaxStream && syntaxStream != blockStream)
++    ui.bitstreamAnalysis->currentSelectedItemsChanged(syntaxStream, nullptr, false);
++}
++
+ void MainWindow::addBdRateGroupFromSelection()
+ {
+   if (!this->bdRateWindow)

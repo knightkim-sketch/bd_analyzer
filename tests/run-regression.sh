@@ -297,6 +297,11 @@ run_unit_test "$ROOT/tests/unit/obu-payload-diff.cpp" "$ROOT/src/diff/ObuPayload
 run_unit_test "$ROOT/tests/unit/block-syntax-diff.cpp" \
               "$ROOT/src/diff/BlockSyntaxDiff.cpp" "$ROOT/src/diff/SyntaxDiff.cpp"
 
+# 복원 영상 비교 (계층 D). plane 오프셋이 한 plane 어긋나면 U 를 V 와 비교해도 그럴듯한 SSE 가
+# 나오고, 16-bit 샘플의 바이트 순서를 뒤집으면 1 차이가 256 차이가 된다 - 둘 다 손으로 적은
+# 기대값으로 고정한다.
+run_unit_test "$ROOT/tests/unit/recon-diff.cpp" "$ROOT/src/diff/ReconDiff.cpp"
+
 # MP4 컨테이너. box 트리와 sample table(stsc/stco/stsz)을 실제 ffmpeg 산출물로 검증한다 -
 # 손으로 만든 픽스처는 "내가 생각하는 포맷" 과의 일치만 증명하기 때문이다.
 MP4="$(ensure_mp4)" || MP4=""
@@ -550,6 +555,14 @@ if [[ ${#BDQ[@]} -ge 2 && -e "$APPDIR/decoder/libdav1d-internals.so" ]]; then
     run_test_bda "$ROOT/tests/regression/41-block-info-two-streams.cpp" "${BDQ[0]}" "${BDQ[1]}"
 else
     echo "  SKIP  41-block-info-two-streams (스트림 2개 또는 dav1d analyzer 필요)"
+    ((skip_count++))
+fi
+# Find diff 의 3·4단계와 D, 그리고 찾은 지점으로 이동. 4단계는 dav1d analyzer 의 블록 통계를
+# 쓰고, 같은 파일의 사본을 비교해 어느 단계도 차이를 지어내지 않는지 함께 본다.
+if [[ ${#BDQ[@]} -ge 2 && -e "$APPDIR/decoder/libdav1d-internals.so" ]]; then
+    run_test_bda "$ROOT/tests/regression/42-find-diff-pipeline-and-jump.cpp" "${BDQ[0]}" "${BDQ[1]}"
+else
+    echo "  SKIP  42-find-diff-pipeline-and-jump (스트림 2개 또는 dav1d analyzer 필요)"
     ((skip_count++))
 fi
 else

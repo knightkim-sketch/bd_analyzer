@@ -153,6 +153,41 @@ int main()
     check(r.diffs[0].kind == PayloadDiffKind::OnlyInA, "as present only in A");
   }
 
+  {
+    /* The same two temporal units inside IVF. The OBUs must come out identical apart from their
+     * file offsets, which move by the container's headers - and the second IVF frame opens unit 1
+     * even though its delimiter is what would have said so in the bare stream.
+     */
+    std::vector<std::uint8_t> tu0, tu1;
+    appendObu(tu0, 2, {});
+    appendObu(tu0, 1, {0xAA, 0xBB});
+    appendObu(tu0, 6, {1, 2, 3, 4});
+    appendObu(tu1, 6, {5, 6, 7, 8}); // no delimiter: the IVF frame alone is the boundary
+
+    std::vector<std::uint8_t> ivf = {'D', 'K', 'I', 'F', 0, 0, 32, 0};
+    ivf.resize(32, 0);
+    const auto appendFrame = [&ivf](const std::vector<std::uint8_t> &tu) {
+      const auto n = tu.size();
+      ivf.insert(ivf.end(), {std::uint8_t(n), std::uint8_t(n >> 8), std::uint8_t(n >> 16),
+                             std::uint8_t(n >> 24), 0, 0, 0, 0, 0, 0, 0, 0});
+      ivf.insert(ivf.end(), tu.begin(), tu.end());
+    };
+    appendFrame(tu0);
+    appendFrame(tu1);
+
+    const auto scan = scanObus(ivf.data(), ivf.size());
+    check(scan.ok, "an IVF file scans");
+    checkEqual(scan.obus.size(), std::size_t(4), "four OBUs, no container bytes read as OBUs");
+    checkEqual(scan.obus[0].headerOffset, std::size_t(32 + 12), "offsets are file offsets");
+    checkEqual(scan.obus[2].temporalUnit, std::size_t(0), "first frame is unit 0");
+    checkEqual(scan.obus[3].temporalUnit, std::size_t(1), "the second IVF frame opens unit 1");
+    checkEqual(scan.obus[3].indexInUnit, std::size_t(0), "and counts its OBUs from 0");
+
+    auto truncated = ivf;
+    truncated.resize(truncated.size() - 2);
+    check(!scanObus(truncated.data(), truncated.size()).ok, "a truncated IVF frame is refused");
+  }
+
   std::cout << (failures == 0 ? "RESULT: PASS\n" : "RESULT: FAIL\n");
   return failures == 0 ? 0 : 1;
 }

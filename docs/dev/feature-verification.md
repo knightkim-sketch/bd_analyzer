@@ -141,7 +141,21 @@ Qt 없이 도는 코어 단위 테스트 (`tests/unit/`):
       본다 (4K 실측: 질의 2,484 / 2,487, 스캔 31 / 2040)
 - [ ] `stream-diff-blocks` 의 두 답을 **구분해서 읽는다** — `first superblock with a differing block`
       이 찾던 답이고, `earliest superblock differing at all` 은 `sb_bitcount` 같은 SB 집계만 다른
-      경우다 (같은 판단, 다른 residual). 둘이 다르면 도구가 둘 다 찍는다
+      경우다 (같은 판단, 다른 residual). 둘이 **앞선 경우에만** 도구가 둘 다 찍는다
+- [ ] `stream-diff-recon <a> <b> [--first]` — 계층 D. 두 스트림을 표시 순서로 전부 디코딩해 프레임별
+      Y/U/V PSNR 과 첫 차이 픽셀 `(x, y)` 를 낸다. 4K 10-bit 130 프레임 실측 22 s, RSS ~1 GB.
+      같은 파일끼리 넣어 `every compared frame reconstructs identically` 가 나오는지로 먼저 확인한다
+- [ ] D 의 첫 차이 프레임이 4단계 프레임보다 **앞설 수 있다** — 정상이다. hidden ARF 가 갈렸으면 그것을
+      참조하는 앞 표시 프레임이 먼저 다르다 (WorldCup: 4단계 표시 16, D 프레임 1)
+- [ ] **Find diff 창** (View → Find diff, 스트림 2개 선택) — 1-2 / 3 / 4단계가 한 번에 돈다. `.av1` 과
+      `.ivf` 둘 다. 블록 행 더블클릭 또는 **Go to first difference** 로 그 프레임·블록이 선택되고
+      Block Info dock 이 열린다. 화면의 하이라이트와 hexdump 가 같은 블록을 가리키는지 **눈으로** 본다
+      (회귀 42 는 선택 순서·프레임·Block Info 상태 문자열까지만 본다)
+- [ ] 창의 **Block info: A / B** — 바꾸면 같은 지점을 다른 스트림으로 다시 보여 준다. 대상 스트림이
+      첫 선택(왼쪽 뷰)이 되므로 split view 의 좌우가 바뀌는 것이 정상이다
+- [ ] 창의 **Syntax info: A / B** — Bitstream Analysis 패널이 고른 스트림으로 바뀌는지 본다 (회귀 미검사)
+- [ ] 창의 **Compare reconstructed pictures** — 결과가 나온 뒤 체크하면 D 만 추가로 돈다. 진행 중
+      체크 해제는 D 만 멈추고, 창 닫기는 전부 멈춘다
 - [ ] 긴 4K 스트림을 dav1d 로 재생해도 RSS 가 프레임 수에 비례해 늘지 않는다 (YUView `0059`, dav1d `0002`)
 
 ## 3. 증상별 진입점
