@@ -1,0 +1,40 @@
+--- a/YUViewLib/src/ui/ViewStateHandler.cpp
++++ b/YUViewLib/src/ui/ViewStateHandler.cpp
+@@ -166,7 +166,9 @@
+       // Append the state of the split view
+       state.appendProperiteChild("centerOffsetX", QString::number(viewStates[i].centerOffset.x()));
+       state.appendProperiteChild("centerOffsetY", QString::number(viewStates[i].centerOffset.y()));
+-      if (viewStates[i].splitting)
++      // Keyed on the mode: getViewState() never sets `splitting`, so testing it dropped the
++      // split point and a restored side-by-side view came back split at 0 - the item's half gone.
++      if (viewStates[i].viewMode != 0)
+       {
+         state.appendProperiteChild("splitting", QString("1"));
+         state.appendProperiteChild("splittingPoint", QString::number(viewStates[i].splittingPoint));
+@@ -196,7 +198,7 @@
+       viewState.centerOffset, viewState.zoomFactor, viewState.splittingPoint, viewState.viewMode);
+   state.appendProperiteChild("centerOffsetX", QString::number(viewState.centerOffset.x()));
+   state.appendProperiteChild("centerOffsetY", QString::number(viewState.centerOffset.y()));
+-  if (viewState.splitting)
++  if (viewState.viewMode != 0)
+   {
+     state.appendProperiteChild("splitting", QString("1"));
+     state.appendProperiteChild("splittingPoint", QString::number(viewState.splittingPoint));
+@@ -246,7 +248,16 @@
+     int    viewMode       = elem.findChildValue("viewMode").toInt();
+     double splittingPoint = 0.5;
+     if (viewMode != 0)
+-      splittingPoint = elem.findChildValue("splittingPoint").toDouble();
++    {
++      /* Playlists saved before the fix above carry a split mode without a point. Reading the
++       * missing value as 0 put the split at the left edge, so the first view - the one showing the
++       * item - had no width and the whole view showed nothing. The middle is the honest default.
++       */
++      bool hasPoint = false;
++      const auto point = elem.findChildValue("splittingPoint").toDouble(&hasPoint);
++      if (hasPoint)
++        splittingPoint = point;
++    }
+     double zoomFactor = elem.findChildValue("zoomFactor").toDouble();
+ 
+     // Perform a quick check if the values seem correct
