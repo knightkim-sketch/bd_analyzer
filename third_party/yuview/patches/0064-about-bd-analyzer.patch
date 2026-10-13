@@ -1,0 +1,20 @@
+--- a/YUViewLib/src/ui/Mainwindow.cpp
++++ b/YUViewLib/src/ui/Mainwindow.cpp
+@@ -33,6 +33,7 @@
+ #include "Mainwindow.h"
+ #include <QtConcurrent>
+ 
++#include <integration/BdaAbout.h>
+ #include <integration/MeFrameSource.h>
+ #include <integration/MeStatisticsAdapter.h>
+ #include <integration/MotionEstimationWidget.h>
+@@ -890,6 +891,9 @@
+   };
+ 
+   auto helpMenu = menuBar()->addMenu(tr("&Help"));
++  // Ours first: which bd-analyzer build this is. YUView's own About stays below it.
++  addLambdaActionToMenu(
++      helpMenu, "About bd-analyzer", [this]() { bda::integration::showBdaAbout(this); });
+   addActionToMenu(helpMenu, "About YUView", this, &MainWindow::showAbout);
+   addActionToMenu(helpMenu, "Help", this, &MainWindow::showHelp);
+   helpMenu->addSeparator();

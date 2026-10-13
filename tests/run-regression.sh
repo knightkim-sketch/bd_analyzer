@@ -584,6 +584,8 @@ run_test_bda "$ROOT/tests/regression/43-global-motion-window.cpp" "$STREAM"
 # Shift+클릭 ME 비교 팝업: 켜진 블록 크기마다 탭(작은 것 먼저), 팝업 SAD == estimator 의 common SAD,
 # 깨끗한 pan 에서 SAD 0, Global motion Run 후 GM 윈도 탭 추가.
 run_test_bda "$ROOT/tests/regression/45-me-compare-popup.cpp"
+# Help > About bd-analyzer: 메뉴 맨 위, VERSION 파일의 버전과 build.sh 가 넣은 git 해시가 보이는지.
+run_test_bda "$ROOT/tests/regression/46-about-bd-analyzer.cpp" "$ROOT/VERSION"
 else
     echo "  SKIP  15-raw-av1-extension (raw AV1 생성 실패)"
     ((skip_count++))
