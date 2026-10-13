@@ -33,7 +33,7 @@
 %global __requires_exclude ^(%{__requires_exclude_bundled}|%{__requires_exclude_optional})$
 
 Name:           bd-analyzer
-Version:        %{?bda_version}%{!?bda_version:0.4.0}
+Version:        %{?bda_version}%{!?bda_version:0.4.1}
 Release:        %{?bda_release}%{!?bda_release:1}%{?dist}
 Summary:        Video bitstream and YUV analysis toolset
 Summary(ko):    비디오 비트스트림·YUV 분석 도구
@@ -142,6 +142,12 @@ fi
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Tue Oct 13 2026 knight.kim <knight.kim@blue-dot.io> - 0.4.1-1
+- ME block compare popup: with motion estimation on, Shift+click a block to see the source block
+  next to the reference block its vector fetched, or their luma difference. One tab per enabled
+  block size, plus the Global motion window covering the pixel after a Global motion run.
+- Help > About bd-analyzer: version, git hash and build date of the running build.
+
 * Wed Oct 07 2026 knight.kim <knight.kim@blue-dot.io> - 0.4.0-1
 - Find diff runs its whole pipeline from the window: header syntax, OBU payload bytes, then the
   frame the first differing payload codes, placed as SB(row, col) / MI(row, col). Rows jump the
