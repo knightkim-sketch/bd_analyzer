@@ -389,6 +389,9 @@ if [[ -s "$RAWYUV" ]]; then
     run_test "$ROOT/tests/regression/18-org-yuv-block-sse.cpp"         "$RAWYUV"
     # playlist 가 정상 종료를 넘어 유지되는지 + File 메뉴 on/off 스위치.
     run_test "$ROOT/tests/regression/21-playlist-saved-across-sessions.cpp" "$RAWYUV"
+    # 좌우 분할 뷰의 분할점이 저장·복원되는지. 저장되지 않아 0 으로 복원되면 영상 쪽 뷰의 폭이
+    # 0 이 되어 "영상이 안 보임" 이 된다 (PierSeaSide 4K 에서 보고). 분할점이 없는 옛 스냅샷도 본다.
+    run_test "$ROOT/tests/regression/44-split-view-state-restored.cpp" "$RAWYUV"
     # ME 패널과 그것이 구동하는 raw YUV 아이템 (통계 컨테이너, 임의 프레임 읽기, 백그라운드 실행).
     run_test_bda "$ROOT/tests/regression/24-me-panel.cpp"                   "$RAWYUV"
 else
@@ -397,6 +400,8 @@ else
     echo "  SKIP  18-org-yuv-block-sse (raw YUV 생성 실패)"
     ((skip_count++))
     echo "  SKIP  21-playlist-saved-across-sessions (raw YUV 생성 실패)"
+    ((skip_count++))
+    echo "  SKIP  44-split-view-state-restored (raw YUV 생성 실패)"
     ((skip_count++))
     echo "  SKIP  24-me-panel (raw YUV 생성 실패)"
     ((skip_count++))
