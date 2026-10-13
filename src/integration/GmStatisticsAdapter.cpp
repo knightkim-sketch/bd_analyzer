@@ -92,11 +92,10 @@ void fillGmStatistics(stats::StatisticsData &  data,
 
   for (const auto &w : frame.windows)
   {
-    const int x0 = w.x0 << frame.n, y0 = w.y0 << frame.n;
-    const int x1 = w.winI == me::kGmGrid - 1 ? width : (w.x0 + w.w) << frame.n;
-    const int y1 = w.winJ == me::kGmGrid - 1 ? height : (w.y0 + w.h) << frame.n;
+    int x0{}, y0{}, ww{}, wh{};
+    me::gmWindowSourceRect(frame, w, width, height, x0, y0, ww, wh);
     const auto px = static_cast<unsigned short>(x0), py = static_cast<unsigned short>(y0);
-    const auto pw = static_cast<unsigned short>(x1 - x0), ph = static_cast<unsigned short>(y1 - y0);
+    const auto pw = static_cast<unsigned short>(ww), ph = static_cast<unsigned short>(wh);
 
     data.at(kGmWindowTypeId).addBlockValue(px, py, pw, ph, int(w.acceptX) + int(w.acceptY));
     if (w.acceptX || w.acceptY)

@@ -125,4 +125,17 @@ int gmDownsampleExponent(int width);
  */
 GmFrameResult estimateGlobalMotion(const MePlane &cur, const MePlane &ref, const GmParams &params);
 
+/* A window of `frame` in source pixels: its downsampled rect scaled back up, with the last column
+ * and row reaching to the picture edge (the downsampled grid drops the remainder). The overlay and
+ * the compare popup both cut windows this way.
+ */
+void gmWindowSourceRect(const GmFrameResult  &frame,
+                        const GmWindowResult &window,
+                        int                   width,
+                        int                   height,
+                        int                  &x,
+                        int                  &y,
+                        int                  &w,
+                        int                  &h);
+
 } // namespace bda::me

@@ -1,0 +1,246 @@
+--- a/YUViewLib/src/ui/views/SplitViewWidget.h
++++ b/YUViewLib/src/ui/views/SplitViewWidget.h
+@@ -143,6 +143,9 @@
+    */
+   void blockSelected(playlistItem *item, QPoint pixelPos, int frameIdx);
+ 
++  //!< Shift+click on a block: after the normal selection, ask for the ME compare popup there.
++  void blockCompareRequested(playlistItem *item, QPoint pixelPos, int frameIdx);
++
+   //!< The regular grid size changed (menu, checkbox, or derived from the item). 0 means no grid.
+   void regularGridSizeChanged(int size);
+ 
+--- a/YUViewLib/src/ui/views/SplitViewWidget.cpp
++++ b/YUViewLib/src/ui/views/SplitViewWidget.cpp
+@@ -1439,10 +1439,18 @@
+       }
+     }
+ 
++    const bool compare = mouse_event->modifiers().testFlag(Qt::ShiftModifier);
++
+     MoveAndZoomableView::mouseReleaseEvent(mouse_event);
+ 
+     if (clickPos)
++    {
+       this->selectBlockAt(*clickPos);
++      if (compare && this->blockSelection.valid && this->blockSelection.item)
++        emit blockCompareRequested(this->blockSelection.item,
++                                   this->blockSelection.pixelPos,
++                                   this->blockSelection.frameIdx);
++    }
+   }
+ }
+ 
+--- a/YUViewLib/src/ui/Mainwindow.h
++++ b/YUViewLib/src/ui/Mainwindow.h
+@@ -43,6 +43,7 @@
+ 
+ #include <integration/BdRatePlotWindow.h>
+ #include <integration/GlobalMotionWindow.h>
++#include <integration/MeCompareWindow.h>
+ #include <integration/StreamDiffWindow.h>
+ #include <integration/MeRunner.h>
+ 
+@@ -115,6 +116,8 @@
+   //!< Open the global motion window on the selected item (raw YUV, or a stream with its original).
+   void globalMotionFromSelection();
+   void showGlobalMotionFrame(playlistItem *item, int frameIdx);
++  //!< Shift+click: source vs. reference of every ME estimate (block sizes, GM window) at the pixel.
++  void compareBlockAt(playlistItem *item, QPoint pixelPos, int frameIdx);
+   //!< Find diff asked for a place to be shown: stream, frame, and the block at pixelPos (x, y).
+   void showStreamDiffLocation(playlistItem *blockStream,
+                               playlistItem *otherStream,
+@@ -231,6 +234,11 @@
+   QFutureWatcher<bda::me::MeFrameResult>           meWatcher;
+   QPointer<playlistItem>                           meItem;
+   int                                              meFrameIdx{-1};
++  /* The last finished estimate, kept for the compare popup. takeMotionEstimation() only turns it
++   * into statistics, which carry the vectors but not the reference frame or the common SAD.
++   */
++  bda::me::MeFrameResult                           meLastResult;
++  QPointer<playlistItem>                           meLastItem;
+ 
+   /* Created on first use and kept, so the groups collected so far survive closing the window -
+    * gathering them is the expensive part and losing them on a stray close would be unkind.
+@@ -238,6 +246,7 @@
+   QPointer<bda::integration::BdRatePlotWindow>     bdRateWindow;
+   QPointer<bda::integration::StreamDiffWindow>     streamDiffWindow;
+   QPointer<bda::integration::GlobalMotionWindow>   globalMotionWindow;
++  QPointer<bda::integration::MeCompareWindow>      meCompareWindow;
+ 
+   bool showNormalMaximized;     // When going to full screen: Was this windows maximized?
+   bool panelsVisible[8]{false}; // Which panels are visible when going to full-screen mode?
+--- a/YUViewLib/src/ui/Mainwindow.cpp
++++ b/YUViewLib/src/ui/Mainwindow.cpp
+@@ -222,6 +222,15 @@
+           &splitViewWidget::blockSelected,
+           ui.blockInfoWidget,
+           &BlockInfoWidget::setSelectedBlock);
++  // Shift+click in either view opens the ME compare popup on that block.
++  connect(ui.displaySplitView,
++          &splitViewWidget::blockCompareRequested,
++          this,
++          &MainWindow::compareBlockAt);
++  connect(&separateViewWindow.splitView,
++          &splitViewWidget::blockCompareRequested,
++          this,
++          &MainWindow::compareBlockAt);
+   // Statistics for a newly selected frame arrive asynchronously, and switching the decoder rebuilds
+   // the type list. Both end up here, so just re-read the values.
+   connect(ui.playlistTreeWidget,
+@@ -1037,6 +1046,146 @@
+   ui.displaySplitView->update();
+ }
+ 
++void MainWindow::compareBlockAt(playlistItem *item, QPoint pixelPos, int frameIdx)
++{
++  using bda::integration::MeCompareEntry;
++  if (item == nullptr || frameIdx < 0)
++    return;
++
++  const auto refuse = [this](const QString &why) {
++    QMessageBox::information(this, "ME block compare", why);
++  };
++  if (!item->supportsMotionEstimation())
++  {
++    refuse("This item has no raw source to compare: open a raw YUV file, or attach the original "
++           "YUV to the stream.");
++    return;
++  }
++
++  bda::me::YuvFrameLayout layout;
++  QString                 why;
++  if (!bda::integration::yuvLayoutFromRawFormat(
++          item->getRawPixelFormat(), item->getRawFrameSize(), layout, &why))
++  {
++    refuse(why);
++    return;
++  }
++
++  const auto source = item->readRawFrame(frameIdx);
++  QList<MeCompareEntry> entries;
++
++  // Block ME: every enabled size whose block covers the pixel, smallest first.
++  const auto &me     = this->meLastResult;
++  const auto *panel  = ui.motionEstimationWidget;
++  const auto  sizes  = panel->params().blockSizes;
++  if (panel->autoComputeEnabled() && this->meLastItem == item && me.ok() && me.frameIdx == frameIdx)
++  {
++    std::vector<const bda::me::MeBlockResult *> hits;
++    for (const auto &b : me.blocks)
++    {
++      const int n = bda::me::blockSizeInPixels(b.block.size);
++      if (sizes.contains(b.block.size) && QRect(b.block.x, b.block.y, n, n).contains(pixelPos))
++        hits.push_back(&b);
++    }
++    std::sort(hits.begin(), hits.end(), [](const auto *a, const auto *b) {
++      return a->block.size < b->block.size;
++    });
++    const auto reference = item->readRawFrame(me.refFrameIdx);
++    for (const auto *b : hits)
++    {
++      const int      n = bda::me::blockSizeInPixels(b->block.size);
++      MeCompareEntry e;
++      e.title = QString("ME %1x%1").arg(n);
++      // Whole-pixel part, truncated toward zero - how commonMetricSad reads the vector (MeCost).
++      e.dx     = b->mv.x / 8;
++      e.dy     = b->mv.y / 8;
++      e.rect   = {b->block.x, b->block.y, n, n};
++      e.source = source;
++      e.reference = reference;
++      e.detail = QString("Block at pixel (x, y) = (%1, %2), %3x%3. Frame %4 against reference "
++                         "frame %5. MV(x, y) = (%6, %7) px. The estimator reported common SAD %8.")
++                     .arg(b->block.x)
++                     .arg(b->block.y)
++                     .arg(n)
++                     .arg(frameIdx)
++                     .arg(me.refFrameIdx)
++                     .arg(e.dx)
++                     .arg(e.dy)
++                     .arg(b->commonSad);
++      entries.append(e);
++    }
++  }
++
++  // Global ME: the window covering the pixel, when the Global motion window has this frame.
++  if (this->globalMotionWindow && this->globalMotionWindow->target() == item && frameIdx > 0)
++  {
++    const auto results = this->globalMotionWindow->results();
++    const auto it      = results.find(frameIdx);
++    if (it != results.end() && it->second.ok())
++    {
++      const auto size = item->getRawFrameSize();
++      // Quarter-pel to whole pixels, rounded half away from zero.
++      const auto toPel = [](int q) { return q >= 0 ? (q + 2) / 4 : -((-q + 2) / 4); };
++      for (const auto &w : it->second.windows)
++      {
++        int x{}, y{}, ww{}, wh{};
++        bda::me::gmWindowSourceRect(
++            it->second, w, int(size.width), int(size.height), x, y, ww, wh);
++        if (!QRect(x, y, ww, wh).contains(pixelPos))
++          continue;
++        MeCompareEntry e;
++        // Grid position as (row, col).
++        e.title     = QString("GME window (%1, %2)").arg(w.winJ).arg(w.winI);
++        e.dx        = w.acceptX ? toPel(w.dxQpel) : 0;
++        e.dy        = w.acceptY ? toPel(w.dyQpel) : 0;
++        e.rect      = {x, y, ww, wh};
++        e.source    = source;
++        e.reference = item->readRawFrame(frameIdx - 1);
++        e.detail =
++            QString("Window at pixel (x, y) = (%1, %2), %3x%4. Frame %5 against the previous "
++                    "frame %6. Accepted MV(x, y) = (%7, %8) px, rounded from the raw "
++                    "quarter-pel MV(x, y) = (%9, %10); x %11, y %12.")
++                .arg(x)
++                .arg(y)
++                .arg(ww)
++                .arg(wh)
++                .arg(frameIdx)
++                .arg(frameIdx - 1)
++                .arg(e.dx)
++                .arg(e.dy)
++                .arg(w.dxQpel)
++                .arg(w.dyQpel)
++                .arg(w.acceptX ? "accepted" : "rejected")
++                .arg(w.acceptY ? "accepted" : "rejected");
++        entries.append(e);
++      }
++    }
++  }
++
++  if (entries.isEmpty())
++  {
++    refuse(QString("No motion estimation result covers pixel (x, y) = (%1, %2) of frame %3. Turn on "
++                   "motion estimation (Ctrl+M) or run Global motion (Ctrl+Shift+G) on this frame.")
++               .arg(pixelPos.x())
++               .arg(pixelPos.y())
++               .arg(frameIdx));
++    return;
++  }
++
++  if (!this->meCompareWindow)
++    this->meCompareWindow = new bda::integration::MeCompareWindow(this);
++  this->meCompareWindow->setComparison(
++      QString("%1 - frame %2, pixel (x, y) = (%3, %4)")
++          .arg(item->properties().name)
++          .arg(frameIdx)
++          .arg(pixelPos.x())
++          .arg(pixelPos.y()),
++      layout,
++      entries);
++  this->meCompareWindow->show();
++  this->meCompareWindow->raise();
++}
++
+ void MainWindow::showStreamDiffLocation(playlistItem *blockStream,
+                                         playlistItem *otherStream,
+                                         playlistItem *syntaxStream,
+@@ -1282,6 +1431,8 @@
+   data.setFrameIndex(result.frameIdx);
+   bda::integration::syncMeStatTypes(data, result.algorithm, panel->params().blockSizes);
+   bda::integration::fillMeStatistics(data, result);
++  this->meLastResult = result;
++  this->meLastItem   = item;
+ 
+   /* No updateStatisticsHandlerControls() here: it rebuilds the panel's rows, and doing that from
+    * a finished background run was the other half of the loop described in playlistItemRawFile's

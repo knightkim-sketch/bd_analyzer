@@ -54,6 +54,8 @@ public:
 
   //!< Results so far, keyed by display frame (poc). Copied under the lock.
   std::map<int, me::GmFrameResult> results() const;
+  //!< The item the results belong to (null before setTarget, or once the item is gone).
+  playlistItem *target() const;
 
   //!< Write every finished frame as odyssey's CSV. False with the reason when it could not.
   bool exportCsv(const QString &path, QString *error = nullptr) const;

@@ -318,6 +318,8 @@ void GlobalMotionWindow::stop()
     this->cancel = true;
 }
 
+playlistItem *GlobalMotionWindow::target() const { return this->item; }
+
 std::map<int, me::GmFrameResult> GlobalMotionWindow::results() const
 {
   std::lock_guard<std::mutex> guard(this->lock);

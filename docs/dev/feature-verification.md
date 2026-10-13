@@ -161,6 +161,11 @@ Qt 없이 도는 코어 단위 테스트 (`tests/unit/`):
       Run 후 프레임 행을 고르면 메인 창이 그 프레임으로 가고 4×4 윈도가 그려진다. **눈으로 확인**:
       화살표가 내용이 온 쪽(ref)을 가리키는지 — 오른쪽으로 패닝하는 장면이면 화살표는 왼쪽,
       채택(청록)·기각(회색) 색이 구분되는지, 윈도 클릭 시 Block Info 에 GM 행이 나오는지
+- [ ] **ME 블록 비교 팝업** (ME 켜기 Ctrl+M, 필요하면 Global motion Run → 뷰에서 **Shift+클릭**) —
+      일반 클릭은 Block Info 만 바뀌고 팝업은 뜨지 않는지, Shift+클릭이면 켜진 블록 크기마다 탭
+      (작은 것 먼저) + GM 윈도 탭이 뜨는지. **눈으로 확인**: side-by-side 에서 두 블록이 같은 내용인지,
+      Luma difference 로 바꾸면 잘 맞은 블록은 회색 128 로 평평한지, 탭 머리의 SAD 가 Block Info 의
+      common SAD 와 같은지. 실제 X 화면에서 확인 (regression 45 는 offscreen)
 - [ ] `gm-estimate <clip.y4m> --csv out.csv` — 프레임당 16행, poc 는 **표시 순서**, ref_poc = poc − 1.
       1080p 기준 프레임당 ms 단위여야 한다 (실측 2~3 ms). ElFuente_000180 처럼 전역 모션이 없는
       클립에서는 채택이 0 에 가까워야 한다 — 채택이 뜨면 게이트 고장. odyssey 에 넣을 때는

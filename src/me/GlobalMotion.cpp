@@ -215,6 +215,23 @@ int gmDownsampleExponent(const int width)
   return n;
 }
 
+void gmWindowSourceRect(const GmFrameResult  &frame,
+                        const GmWindowResult &window,
+                        const int             width,
+                        const int             height,
+                        int                  &x,
+                        int                  &y,
+                        int                  &w,
+                        int                  &h)
+{
+  x            = window.x0 << frame.n;
+  y            = window.y0 << frame.n;
+  const int x1 = window.winI == kGmGrid - 1 ? width : (window.x0 + window.w) << frame.n;
+  const int y1 = window.winJ == kGmGrid - 1 ? height : (window.y0 + window.h) << frame.n;
+  w            = x1 - x;
+  h            = y1 - y;
+}
+
 GmFrameResult estimateGlobalMotion(const MePlane &cur, const MePlane &ref, const GmParams &params)
 {
   GmFrameResult out;

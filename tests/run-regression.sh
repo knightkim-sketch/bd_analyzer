@@ -268,6 +268,8 @@ run_unit_test "$ROOT/tests/unit/me-odyssey-openloop.cpp" \
 run_unit_test "$ROOT/tests/unit/gm-estimate.cpp" \
               "$ROOT/src/me/GlobalMotion.cpp" "$ROOT/src/me/YuvLumaReader.cpp" \
               "$ROOT/src/me/MePlane.cpp" "$ROOT/src/me/MeCost.cpp"
+# ME 비교 팝업의 블록 자르기: BT.709 색, 가장자리 복제, 올바른 MV 에서 SAD 0, 10bit 는 8bit 로 비교.
+run_unit_test "$ROOT/tests/unit/me-compare-crop.cpp" "$ROOT/src/me/MeCompareCrop.cpp"
 
 # BD-rate 수식. 균일 배율 곡선의 정답이 (k-1)*100 이라는 성질로 전체 파이프라인을 검증한다.
 run_unit_test "$ROOT/tests/unit/bdrate-math.cpp" "$ROOT/src/bdrate/BdRateMath.cpp"
@@ -579,6 +581,9 @@ fi
 # Global motion 창. 합성 패닝 raw YUV 로 실행·프레임 이동·16윈도 오버레이·Block Info·CSV 내보내기,
 # 그리고 원본 없는 압축 스트림을 거절하는지 본다 (인자: 원본이 붙지 않은 압축 스트림).
 run_test_bda "$ROOT/tests/regression/43-global-motion-window.cpp" "$STREAM"
+# Shift+클릭 ME 비교 팝업: 켜진 블록 크기마다 탭(작은 것 먼저), 팝업 SAD == estimator 의 common SAD,
+# 깨끗한 pan 에서 SAD 0, Global motion Run 후 GM 윈도 탭 추가.
+run_test_bda "$ROOT/tests/regression/45-me-compare-popup.cpp"
 else
     echo "  SKIP  15-raw-av1-extension (raw AV1 생성 실패)"
     ((skip_count++))

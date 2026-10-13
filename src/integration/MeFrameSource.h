@@ -5,10 +5,12 @@
 #pragma once
 
 #include <QByteArray>
+#include <QString>
 
 #include <common/Typedef.h>
 #include <video/yuv/PixelFormatYUV.h>
 
+#include "me/MeCompareCrop.h"
 #include "me/MePlane.h"
 
 namespace bda::integration
@@ -30,5 +32,14 @@ me::MePlane lumaPlaneFromRawYuv(const QByteArray                 &rawYUV,
                                 const video::yuv::PixelFormatYUV &format,
                                 const Size                       &frameSize,
                                 int                               pad);
+
+/* Where the planes of a raw frame in `format` sit, for the ME compare popup's colour crop. Plane
+ * sizes follow PixelFormatYUV::bytesPerFrame (chroma rounded down). Returns false, with the
+ * reason, for what the crop cannot read: packed or byte-packed formats and unknown subsampling.
+ */
+bool yuvLayoutFromRawFormat(const video::yuv::PixelFormatYUV &format,
+                            const Size                       &frameSize,
+                            me::YuvFrameLayout               &layout,
+                            QString                          *whyNot = nullptr);
 
 } // namespace bda::integration
