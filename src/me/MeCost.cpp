@@ -66,17 +66,20 @@ std::int64_t blockSse(const MePlane &src,
                       int             refY,
                       int             width,
                       int             height,
-                      int             rowStep)
+                      int             rowStep,
+                      int             colStep)
 {
   if (rowStep < 1)
     rowStep = 1;
+  if (colStep < 1)
+    colStep = 1;
 
   std::int64_t sum = 0;
   for (int y = 0; y < height; y += rowStep)
   {
     const auto *s = &src.at(srcX, srcY + y);
     const auto *r = &ref.at(refX, refY + y);
-    for (int x = 0; x < width; ++x)
+    for (int x = 0; x < width; x += colStep)
     {
       const std::int64_t d = static_cast<int>(s[x]) - static_cast<int>(r[x]);
       sum += d * d;

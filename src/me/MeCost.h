@@ -41,6 +41,8 @@ std::int64_t blockSad(const MePlane &src,
 
 /* Sum of squared errors, same subsampling rule. This is what odyssey open-loop minimises from
  * step 3 onward (ods_me_compute_sse), despite the variables still being called `sad`.
+ * colStep subsamples the columns too: ods_me_compute_sse() steps both x and y by its stride
+ * (ody_me_common.h:881-893), which the VBS stage sets to 2.
  */
 std::int64_t blockSse(const MePlane &src,
                       int             srcX,
@@ -50,7 +52,8 @@ std::int64_t blockSse(const MePlane &src,
                       int             refY,
                       int             width,
                       int             height,
-                      int             rowStep = 1);
+                      int             rowStep = 1,
+                      int             colStep = 1);
 
 /* odyssey's ods_me_get_mvcost(), including the clamp at 1919 and the four-table lookup.
  *

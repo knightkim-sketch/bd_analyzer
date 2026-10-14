@@ -36,6 +36,9 @@
 // Qt-free by design - see MeTypes.h.
 #pragma once
 
+#include <array>
+#include <cstdint>
+#include <limits>
 #include <vector>
 
 #include "IMotionEstimator.h"
@@ -48,6 +51,59 @@ inline constexpr int kOdyQuarterMaxSr = 32; // ODY_ME_QUARTER_MAX_SR_W/H
 inline constexpr int kOdyHalfMaxSr    = 8;  // ODY_ME_3STEP_HALF_MAX_SR_W/H
 inline constexpr int kOdyFullMaxSr    = 16; // ODY_ME_FULL_MAX_SR_W/H
 inline constexpr int kOdyHalfCentres  = 4;  // ODY_ME_3STEP_NUM_HALF_CENTERS
+
+/* Steps 2 to 4 of ods_me_search() for one superblock, shared by OdysseyOpenLoopMe and
+ * OdysseyOpenLoopAdvMe. Step 1 - where the candidates and predictors come from - is what the two
+ * estimators differ in, so it stays with each of them.
+ */
+
+//!< The pictures one reference is searched on, built once per picture pair (design section 2).
+struct OdySearchPlanes
+{
+  MePlane srcHalf, refHalf; //!< meanpool half, padded to 32
+  MePlane srcUp, refUp;     //!< half -> org bilinear, padded to 64 - NOT the original
+};
+OdySearchPlanes odysseySearchPlanes(const MePlane &current, const MePlane &reference);
+
+struct OdySbSearch
+{
+  std::vector<MotionVector> candidates; //!< Step-2 centre candidates, half-picture pixels, in order.
+  MotionVector              centrePmv;  //!< Rate reference of the centre decision, half pixels.
+  //!< Rate reference of steps 3a/3b: centrePmv, or - as ods_me_search() does after the centre
+  //!< decision - the decided centre itself.
+  bool         stage3PmvIsCentre = false;
+  int          mvRateWeight      = 1;
+  bool         forceZeroCentre   = false;
+  /* odyssey's exact arithmetic where OdysseyOpenLoopMe has its own (off for it, on for Adv):
+   *   - the 8x8 candidate grids of steps 3a, 3b and 4 are walked in the hardware's bit-interleaved
+   *     order (ody_me_full_search_area / _vbs nest y_h0, x_h0, y_h1, x_h1, y_h2, x_h2), not raster -
+   *     the order decides ties;
+   *   - steps 3a/3b charge rate on SSR(mv - SSR(pmv, 1), 1) (scale = 1, openloop_me.c:1228, :1297);
+   *   - step 4 subsamples the SSE in both directions (ods_me_compute_sse, stride 2).
+   */
+  bool         odysseyHw         = false;
+};
+
+struct OdySbBest
+{
+  std::int64_t cost = std::numeric_limits<std::int64_t>::max();
+  MotionVector mv; //!< Whole pixels at search (full) resolution.
+};
+
+struct OdySbResult
+{
+  std::array<OdySbBest, 64> b8;
+  std::array<OdySbBest, 16> b16;
+  std::array<OdySbBest, 4>  b32;
+  OdySbBest                 b64;
+  MotionVector              centre; //!< The decided step-2 centre, half pixels.
+  MotionVector              vbsCentre; //!< Step-4 centre, full pixels (the step-3b best doubled).
+};
+
+OdySbResult odysseySearchSuperblock(const OdySearchPlanes &planes,
+                                    int                    orgX,
+                                    int                    orgY,
+                                    const OdySbSearch     &search);
 
 class OdysseyOpenLoopMe : public IMotionEstimator
 {

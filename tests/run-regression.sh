@@ -270,6 +270,9 @@ run_unit_test "$ROOT/tests/unit/gm-estimate.cpp" \
               "$ROOT/src/me/MePlane.cpp" "$ROOT/src/me/MeCost.cpp"
 # ME 비교 팝업의 블록 자르기: BT.709 색, 가장자리 복제, 올바른 MV 에서 SAD 0, 10bit 는 8bit 로 비교.
 run_unit_test "$ROOT/tests/unit/me-compare-crop.cpp" "$ROOT/src/me/MeCompareCrop.cpp"
+# odyssey GF 구조 (openloop_adv): layer·bottom-up 분석 순서·참조·TMV 버퍼 개수를 odyssey 자체 trace
+# (Motorcycle 512x288, 40 프레임, GF16, TDMP/MCTF 끔) 와 프레임마다 대조.
+run_unit_test "$ROOT/tests/unit/me-odyssey-gf-structure.cpp" "$ROOT/src/me/OdysseyGfStructure.cpp"
 
 # BD-rate 수식. 균일 배율 곡선의 정답이 (k-1)*100 이라는 성질로 전체 파이프라인을 검증한다.
 run_unit_test "$ROOT/tests/unit/bdrate-math.cpp" "$ROOT/src/bdrate/BdRateMath.cpp"

@@ -24,6 +24,10 @@ int algorithmSlot(Algorithm algorithm)
     return 1;
   case Algorithm::OdysseyClosedLoop:
     return 2;
+  case Algorithm::OdysseyOpenLoopAdv:
+    // Reserved; isMeTypeId() and mergeMeBlockInfoEntries() still cover slots 0-2 until the GOP
+    // run is wired into the panel.
+    return 3;
   }
   return 0;
 }
@@ -36,6 +40,8 @@ const char *algorithmShortName(Algorithm algorithm)
     return "SVT integer";
   case Algorithm::OdysseyClosedLoop:
     return "odyssey closed-loop";
+  case Algorithm::OdysseyOpenLoopAdv:
+    return "odyssey open-loop adv";
   case Algorithm::OdysseyOpenLoop:
     break;
   }
@@ -51,6 +57,7 @@ const char *nativeCostName(Algorithm algorithm)
   case Algorithm::SvtIntegerMe:
     return "SAD";
   case Algorithm::OdysseyOpenLoop:
+  case Algorithm::OdysseyOpenLoopAdv:
     return "SSE + rate^2";
   case Algorithm::OdysseyClosedLoop:
     return "SAD + rate";
@@ -71,6 +78,8 @@ Color algorithmColor(Algorithm algorithm)
     return Color(255, 160, 0); // amber
   case Algorithm::OdysseyClosedLoop:
     return Color(180, 0, 220); // violet
+  case Algorithm::OdysseyOpenLoopAdv:
+    return Color(0, 200, 220); // cyan
   }
   return Color(255, 255, 255);
 }

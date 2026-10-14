@@ -20,6 +20,11 @@ MotionEstimatorPtr makeEstimator(Algorithm algorithm)
      * empty overlay.
      */
     return nullptr;
+  case Algorithm::OdysseyOpenLoopAdv:
+    /* Not a frame-pair estimator: it analyses a whole GF structure in odyssey's order through
+     * estimateOdysseyOpenLoopAdv() (OdysseyOpenLoopAdvMe.h), which the GOP run path calls.
+     */
+    return nullptr;
   }
   return nullptr;
 }

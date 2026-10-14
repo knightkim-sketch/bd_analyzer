@@ -96,6 +96,7 @@ enum class Algorithm
   SvtIntegerMe = 0,  // SVT-AV1 v4.2.0, HME + integer search. Full-pel.
   OdysseyOpenLoop,   // odyssey lookahead ME. Full-pel, source reference.
   OdysseyClosedLoop, // odyssey encoder ME. Needs a recon reference and an open-loop centre.
+  OdysseyOpenLoopAdv, // odyssey lookahead ME over a whole GF structure, with TMV. Full-pel.
 };
 
 /* Which reference a prediction direction points at.
