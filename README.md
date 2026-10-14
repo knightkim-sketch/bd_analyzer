@@ -49,11 +49,16 @@ bd_analyzer/
 2. **우리 코드는 `src/` 아래에만.** upstream 트리에 파일을 섞지 않는다.
 3. **`src/`는 upstream 타입에 직접 의존하지 않는다.** 경계는 `src/integration/`. 이 규칙이 나중에 "부분 vendor"로 이행할 여지를 남긴다.
 4. **필터/패턴/메트릭은 `plugins/sdk`의 Qt-free 인터페이스로 작성.** 그래야 GUI와 CLI에서 같은 코드를 쓴다.
+5. **OpenCV 를 쓰는 코드는 `#ifdef BDA_HAVE_OPENCV` 로 감싼다.** OpenCV 는 선택 의존성이다
+   (`scripts/setup-opencv.sh`, 패치 0065). 없는 머신·Windows 빌드·`tools/cli` 는 이 define 없이
+   빌드되므로, `#include <opencv2/...>` 부터 호출부까지 모두 가드 안에 두고 `#else` 에는 OpenCV 없이
+   동작하는 대체 경로(또는 기능 비활성)를 둔다.
 
 ## 빠른 시작
 
 ```bash
 ./scripts/setup-toolchain.sh     # gcc-toolset-13 + Qt 6.5.3 (aqtinstall)
+./scripts/setup-opencv.sh        # (선택) OpenCV 4.14 static: core/imgproc/features2d/video
 ./scripts/build.sh               # out-of-tree 빌드
 ./scripts/package.sh             # 배포 아티팩트 (rpm + tar.gz)
 ```

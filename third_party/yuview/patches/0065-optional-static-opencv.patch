@@ -1,0 +1,41 @@
+diff --git a/YUViewApp/YUViewApp.pro b/YUViewApp/YUViewApp.pro
+index 5610120..c469f8d 100644
+--- a/YUViewApp/YUViewApp.pro
++++ b/YUViewApp/YUViewApp.pro
+@@ -17,6 +17,13 @@ win32-msvc* {
+     PRE_TARGETDEPS += $$top_builddir/YUViewLib/libYUViewLib.a
+ }
+ 
++# Static OpenCV used by YUViewLib (see BDA_HAVE_OPENCV there). Must come after -lYUViewLib so the
++# linker resolves its references. The order is OpenCV's own (opencv4.pc: each module before what it
++# uses); libz and libdl are what OpenCV's static core needs.
++!isEmpty(BDA_OPENCV_DIR):exists($$BDA_OPENCV_DIR/lib64/libopencv_core.a) {
++    LIBS += -L$$BDA_OPENCV_DIR/lib64 -lopencv_video -lopencv_calib3d -lopencv_features2d -lopencv_imgproc -lopencv_flann -lopencv_core -lz -ldl
++}
++
+ unix:!mac {
+     isEmpty(PREFIX) {
+         PREFIX = /usr/local
+diff --git a/YUViewLib/YUViewLib.pro b/YUViewLib/YUViewLib.pro
+index 626c4f2..a84a09f 100644
+--- a/YUViewLib/YUViewLib.pro
++++ b/YUViewLib/YUViewLib.pro
+@@ -46,6 +46,18 @@ HEADERS += $$files($$BDA_ROOT/src/yt/*.h, true)
+ HEADERS += $$files($$BDA_ROOT/src/diff/*.h, true)
+ HEADERS += $$files($$BDA_ROOT/src/integration/*.h, true)
+ 
++# Optional static OpenCV (core, imgproc, features2d, video, flann, calib3d) from
++# scripts/setup-opencv.sh, located through BDA_OPENCV_DIR given by scripts/build.sh. Without it the
++# build still works: code that uses OpenCV must be guarded by BDA_HAVE_OPENCV. The libraries are
++# linked in YUViewApp.pro, because a staticlib does not pass its LIBS on to the executable.
++!isEmpty(BDA_OPENCV_DIR):exists($$BDA_OPENCV_DIR/include/opencv4/opencv2/core.hpp) {
++    message("OpenCV: $$BDA_OPENCV_DIR")
++    INCLUDEPATH += $$BDA_OPENCV_DIR/include/opencv4
++    DEFINES += BDA_HAVE_OPENCV
++} else {
++    message("OpenCV: not found (BDA_OPENCV_DIR=$$BDA_OPENCV_DIR), building without it")
++}
++
+ RESOURCES += \
+     images/images.qrc \
+     docs/docs.qrc

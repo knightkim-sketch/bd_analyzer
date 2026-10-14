@@ -12,6 +12,8 @@ QT_VERSION="${QT_VERSION:-6.5.3}"
 QT_DIR="${QT_DIR:-$HOME/Qt}"
 TOOLSET="${TOOLSET:-gcc-toolset-13}"
 JOBS="${JOBS:-$(nproc)}"
+# Optional static OpenCV from scripts/setup-opencv.sh; the .pro files skip it when absent.
+OPENCV_DIR="${OPENCV_DIR:-$HOME/opt/opencv-4.14}"
 
 [[ -f "$UPSTREAM/YUView.pro" ]] || {
     echo "upstream 이 없습니다. 먼저:"
@@ -66,6 +68,7 @@ exec scl enable "$TOOLSET" -- bash -c "
     qmake -r \
         QMAKE_LFLAGS+='-static-libstdc++ -static-libgcc' \
         INCLUDEPATH+='$GEN' \
+        BDA_OPENCV_DIR='$OPENCV_DIR' \
         '$UPSTREAM/YUView.pro'
     make -j$JOBS
     echo
