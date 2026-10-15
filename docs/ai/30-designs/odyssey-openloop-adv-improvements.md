@@ -54,3 +54,4 @@ Knight 지시로 기존 구현은 유지. 원본과 맞출지 검토 대상이�
 |---|---|---|---|
 | D1 | Adv 는 대상 GOP 앞의 모든 GOP 를 다시 분석 (TMV 가 이전 결과에 의존) | 결과 캐시를 실행 사이에 유지, 긴 클립은 진행률·취소 확인 | 후보 |
 | D2 | 검색마다 half/upscale 평면을 복사 (`OdySearchPlanes` 가 값 보관) | 포인터로 공유 | 후보 |
+| D3 | 같은 프레임을 다시 채우면(파라미터만 바뀐 재실행) `fillMeStatistics` 가 이전 블록을 지우지 않아 Block Info 가 옛 값을 먼저 돌려줄 수 있음 — `syncMeStatTypes` 는 크기가 꺼질 때만 지운다 | frame-pair 경로도 채우기 전에 해당 type 데이터를 지우기. Adv 경로(0067)는 이미 그렇게 함 (regression 49 로 발견) | 후보 |

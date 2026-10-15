@@ -13,6 +13,9 @@
 #include <video/yuv/PixelFormatYUV.h>
 
 #include "me/MeTypes.h"
+#include "me/OdysseyOpenLoopAdvMe.h"
+
+#include <vector>
 
 namespace bda::integration
 {
@@ -41,6 +44,21 @@ struct MeRunRequest
  * instead of showing an empty overlay and leaving the user to guess.
  */
 me::MeFrameResult runMe(const MeRunRequest &request);
+
+/* An odyssey open-loop adv run: every frame from 0 to lastPoc's GF group is analysed in odyssey's
+ * order (OdysseyOpenLoopAdvMe.h), so the frames are read up front on the GUI thread - the playlist
+ * item's reader is not meant to be called from a worker - and only converted here.
+ */
+struct MeAdvRunRequest
+{
+  std::vector<QByteArray>    frames; //!< Raw YUV of frames 0 .. frames.size() - 1
+  video::yuv::PixelFormatYUV format;
+  Size                       frameSize;
+  int                        frameCount{}; //!< Of the whole item: decides the GF group split
+  int                        lastPoc{};
+  me::OdyAdvParams           params;       //!< Carries the cancel and progress tokens
+};
+me::OdyAdvResult runMeAdv(const MeAdvRunRequest &request);
 
 /* Whether a frame index pair is usable, given how many frames the item has.
  *

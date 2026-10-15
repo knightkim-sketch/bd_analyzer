@@ -605,6 +605,9 @@ run_test_bda "$ROOT/tests/regression/43-global-motion-window.cpp" "$STREAM"
 run_test_bda "$ROOT/tests/regression/45-me-compare-popup.cpp"
 # Help > About bd-analyzer: 메뉴 맨 위, VERSION 파일의 버전과 build.sh 가 넣은 git 해시가 보이는지.
 run_test_bda "$ROOT/tests/regression/46-about-bd-analyzer.cpp" "$ROOT/VERSION"
+# ME 패널의 odyssey open-loop adv: GF 그룹 실행, Block Info 의 common SAD == 코어 직접 호출 결과,
+# 같은 그룹의 다른 프레임은 캐시로 즉시 표시, "Second reference" 는 두 번째 search.
+run_test_bda "$ROOT/tests/regression/49-me-openloop-adv-panel.cpp"
 else
     echo "  SKIP  15-raw-av1-extension (raw AV1 생성 실패)"
     ((skip_count++))

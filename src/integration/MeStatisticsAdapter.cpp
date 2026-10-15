@@ -25,8 +25,6 @@ int algorithmSlot(Algorithm algorithm)
   case Algorithm::OdysseyClosedLoop:
     return 2;
   case Algorithm::OdysseyOpenLoopAdv:
-    // Reserved; isMeTypeId() and mergeMeBlockInfoEntries() still cover slots 0-2 until the GOP
-    // run is wired into the panel.
     return 3;
   }
   return 0;
@@ -91,7 +89,7 @@ int sizeSlot(BlockSize size)
 
 bool isMeTypeId(int typeId)
 {
-  return typeId >= kMeStatTypeBase && typeId < kMeStatTypeBase + 3 * 16;
+  return typeId >= kMeStatTypeBase && typeId < kMeStatTypeBase + 4 * 16; // slots 0-3
 }
 
 void eraseType(stats::StatisticsData &data, int typeId)
@@ -289,7 +287,7 @@ void mergeMeBlockInfoEntries(stats::BlockInfo &info)
                         [typeId](const stats::BlockInfoEntry &e) { return e.typeID == typeId; });
   };
 
-  for (int a = 0; a < 3; ++a)
+  for (int a = 0; a < 4; ++a)
   {
     const auto algorithm = static_cast<Algorithm>(a);
     for (int s = 0; s < me::kBlockSizeCount; ++s)

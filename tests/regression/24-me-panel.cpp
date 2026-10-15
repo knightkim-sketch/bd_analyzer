@@ -140,7 +140,12 @@ int main(int argc, char **argv)
           "and unchecking takes it away");
 
     // The closed-loop entry is visible so the plan shows, but cannot be chosen.
-    check(algo->count() == 3, "all three algorithms are listed");
+    check(algo->count() == 4, "all four algorithms are listed");
+    algo->setCurrentIndex(3);
+    settle(100);
+    check(panel->params().algorithm == bda::me::Algorithm::OdysseyOpenLoopAdv,
+          "odyssey open-loop adv can be chosen");
+    check(panel->gfInterval() == 16, "and defaults to GF 16");
     algo->setCurrentIndex(2);
     settle(100);
     check(algo->currentIndex() != 2 || panel->params().algorithm ==

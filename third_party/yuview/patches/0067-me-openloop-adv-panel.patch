@@ -1,0 +1,266 @@
+--- a/YUViewLib/src/ui/Mainwindow.h
++++ b/YUViewLib/src/ui/Mainwindow.h
+@@ -125,6 +125,7 @@
+                               int           frameIdx,
+                               QPoint        pixelPos);
+   void takeMotionEstimation();
++  void takeAdvMotionEstimation();
+   void closeAndClearSettings();
+ 
+   void onMenuResetView(bool checked)
+@@ -240,6 +241,33 @@
+   bda::me::MeFrameResult                           meLastResult;
+   QPointer<playlistItem>                           meLastItem;
+ 
++  /* odyssey open-loop adv analyses whole GF groups, every frame before them too (their vectors are
++   * the temporal candidates). One run covers many frames, so its result is kept and moving between
++   * frames it covers only redraws. The key says what the result was computed for.
++   */
++  struct MeAdvKey
++  {
++    QPointer<playlistItem> item;
++    int                    gf{};
++    bool                   sb64{};
++    unsigned               sizes{};
++    int                    frameCount{};
++    size_t                 input{}; //!< Hash of frame 0 as ME reads it: a changed ME-input filter invalidates
++    bool operator==(const MeAdvKey &o) const
++    {
++      return item == o.item && gf == o.gf && sb64 == o.sb64 && sizes == o.sizes &&
++             frameCount == o.frameCount && input == o.input;
++    }
++  };
++  MeAdvKey                               meAdvKeyFor(playlistItem *item) const;
++  bool                                   restartAdvMotionEstimation(playlistItem *item, int frameCount);
++  void                                   showAdvMotionEstimation();
++  QFutureWatcher<bda::me::OdyAdvResult>  meAdvWatcher;
++  MeAdvKey                               meAdvRunningKey; //!< Of the run in meAdvWatcher
++  int                                    meAdvRunningLast{-1};
++  MeAdvKey                               meAdvKey;        //!< Of meAdvResult
++  bda::me::OdyAdvResult                  meAdvResult;
++
+   /* Created on first use and kept, so the groups collected so far survive closing the window -
+    * gathering them is the expensive part and losing them on a stray close would be unkind.
+    */
+--- a/YUViewLib/src/ui/Mainwindow.cpp
++++ b/YUViewLib/src/ui/Mainwindow.cpp
+@@ -410,6 +410,10 @@
+           &QFutureWatcher<bda::me::MeFrameResult>::finished,
+           this,
+           &MainWindow::takeMotionEstimation);
++  connect(&this->meAdvWatcher,
++          &QFutureWatcher<bda::me::OdyAdvResult>::finished,
++          this,
++          &MainWindow::takeAdvMotionEstimation);
+ 
+   /* Poll the running estimate's superblock counter. 100 ms is well under what a person reads as a
+    * stalled bar and far above the cost of two atomic loads.
+@@ -1279,6 +1283,25 @@
+ 
+ void MainWindow::restartMotionEstimation()
+ {
++  /* odyssey open-loop adv: a group run already on its way that covers the frame now on screen is
++   * left to finish. Cancelling it on every frame step, which is what playback does, would never let
++   * one complete.
++   */
++  if (this->meAdvWatcher.isRunning())
++  {
++    auto      *panel    = ui.motionEstimationWidget;
++    const auto selected = ui.playlistTreeWidget->getSelectedItems();
++    const int  frame    = ui.playbackController->getCurrentFrame();
++    if (panel->autoComputeEnabled() &&
++        panel->params().algorithm == bda::me::Algorithm::OdysseyOpenLoopAdv && selected[0] &&
++        frame >= 0 && frame <= this->meAdvRunningLast &&
++        this->meAdvKeyFor(selected[0]) == this->meAdvRunningKey)
++    {
++      this->meItem     = selected[0];
++      this->meFrameIdx = frame;
++      return;
++    }
++  }
+   this->cancelMotionEstimation();
+ 
+   /* Take the target from the window rather than trusting what the last view notification left
+@@ -1340,6 +1363,13 @@
+   const auto range      = item->properties().startEndRange;
+   const int  frameCount = range.second - range.first + 1;
+ 
++  // The GF structure picks adv's references, so the frame-interval check below does not apply.
++  if (params.algorithm == bda::me::Algorithm::OdysseyOpenLoopAdv)
++  {
++    this->restartAdvMotionEstimation(item, frameCount);
++    return;
++  }
++
+   std::string reason;
+   if (!bda::integration::meFrameRangeOk(this->meFrameIdx, params.frameInterval, frameCount, &reason))
+   {
+@@ -1466,6 +1496,168 @@
+   ui.displaySplitView->update();
+ }
+ 
++MainWindow::MeAdvKey MainWindow::meAdvKeyFor(playlistItem *item) const
++{
++  const auto *panel = ui.motionEstimationWidget;
++  const auto  range = item->properties().startEndRange;
++  MeAdvKey    key;
++  key.item       = item;
++  key.gf         = panel->gfInterval();
++  key.sb64       = panel->tmvSb64();
++  key.sizes      = panel->params().blockSizes.bits();
++  key.frameCount = range.second - range.first + 1;
++  key.input      = qHash(item->readMeFrame(0));
++  return key;
++}
++
++bool MainWindow::restartAdvMotionEstimation(playlistItem *item, int frameCount)
++{
++  auto      *panel = ui.motionEstimationWidget;
++  const auto key   = this->meAdvKeyFor(item);
++
++  // Already analysed: moving between frames of a finished run only redraws.
++  if (key == this->meAdvKey && this->meAdvResult.frames.count(this->meFrameIdx))
++  {
++    this->showAdvMotionEstimation();
++    return true;
++  }
++  if (this->meFrameIdx < 0 || this->meFrameIdx >= frameCount)
++  {
++    panel->setStatus(tr("Frame %1 is outside the sequence.").arg(this->meFrameIdx));
++    return false;
++  }
++
++  /* Everything up to the end of the shown frame's GF group: odyssey analyses a group bottom-up and
++   * its frames borrow temporal candidates from the frames analysed before them.
++   */
++  const auto plan = bda::me::planOdysseyGf(frameCount, key.gf);
++  const int  last = this->meFrameIdx == 0 ? 0 : plan.frames.at(this->meFrameIdx).groupAnchor;
++
++  bda::integration::MeAdvRunRequest request;
++  request.format     = item->getRawPixelFormat();
++  request.frameSize  = item->getRawFrameSize();
++  request.frameCount = frameCount;
++  request.lastPoc    = last;
++  for (int k = 0; k <= last; ++k)
++  {
++    request.frames.push_back(item->readMeFrame(k));
++    if (request.frames.back().isEmpty())
++    {
++      panel->setStatus(tr("Could not read frame %1 from the file.").arg(k));
++      panel->setProgressIdle(tr("Could not read the frames"));
++      return false;
++    }
++  }
++
++  this->meCancel                = std::make_shared<bda::me::CancelToken>();
++  this->meProgress              = std::make_shared<bda::me::ProgressToken>();
++  request.params.gfInterval     = key.gf;
++  request.params.tmvGrid        = key.sb64 ? bda::me::OdyAdvParams::TmvGrid::Sb64
++                                           : bda::me::OdyAdvParams::TmvGrid::Block16;
++  request.params.blockSizes     = panel->params().blockSizes;
++  request.params.cancel         = this->meCancel.get();
++  request.params.progress       = this->meProgress.get();
++
++  if (bda::integration::syncMeStatTypes(*item->getMotionEstimationData(),
++                                        bda::me::Algorithm::OdysseyOpenLoopAdv,
++                                        request.params.blockSizes))
++    if (auto *handler = item->getMotionEstimationUIHandler())
++      handler->updateStatisticsHandlerControls();
++
++  panel->setStatus(tr("Analysing frames 0-%1 in odyssey's order (GF %2, bottom-up)...")
++                       .arg(last)
++                       .arg(key.gf));
++  panel->setProgressRunning(0, 0);
++  this->meProgressTimer.start();
++  this->meAdvRunningKey  = key;
++  this->meAdvRunningLast = last;
++  this->meAdvWatcher.setFuture(
++      QtConcurrent::run([request, token = this->meCancel, progress = this->meProgress]()
++                        { return bda::integration::runMeAdv(request); }));
++  return true;
++}
++
++void MainWindow::takeAdvMotionEstimation()
++{
++  const auto result      = this->meAdvWatcher.result();
++  this->meAdvRunningLast = -1;
++  if (result.cancelled)
++    return;
++  this->meProgressTimer.stop();
++  if (!result.error.empty())
++  {
++    ui.motionEstimationWidget->setStatus(QString::fromStdString(result.error));
++    ui.motionEstimationWidget->setProgressIdle(tr("Failed"));
++    return;
++  }
++  this->meAdvKey    = this->meAdvRunningKey;
++  this->meAdvResult = result;
++  this->showAdvMotionEstimation();
++}
++
++void MainWindow::showAdvMotionEstimation()
++{
++  auto *panel = ui.motionEstimationWidget;
++  auto *item  = this->meItem.data();
++  const auto it = this->meAdvResult.frames.find(this->meFrameIdx);
++  if (item == nullptr || item->getMotionEstimationData() == nullptr || it == this->meAdvResult.frames.end())
++    return;
++
++  // Same order as takeMotionEstimation(): move the frame index first, then fill.
++  auto &data = *item->getMotionEstimationData();
++  data.setFrameIndex(this->meFrameIdx);
++  bda::integration::syncMeStatTypes(
++      data, bda::me::Algorithm::OdysseyOpenLoopAdv, panel->params().blockSizes);
++
++  const auto &frame = it->second;
++  if (frame.searches.empty())
++  {
++    this->meLastResult = {};
++    panel->setStatus(tr("Frame %1 is the key frame (I): odyssey runs no ME on it.").arg(this->meFrameIdx));
++    panel->setProgressComplete(tr("Frame %1: key frame").arg(this->meFrameIdx));
++    ui.displaySplitView->update();
++    return;
++  }
++
++  const int   pick   = std::min(panel->advSearchIndex(), int(frame.searches.size()) - 1);
++  const auto &search = frame.searches[std::size_t(pick)];
++  /* The frame index may not have moved (another search of the same frame was picked), and then
++   * setFrameIndex() keeps what is there: drop adv's blocks first so the old search does not linger
++   * under the new one.
++   */
++  for (int s = 0; s < bda::me::kBlockSizeCount; ++s)
++  {
++    const auto size = static_cast<bda::me::BlockSize>(s);
++    for (int id : {bda::integration::meVectorTypeId(bda::me::Algorithm::OdysseyOpenLoopAdv, size),
++                   bda::integration::meCostTypeId(bda::me::Algorithm::OdysseyOpenLoopAdv, size),
++                   bda::integration::meCommonSadTypeId(bda::me::Algorithm::OdysseyOpenLoopAdv, size)})
++      data.eraseDataForTypeID(id);
++  }
++  bda::integration::fillMeStatistics(data, search.result);
++  this->meLastResult = search.result;
++  this->meLastItem   = item;
++
++  QStringList refs;
++  for (std::size_t i = 0; i < frame.searches.size(); ++i)
++  {
++    const auto &s = frame.searches[i];
++    refs << QString("%1L%2%3 -> %4")
++                .arg(int(i) == pick ? "*" : "")
++                .arg(s.list)
++                .arg(s.refIdx ? "[1]" : "")
++                .arg(s.refPoc);
++  }
++  panel->setStatus(tr("Frame %1 (%2, layer %3, group %4-%5): %6. * is shown.")
++                       .arg(this->meFrameIdx)
++                       .arg(frame.info.kind == bda::me::OdyFrameKind::P ? "P" : "B")
++                       .arg(frame.info.layer)
++                       .arg(frame.info.groupFirst)
++                       .arg(frame.info.groupAnchor)
++                       .arg(refs.join(", ")));
++  panel->setProgressComplete(tr("Frame %1 complete").arg(this->meFrameIdx));
++  ui.displaySplitView->update();
++}
++
+ void MainWindow::closeEvent(QCloseEvent *event)
+ {
+   // Stop playback

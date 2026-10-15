@@ -52,7 +52,35 @@ MotionEstimationWidget::MotionEstimationWidget(QWidget *parent) : QWidget(parent
   if (auto *model = qobject_cast<QStandardItemModel *>(this->algorithm_->model()))
     if (auto *item = model->item(2))
       item->setEnabled(false);
+  this->algorithm_->addItem(tr("Odyssey open-loop ME adv (GF + TMV)"),
+                            static_cast<int>(me::Algorithm::OdysseyOpenLoopAdv));
+  this->algorithm_->setItemData(
+      3,
+      tr("odyssey's lookahead order: the whole GF group bottom-up, references from the GF "
+         "structure, temporal MV candidates. Matches odyssey's own trace block for block."),
+      Qt::ToolTipRole);
   form->addRow(tr("Algorithm"), this->algorithm_);
+
+  // odyssey open-loop adv only (shown when it is chosen).
+  this->form_ = form;
+  this->gf_   = new QComboBox(this);
+  for (int gf : {2, 4, 8, 16})
+    this->gf_->addItem(QString::number(gf), gf);
+  this->gf_->setCurrentIndex(3);
+  this->gf_->setToolTip(tr("GF interval: the group the frames are analysed in, layer 5 first."));
+  form->addRow(tr("GF interval"), this->gf_);
+  this->tmvGrid_ = new QComboBox(this);
+  this->tmvGrid_->addItem(tr("16x16 blocks"), false);
+  this->tmvGrid_->addItem(tr("64x64 superblocks (odyssey trace)"), true);
+  this->tmvGrid_->setToolTip(tr("Which stored vector a temporal candidate takes. odyssey's code "
+                                "keeps one per superblock; 16x16 is the default here."));
+  form->addRow(tr("TMV grid"), this->tmvGrid_);
+  this->advReference_ = new QComboBox(this);
+  this->advReference_->addItem(tr("Nearest reference"), 0);
+  this->advReference_->addItem(tr("Second reference"), 1);
+  this->advReference_->setToolTip(tr("B frames search L0 and L1, P frames two list-0 references; "
+                                     "the overlay shows one of them."));
+  form->addRow(tr("Show"), this->advReference_);
 
   /* The block-size checkboxes are the only switch for which overlays exist - the statistics panel
    * gets exactly the types selected here. Putting the same choice in both places would leave the
@@ -99,6 +127,10 @@ MotionEstimationWidget::MotionEstimationWidget(QWidget *parent) : QWidget(parent
   connect(this->enable_, &QCheckBox::toggled, this, notify);
   connect(this->interval_, &QSpinBox::valueChanged, this, notify);
   connect(this->algorithm_, &QComboBox::currentIndexChanged, this, notify);
+  connect(this->algorithm_, &QComboBox::currentIndexChanged, this, [this] { this->updateAdvControls(); });
+  for (auto *box : {this->gf_, this->tmvGrid_, this->advReference_})
+    connect(box, &QComboBox::currentIndexChanged, this, notify);
+  this->updateAdvControls();
   connect(this->staticBypass_, &QCheckBox::toggled, this, notify);
   for (auto *box : {this->size8_, this->size16_, this->size32_, this->size64_})
     connect(box, &QCheckBox::toggled, this, notify);
@@ -108,6 +140,27 @@ void MotionEstimationWidget::emitIfLive()
 {
   emit this->parametersChanged();
 }
+
+void MotionEstimationWidget::updateAdvControls()
+{
+  const bool adv =
+      this->algorithm_->currentData().toInt() == static_cast<int>(me::Algorithm::OdysseyOpenLoopAdv);
+  for (QWidget *w : {static_cast<QWidget *>(this->gf_), static_cast<QWidget *>(this->tmvGrid_),
+                     static_cast<QWidget *>(this->advReference_)})
+    this->form_->setRowVisible(w, adv);
+  if (this->controlsEnabled_)
+    this->interval_->setEnabled(!adv);
+  this->interval_->setToolTip(adv ? tr("Not used by odyssey open-loop adv: the GF structure picks "
+                                       "the references.")
+                                  : tr("Reference = current - interval. Negative reaches forward "
+                                       "in display order."));
+}
+
+int MotionEstimationWidget::gfInterval() const { return this->gf_->currentData().toInt(); }
+
+bool MotionEstimationWidget::tmvSb64() const { return this->tmvGrid_->currentData().toBool(); }
+
+int MotionEstimationWidget::advSearchIndex() const { return this->advReference_->currentData().toInt(); }
 
 bool MotionEstimationWidget::autoComputeEnabled() const
 {
@@ -156,6 +209,7 @@ void MotionEstimationWidget::setAvailable()
   this->controlsEnabled_ = true;
   for (auto *w : this->findChildren<QWidget *>())
     w->setEnabled(true);
+  this->updateAdvControls(); // the interval stays grey for adv
 }
 
 void MotionEstimationWidget::setStatus(const QString &text)

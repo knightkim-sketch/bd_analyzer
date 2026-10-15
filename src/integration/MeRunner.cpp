@@ -96,4 +96,16 @@ me::MeFrameResult runMe(const MeRunRequest &request)
   return estimator->estimateFrame(pictures, request.params);
 }
 
+me::OdyAdvResult runMeAdv(const MeAdvRunRequest &request)
+{
+  // The same 8-bit luma the frame-pair estimators search (10-bit is shifted down, as odyssey does).
+  const auto load = [&request](int poc) -> me::MePlane {
+    if (poc < 0 || poc >= int(request.frames.size()))
+      return {};
+    return lumaPlaneFromRawYuv(request.frames[std::size_t(poc)], request.format, request.frameSize,
+                               me::kOdysseyPadFull);
+  };
+  return me::estimateOdysseyOpenLoopAdv(load, request.frameCount, request.lastPoc, request.params);
+}
+
 } // namespace bda::integration

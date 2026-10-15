@@ -11,6 +11,7 @@
 
 class QCheckBox;
 class QComboBox;
+class QFormLayout;
 class QLabel;
 class QProgressBar;
 class QSpinBox;
@@ -37,6 +38,15 @@ public:
    * whoever runs the estimate owns that.
    */
   me::MeParams params() const;
+
+  /* odyssey open-loop adv only. The GF interval decides every reference (the frame interval does
+   * not apply), the TMV grid is Knight's 16x16 by default or odyssey's own per-superblock vector
+   * for comparing against its trace, and a frame with two searches (B: L0 and L1, P: two list-0
+   * references) shows the one picked here - nearest first.
+   */
+  int  gfInterval() const;
+  bool tmvSb64() const;
+  int  advSearchIndex() const;
 
   /* Grey the controls out with a reason - a compressed stream, a single-frame item, a reference
    * that falls outside the sequence. Saying why beats a panel that simply does nothing.
@@ -71,10 +81,15 @@ signals:
 
 private:
   void emitIfLive();
+  void updateAdvControls(); //!< Show the adv rows and grey out the interval when adv is chosen
 
   QCheckBox *enable_{};
   QSpinBox  *interval_{};
   QComboBox *algorithm_{};
+  QComboBox *gf_{};
+  QComboBox *tmvGrid_{};
+  QComboBox *advReference_{};
+  QFormLayout *form_{};
   QCheckBox *size8_{};
   QCheckBox *size16_{};
   QCheckBox *size32_{};
