@@ -18,6 +18,15 @@ QT="$QT_DIR/$QT_VERSION/gcc_64"
 TOOLSET="${TOOLSET:-gcc-toolset-13}"
 OUT="${OUT:-$ROOT/build/tests}"
 DATA="${DATA:-$ROOT/tests/data}"
+# libYUViewLib.a 에 static OpenCV 를 쓰는 코드가 들어간다 (src/filter, 패치 0066). 앱 빌드와 같은
+# 기본 경로(scripts/build.sh)이고, 없으면 OpenCV 없이 빌드된 라이브러리이므로 링크할 것도 없다.
+OPENCV_DIR="${OPENCV_DIR:-$HOME/opt/opencv-4.14}"
+OPENCV_LIBS=""
+OPENCV_UNIT=""
+if [[ -e "$OPENCV_DIR/lib64/libopencv_core.a" ]]; then
+    OPENCV_LIBS="-L$OPENCV_DIR/lib64 -lopencv_video -lopencv_calib3d -lopencv_features2d -lopencv_imgproc -lopencv_flann -lopencv_core -lz -ldl -lpthread"
+    OPENCV_UNIT="-DBDA_HAVE_OPENCV -I$OPENCV_DIR/include/opencv4 $OPENCV_LIBS"
+fi
 # 대부분의 테스트는 몇 초면 끝난다. 넉넉히 주되, 행을 반드시 잡아야 한다
 # (수정 전 디코더 전환 버그는 크래시가 아니라 무한 대기로도 나타났다).
 TIMEOUT="${TIMEOUT:-120}"
@@ -199,7 +208,7 @@ compile() {
             -I'$QT/include/QtWidgets' -I'$QT/include/QtXml' -I'$QT/include/QtConcurrent' \
             -I'$QT/include/QtNetwork' -I'$QT/include/QtOpenGL' \
             '$src' $* -o '$bin' \
-            -L'$LIB' -lYUViewLib \
+            -L'$LIB' -lYUViewLib $OPENCV_LIBS \
             '$QT/lib/libQt6Widgets.so' '$QT/lib/libQt6OpenGL.so' '$QT/lib/libQt6Gui.so' \
             '$QT/lib/libQt6Xml.so' '$QT/lib/libQt6Concurrent.so' '$QT/lib/libQt6Network.so' \
             '$QT/lib/libQt6Core.so' \
@@ -273,6 +282,12 @@ run_unit_test "$ROOT/tests/unit/me-compare-crop.cpp" "$ROOT/src/me/MeCompareCrop
 # odyssey GF 구조 (openloop_adv): layer·bottom-up 분석 순서·참조·TMV 버퍼 개수를 odyssey 자체 trace
 # (Motorcycle 512x288, 40 프레임, GF16, TDMP/MCTF 끔) 와 프레임마다 대조.
 run_unit_test "$ROOT/tests/unit/me-odyssey-gf-structure.cpp" "$ROOT/src/me/OdysseyGfStructure.cpp"
+
+# 루마 필터 체인 (Convolution filter pane 의 cascade) 과 Y4M 쓰기. OpenCV 가 있으면 전 stage 와
+# GM 보상(RANSAC)까지, 없으면 Custom 3x3 만 검사한다. 쓴 Y4M 은 YuvLumaReader 로 다시 읽어 맞춘다.
+run_unit_test "$ROOT/tests/unit/filter-chain.cpp" \
+              "$ROOT/src/filter/FilterChain.cpp" "$ROOT/src/filter/Y4mWriter.cpp" \
+              "$ROOT/src/me/YuvLumaReader.cpp" "$ROOT/src/me/MePlane.cpp" $OPENCV_UNIT
 
 # BD-rate 수식. 균일 배율 곡선의 정답이 (k-1)*100 이라는 성질로 전체 파이프라인을 검증한다.
 run_unit_test "$ROOT/tests/unit/bdrate-math.cpp" "$ROOT/src/bdrate/BdRateMath.cpp"
@@ -399,6 +414,7 @@ if [[ -s "$RAWYUV" ]]; then
     run_test "$ROOT/tests/regression/44-split-view-state-restored.cpp" "$RAWYUV"
     # ME 패널과 그것이 구동하는 raw YUV 아이템 (통계 컨테이너, 임의 프레임 읽기, 백그라운드 실행).
     run_test_bda "$ROOT/tests/regression/24-me-panel.cpp"                   "$RAWYUV"
+    run_test "$ROOT/tests/regression/47-filter-chain-and-me-input.cpp"     "$RAWYUV"
 else
     echo "  SKIP  12-raw-yuv-pixel-analysis (raw YUV 생성 실패)"
     ((skip_count++))

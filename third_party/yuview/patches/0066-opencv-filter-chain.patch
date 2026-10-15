@@ -1,0 +1,873 @@
+diff --git a/YUViewLib/YUViewLib.pro b/YUViewLib/YUViewLib.pro
+index a84a09f0..3b361e77 100644
+--- a/YUViewLib/YUViewLib.pro
++++ b/YUViewLib/YUViewLib.pro
+@@ -24,6 +24,7 @@ INCLUDEPATH += src/
+ #   src/bitstream/    Qt-free AV1 bitstream reads, unit tested on its own
+ #   src/yt/           Qt-free YouTube link list parsing, unit tested on its own
+ #   src/diff/         Qt-free syntax comparison for Find diff, unit tested on its own
++#   src/filter/       Qt-free luma filter chain (OpenCV) and Y4M writer, unit tested on its own
+ #   src/integration/  the only part of our tree allowed to know about upstream types
+ #
+ # $$PWD is .../third_party/yuview/upstream/YUViewLib, so four levels up is the repository root.
+@@ -36,6 +37,7 @@ SOURCES += $$files($$BDA_ROOT/src/container/*.cpp, true)
+ SOURCES += $$files($$BDA_ROOT/src/bitstream/*.cpp, true)
+ SOURCES += $$files($$BDA_ROOT/src/yt/*.cpp, true)
+ SOURCES += $$files($$BDA_ROOT/src/diff/*.cpp, true)
++SOURCES += $$files($$BDA_ROOT/src/filter/*.cpp, true)
+ SOURCES += $$files($$BDA_ROOT/src/integration/*.cpp, true)
+ HEADERS += $$files($$BDA_ROOT/src/me/*.h, true)
+ HEADERS += $$files($$BDA_ROOT/src/bdrate/*.h, true)
+@@ -44,6 +46,7 @@ HEADERS += $$files($$BDA_ROOT/src/container/*.h, true)
+ HEADERS += $$files($$BDA_ROOT/src/bitstream/*.h, true)
+ HEADERS += $$files($$BDA_ROOT/src/yt/*.h, true)
+ HEADERS += $$files($$BDA_ROOT/src/diff/*.h, true)
++HEADERS += $$files($$BDA_ROOT/src/filter/*.h, true)
+ HEADERS += $$files($$BDA_ROOT/src/integration/*.h, true)
+ 
+ # Optional static OpenCV (core, imgproc, features2d, video, flann, calib3d) from
+diff --git a/YUViewLib/src/playlistitem/playlistItem.h b/YUViewLib/src/playlistitem/playlistItem.h
+index 5cf7c5a7..77869f16 100644
+--- a/YUViewLib/src/playlistitem/playlistItem.h
++++ b/YUViewLib/src/playlistitem/playlistItem.h
+@@ -262,6 +262,15 @@ public:
+    */
+   virtual QByteArray readRawFrame(int) { return {}; }
+ 
++  /* readRawFrame() with the item's luma filter chain (the Convolution filter pane) applied, for the
++   * filtered Y4M export. Items without one return readRawFrame() unchanged.
++   */
++  virtual QByteArray readFilteredRawFrame(int frameIdx) { return this->readRawFrame(frameIdx); }
++  /* What motion estimation reads: readFilteredRawFrame() while the pane's "Use as ME input" is on,
++   * readRawFrame() otherwise.
++   */
++  virtual QByteArray readMeFrame(int frameIdx) { return this->readRawFrame(frameIdx); }
++
+   //!< The format and size readRawFrame() delivers. Meaningless unless supportsMotionEstimation().
+   virtual video::yuv::PixelFormatYUV getRawPixelFormat() const { return {}; }
+   virtual Size                       getRawFrameSize() const { return {}; }
+diff --git a/YUViewLib/src/playlistitem/playlistItemWithVideo.cpp b/YUViewLib/src/playlistitem/playlistItemWithVideo.cpp
+index 67bb6b08..2815a629 100644
+--- a/YUViewLib/src/playlistitem/playlistItemWithVideo.cpp
++++ b/YUViewLib/src/playlistitem/playlistItemWithVideo.cpp
+@@ -580,6 +580,29 @@ bool playlistItemWithVideo::setOriginalYUVSource(const QString &filePath, QStrin
+   return true;
+ }
+ 
++QByteArray playlistItemWithVideo::readFilteredRawFrame(int frameIdx)
++{
++  auto raw = this->readRawFrame(frameIdx);
++  if (raw.isEmpty() || this->rawFormat != video::RawFormat::YUV)
++    return raw;
++  const auto filter = this->getYUVVideo()->getConvolutionFilter();
++  if (filter.isNoOp())
++    return raw;
++  // The previous frame comes from the same source as this one, unfiltered; the chain runs it
++  // through the stages in front of a GM compensation stage itself.
++  filter.applyToLuma(raw, this->getRawPixelFormat(), this->getRawFrameSize(), [this, frameIdx]() {
++    return frameIdx > 0 ? this->readRawFrame(frameIdx - 1) : QByteArray();
++  });
++  return raw;
++}
++
++QByteArray playlistItemWithVideo::readMeFrame(int frameIdx)
++{
++  if (this->rawFormat == video::RawFormat::YUV && this->getYUVVideo()->filterIsMeInput())
++    return this->readFilteredRawFrame(frameIdx);
++  return this->readRawFrame(frameIdx);
++}
++
+ QByteArray playlistItemWithVideo::readOriginalYUVFrame(int frameIdx)
+ {
+   if (this->originalYUVPath.isEmpty() || frameIdx < 0 || !this->originalYUVFile.isOk() ||
+diff --git a/YUViewLib/src/playlistitem/playlistItemWithVideo.h b/YUViewLib/src/playlistitem/playlistItemWithVideo.h
+index f02b880f..8346f4d1 100644
+--- a/YUViewLib/src/playlistitem/playlistItemWithVideo.h
++++ b/YUViewLib/src/playlistitem/playlistItemWithVideo.h
+@@ -94,6 +94,8 @@ public:
+   {
+     return this->getYUVVideo() ? this->getYUVVideo()->getFrameSize() : Size();
+   }
++  QByteArray readFilteredRawFrame(int frameIdx) override;
++  QByteArray readMeFrame(int frameIdx) override;
+   bool          setDisplaySource(DisplaySource source) override;
+   DisplaySource getDisplaySource() const override { return this->displaySource; }
+   DataDump getItemDataDump(const QPoint &pixelPos, int frameIdx, const stats::BlockInfo &) override;
+diff --git a/YUViewLib/src/ui/Mainwindow.cpp b/YUViewLib/src/ui/Mainwindow.cpp
+index 29c6b3ed..bcb7b7df 100644
+--- a/YUViewLib/src/ui/Mainwindow.cpp
++++ b/YUViewLib/src/ui/Mainwindow.cpp
+@@ -34,6 +34,7 @@
+ #include <QtConcurrent>
+ 
+ #include <integration/BdaAbout.h>
++#include <integration/FilteredY4mExport.h>
+ #include <integration/MeFrameSource.h>
+ #include <integration/MeStatisticsAdapter.h>
+ #include <integration/MotionEstimationWidget.h>
+@@ -715,6 +716,9 @@ void MainWindow::createMenusAndActions()
+   }
+   fileMenu->addSeparator();
+   addActionToMenu(fileMenu, "&Save Screenshot...", this, &MainWindow::saveScreenshot);
++  connect(fileMenu->addAction(tr("Export &Filtered Y4M...")), &QAction::triggered, this, [this]() {
++    bda::integration::exportFilteredY4m(ui.playlistTreeWidget->getSelectedItems()[0], this);
++  });
+   fileMenu->addSeparator();
+   addActionToMenu(fileMenu, "&Settings...", this, &MainWindow::showSettingsWindow);
+   fileMenu->addSeparator();
+@@ -1075,7 +1079,7 @@ void MainWindow::compareBlockAt(playlistItem *item, QPoint pixelPos, int frameId
+     return;
+   }
+ 
+-  const auto source = item->readRawFrame(frameIdx);
++  const auto source = item->readMeFrame(frameIdx);
+   QList<MeCompareEntry> entries;
+ 
+   // Block ME: every enabled size whose block covers the pixel, smallest first.
+@@ -1094,7 +1098,7 @@ void MainWindow::compareBlockAt(playlistItem *item, QPoint pixelPos, int frameId
+     std::sort(hits.begin(), hits.end(), [](const auto *a, const auto *b) {
+       return a->block.size < b->block.size;
+     });
+-    const auto reference = item->readRawFrame(me.refFrameIdx);
++    const auto reference = item->readMeFrame(me.refFrameIdx);
+     for (const auto *b : hits)
+     {
+       const int      n = bda::me::blockSizeInPixels(b->block.size);
+@@ -1143,7 +1147,8 @@ void MainWindow::compareBlockAt(playlistItem *item, QPoint pixelPos, int frameId
+         e.dx        = w.acceptX ? toPel(w.dxQpel) : 0;
+         e.dy        = w.acceptY ? toPel(w.dyQpel) : 0;
+         e.rect      = {x, y, ww, wh};
+-        e.source    = source;
++        // The Global motion window reads the file, so its windows compare unfiltered frames.
++        e.source    = item->readRawFrame(frameIdx);
+         e.reference = item->readRawFrame(frameIdx - 1);
+         e.detail =
+             QString("Window at pixel (x, y) = (%1, %2), %3x%4. Frame %5 against the previous "
+@@ -1350,8 +1355,8 @@ void MainWindow::restartMotionEstimation()
+   const int refIdx = bda::integration::meReferenceFrameIdx(this->meFrameIdx, params.frameInterval);
+ 
+   bda::integration::MeRunRequest request;
+-  request.currentFrame   = item->readRawFrame(this->meFrameIdx);
+-  request.referenceFrame = item->readRawFrame(refIdx);
++  request.currentFrame   = item->readMeFrame(this->meFrameIdx);
++  request.referenceFrame = item->readMeFrame(refIdx);
+   request.format         = item->getRawPixelFormat();
+   request.frameSize      = item->getRawFrameSize();
+   request.frameIdx       = this->meFrameIdx;
+diff --git a/YUViewLib/src/video/videoHandler.h b/YUViewLib/src/video/videoHandler.h
+index 18fccf6b..da7b3ebc 100644
+--- a/YUViewLib/src/video/videoHandler.h
++++ b/YUViewLib/src/video/videoHandler.h
+@@ -103,7 +103,7 @@ public:
+ 
+   // If reloading a raw file (because it changed), this function will clear all buffers (also the
+   // cache). With the next drawFrame(), the data will be reloaded from file.
+-  void invalidateAllBuffers();
++  virtual void invalidateAllBuffers();
+ 
+   // The user changed the frame. Do we need to load something before we can draw it? Do we need to
+   // update the double buffer? loadRawValues: Do we also need to update the buffer of the raw values
+diff --git a/YUViewLib/src/video/yuv/ConvolutionFilter.cpp b/YUViewLib/src/video/yuv/ConvolutionFilter.cpp
+index a52fa8f0..a911a3df 100644
+--- a/YUViewLib/src/video/yuv/ConvolutionFilter.cpp
++++ b/YUViewLib/src/video/yuv/ConvolutionFilter.cpp
+@@ -53,6 +53,8 @@ bool ConvolutionFilter::isNoOp() const
+ {
+   if (!this->enabled)
+     return true;
++  if (this->usesChain())
++    return this->chain.isNoOp();
+   // The identity kernel, allowing for the fact that the values come from text input.
+   for (size_t i = 0; i < this->kernel.size(); i++)
+   {
+@@ -69,6 +71,8 @@ QByteArray ConvolutionFilter::key() const
+     // Everything that changes nothing must share one key, so toggling an identity kernel on and off
+     // does not throw away the cached statistics.
+     return QByteArrayLiteral("conv:none");
++  if (this->usesChain())
++    return QByteArrayLiteral("conv:") + QByteArray::fromStdString(this->chain.key());
+   QByteArray key = QByteArrayLiteral("conv:");
+   for (const auto coefficient : this->kernel)
+     key += QByteArray::number(coefficient, 'g', 17) + ',';
+@@ -78,6 +82,14 @@ QByteArray ConvolutionFilter::key() const
+ void ConvolutionFilter::applyToLuma(QByteArray           &rawYUV,
+                                     const PixelFormatYUV &format,
+                                     const Size           &frameSize) const
++{
++  this->applyToLuma(rawYUV, format, frameSize, {});
++}
++
++void ConvolutionFilter::applyToLuma(QByteArray             &rawYUV,
++                                    const PixelFormatYUV   &format,
++                                    const Size             &frameSize,
++                                    const PreviousRawFrame &previousRaw) const
+ {
+   if (this->isNoOp())
+     return;
+@@ -103,6 +115,13 @@ void ConvolutionFilter::applyToLuma(QByteArray           &rawYUV,
+ 
+   auto *plane = reinterpret_cast<uint8_t *>(rawYUV.data());
+ 
++  const auto readSampleFrom = [&](const uint8_t *from, unsigned x, unsigned y) -> unsigned {
++    const int64_t index = int64_t(y) * width + x;
++    if (!twoBytes)
++      return from[index];
++    const auto *p = from + index * 2;
++    return bigEndian ? (unsigned(p[0]) << 8 | p[1]) : (unsigned(p[1]) << 8 | p[0]);
++  };
+   const auto readSample = [&](unsigned x, unsigned y) -> unsigned {
+     const int64_t index = int64_t(y) * width + x;
+     if (!twoBytes)
+@@ -130,6 +149,37 @@ void ConvolutionFilter::applyToLuma(QByteArray           &rawYUV,
+     }
+   };
+ 
++  if (this->usesChain())
++  {
++    const auto toLumaPlane = [&](const uint8_t *from) {
++      bda::filter::LumaPlane luma;
++      luma.width    = int(width);
++      luma.height   = int(height);
++      luma.bitDepth = int(bitDepth);
++      luma.samples.resize(static_cast<size_t>(nrSamples));
++      for (unsigned y = 0; y < height; y++)
++        for (unsigned x = 0; x < width; x++)
++          luma.samples[size_t(y) * width + x] = uint16_t(readSampleFrom(from, x, y));
++      return luma;
++    };
++    auto luma = toLumaPlane(plane);
++    // Only asked for when the chain reaches a GM compensation stage.
++    const auto previous = [&](bda::filter::LumaPlane &out) {
++      if (!previousRaw)
++        return false;
++      const auto raw = previousRaw();
++      if (raw.size() < lumaBytes)
++        return false;
++      out = toLumaPlane(reinterpret_cast<const uint8_t *>(raw.constData()));
++      return true;
++    };
++    this->chain.apply(luma, previous);
++    for (unsigned y = 0; y < height; y++)
++      for (unsigned x = 0; x < width; x++)
++        writeSample(x, y, luma.samples[size_t(y) * width + x]);
++    return;
++  }
++
+   // A convolution reads neighbors, so it cannot run in place. One copy of the luma plane is enough.
+   std::vector<uint16_t> source(static_cast<size_t>(nrSamples));
+   for (unsigned y = 0; y < height; y++)
+diff --git a/YUViewLib/src/video/yuv/ConvolutionFilter.h b/YUViewLib/src/video/yuv/ConvolutionFilter.h
+index 56df0a26..89269f40 100644
+--- a/YUViewLib/src/video/yuv/ConvolutionFilter.h
++++ b/YUViewLib/src/video/yuv/ConvolutionFilter.h
+@@ -35,14 +35,18 @@
+ #include <QByteArray>
+ 
+ #include <array>
++#include <functional>
+ 
+ #include <common/Typedef.h>
+ #include <video/yuv/PixelFormatYUV.h>
+ 
++#include "filter/FilterChain.h"
++
+ namespace video::yuv
+ {
+ 
+-/* A 3x3 convolution applied to the luma plane.
++/* A 3x3 convolution, or a cascade of OpenCV filters (bda::filter::FilterChain), applied to the luma
++ * plane.
+  *
+  * A plain value type on purpose: the caching threads snapshot it (like they already do for the pixel
+  * format and the frame size) instead of reading fields that the GUI thread may be editing.
+@@ -55,6 +59,10 @@ struct ConvolutionFilter
+   //!< Row major, kernel[4] is the center. The default is the identity.
+   std::array<double, 9> kernel{{0, 0, 0, 0, 1, 0, 0, 0, 0}};
+   bool                  enabled{false};
++  /* The properties pane builds this. When it has stages it replaces the kernel above, which stays
++   * for callers that set a kernel directly.
++   */
++  bda::filter::FilterChain chain;
+ 
+   //!< Sum of the coefficients. The result is divided by it unless it is zero (edge detectors).
+   double coefficientSum() const;
+@@ -73,9 +81,23 @@ struct ConvolutionFilter
+    */
+   void applyToLuma(QByteArray &rawYUV, const PixelFormatYUV &format, const Size &frameSize) const;
+ 
++  /* The same, for a chain with a GM compensation stage: previousRaw returns the previous frame's
++   * unfiltered raw data in the same format (empty when there is none).
++   */
++  using PreviousRawFrame = std::function<QByteArray()>;
++  void applyToLuma(QByteArray             &rawYUV,
++                   const PixelFormatYUV   &format,
++                   const Size             &frameSize,
++                   const PreviousRawFrame &previousRaw) const;
++
++  //!< True when the chain has a GM compensation stage, which needs the previous frame.
++  bool needsPreviousFrame() const { return this->usesChain() && this->chain.needsPreviousFrame(); }
++  bool usesChain() const { return !this->chain.stages.empty(); }
++
+   bool operator==(const ConvolutionFilter &other) const
+   {
+-    return this->enabled == other.enabled && this->kernel == other.kernel;
++    return this->enabled == other.enabled && this->kernel == other.kernel &&
++           this->chain == other.chain;
+   }
+   bool operator!=(const ConvolutionFilter &other) const { return !(*this == other); }
+ };
+diff --git a/YUViewLib/src/video/yuv/videoHandlerYUV.cpp b/YUViewLib/src/video/yuv/videoHandlerYUV.cpp
+index 04d95c8c..fd84c126 100644
+--- a/YUViewLib/src/video/yuv/videoHandlerYUV.cpp
++++ b/YUViewLib/src/video/yuv/videoHandlerYUV.cpp
+@@ -42,7 +42,12 @@
+ #include <vector>
+ 
+ #include <QDir>
++#include <QDoubleSpinBox>
++#include <QFormLayout>
++#include <QGridLayout>
++#include <QHBoxLayout>
+ #include <QPainter>
++#include <QSignalBlocker>
+ #include <QTextStream>
+ 
+ #include <common/Formatting.h>
+@@ -3223,21 +3228,31 @@ void videoHandlerYUV::loadFrameForCaching(int frameIndex, QImage &frameToCache)
+   const auto yuvFormat          = this->srcPixelFormat;
+   const auto curFrameSize       = this->frameSize;
+   const auto conversionSettings = this->conversionSettings;
+-  const auto filter             = this->convolutionFilter;
++  const auto filter             = this->getConvolutionFilter();
+ 
+   requestDataMutex.lock();
+   emit       signalRequestRawData(frameIndex, true);
+   QByteArray tmpBufferRawYUVDataCaching = rawData;
++  // Taken now: fetching the previous frame below moves rawData_frameIndex on.
++  const bool loaded = frameIndex == rawData_frameIndex;
++  QByteArray previousRaw;
++  if (loaded && filter.needsPreviousFrame())
++  {
++    this->rememberRawForGm(frameIndex, tmpBufferRawYUVDataCaching);
++    if (frameIndex > 0)
++      previousRaw = this->rawForGm(frameIndex - 1, true);
++  }
+   requestDataMutex.unlock();
+ 
+-  if (frameIndex != rawData_frameIndex)
++  if (!loaded)
+   {
+     // Loading failed
+     DEBUG_YUV("videoHandlerYUV::loadFrameForCaching Loading failed");
+     return;
+   }
+ 
+-  filter.applyToLuma(tmpBufferRawYUVDataCaching, yuvFormat, curFrameSize);
++  filter.applyToLuma(
++      tmpBufferRawYUVDataCaching, yuvFormat, curFrameSize, [&previousRaw]() { return previousRaw; });
+ 
+   // Convert YUV to image. This can then be cached.
+   convertYUVToImage(
+@@ -3270,8 +3285,18 @@ bool videoHandlerYUV::loadRawYUVData(int frameIndex)
+   currentFrameRawData_frameIndex = frameIndex;
+   // Filter here, where the samples enter the buffer, so it happens exactly once per loaded frame -
+   // the early return above means this function does not run again for a frame already in the buffer.
+-  this->convolutionFilter.applyToLuma(
+-      this->currentFrameRawData, this->srcPixelFormat, this->frameSize);
++  const auto filter = this->getConvolutionFilter();
++  QByteArray previousRaw;
++  if (filter.needsPreviousFrame())
++  {
++    this->rememberRawForGm(frameIndex, this->currentFrameRawData);
++    if (frameIndex > 0)
++      previousRaw = this->rawForGm(frameIndex - 1, false);
++  }
++  filter.applyToLuma(this->currentFrameRawData,
++                                      this->srcPixelFormat,
++                                      this->frameSize,
++                                      [&previousRaw]() { return previousRaw; });
+   requestDataMutex.unlock();
+ 
+   DEBUG_YUV("videoHandlerYUV::loadRawYUVData " << frameIndex << " Done");
+@@ -3958,69 +3983,327 @@ QWidget *videoHandlerYUV::createConvolutionFilterControls()
+ 
+   this->convEnableCheckBox = new QCheckBox("Enable");
+   this->convEnableCheckBox->setToolTip(
+-      "Apply the 3x3 kernel below to the luma plane. The result is divided by the sum of the "
+-      "coefficients (not divided when the sum is zero, as for edge detectors). Chroma is not "
+-      "touched. Everything downstream sees the filtered picture: the displayed image, the pixel "
+-      "values and the block statistics.");
++      "Run the filter stages below over the luma plane, top to bottom: each stage's output is the "
++      "next stage's input. Chroma is not touched. Everything downstream sees the filtered picture: "
++      "the displayed image, the pixel values and the block statistics.");
+   this->convEnableCheckBox->setChecked(this->convolutionFilter.enabled);
+   layout->addWidget(this->convEnableCheckBox);
+ 
+-  this->convKernelTable = new QTableWidget(3, 3);
+-  this->convKernelTable->horizontalHeader()->hide();
+-  this->convKernelTable->verticalHeader()->hide();
+-  this->convKernelTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+-  this->convKernelTable->verticalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+-  this->convKernelTable->setSelectionMode(QAbstractItemView::SingleSelection);
+-  // Three rows of text plus the frame. Without this the table claims far more height than it needs.
+-  this->convKernelTable->setFixedHeight(3 * 24 + 4);
+-  for (int row = 0; row < 3; row++)
+-    for (int column = 0; column < 3; column++)
+-    {
+-      auto *cell = new QTableWidgetItem(
+-          QString::number(this->convolutionFilter.kernel[size_t(row * 3 + column)]));
+-      cell->setTextAlignment(Qt::AlignCenter);
+-      this->convKernelTable->setItem(row, column, cell);
+-    }
+-  layout->addWidget(this->convKernelTable);
++  // The filter list, with the Add button right next to it.
++  auto *addRow         = new QHBoxLayout;
++  this->convStageCombo = new QComboBox;
++  QString lastGroup;
++  for (const auto &info : bda::filter::stageCatalog())
++  {
++    const auto groupName = QString::fromStdString(info.group);
++    if (groupName != lastGroup && this->convStageCombo->count() > 0)
++      this->convStageCombo->insertSeparator(this->convStageCombo->count());
++    lastGroup = groupName;
++    this->convStageCombo->addItem(
++        QString("%1: %2").arg(groupName, QString::fromStdString(info.name)), int(info.type));
++    this->convStageCombo->setItemData(this->convStageCombo->count() - 1,
++                                      QString::fromStdString(info.tooltip),
++                                      Qt::ToolTipRole);
++  }
++  this->convAddButton = new QPushButton("Add");
++  this->convAddButton->setToolTip("Append the selected filter to the end of the cascade.");
++  addRow->addWidget(this->convStageCombo, 1);
++  addRow->addWidget(this->convAddButton);
++  layout->addLayout(addRow);
++
++  this->convStageList = new QListWidget;
++  this->convStageList->setToolTip("The cascade, run top to bottom. Untick a stage to bypass it.");
++  this->convStageList->setFixedHeight(5 * 20 + 4);
++  layout->addWidget(this->convStageList);
++
++  auto *stageButtons     = new QHBoxLayout;
++  this->convRemoveButton = new QPushButton("Remove");
++  this->convUpButton     = new QPushButton("Up");
++  this->convDownButton   = new QPushButton("Down");
++  stageButtons->addWidget(this->convRemoveButton);
++  stageButtons->addWidget(this->convUpButton);
++  stageButtons->addWidget(this->convDownButton);
++  layout->addLayout(stageButtons);
++
++  // Parameters of the selected stage, rebuilt whenever the selection changes.
++  this->convParamBox = new QWidget;
++  layout->addWidget(this->convParamBox);
++
++  this->convNoteLabel = new QLabel;
++  this->convNoteLabel->setWordWrap(true);
++#ifndef BDA_HAVE_OPENCV
++  this->convNoteLabel->setText(
++      "Built without OpenCV: only Custom 3x3 is offered (see scripts/setup-opencv.sh).");
++#endif
++  layout->addWidget(this->convNoteLabel);
++
++  this->convMeCheckBox = new QCheckBox("Use as ME input");
++  this->convMeCheckBox->setToolTip(
++      "Motion estimation reads the filtered frames instead of the unfiltered source. A GM "
++      "compensation stage aligns each frame to the previous one first. Off, the estimate describes "
++      "the source. The Global motion window reads files: use File > Export filtered Y4M for it.");
++  this->convMeCheckBox->setChecked(this->filterMeInput);
++  layout->addWidget(this->convMeCheckBox);
++
++  this->rebuildConvStageList();
+ 
+   connect(this->convEnableCheckBox,
+           &QCheckBox::toggled,
+           this,
+           &videoHandlerYUV::slotConvolutionFilterChanged);
+-  connect(this->convKernelTable,
+-          &QTableWidget::itemChanged,
+-          this,
+-          &videoHandlerYUV::slotConvolutionFilterChanged);
++  connect(this->convMeCheckBox, &QCheckBox::toggled, this, &videoHandlerYUV::setFilterIsMeInput);
++
++  connect(this->convAddButton, &QPushButton::clicked, this, [this]() {
++    const auto type  = bda::filter::StageType(this->convStageCombo->currentData().toInt());
++    auto       chain = this->convolutionFilter.chain;
++    const bool hasGm = std::any_of(chain.stages.begin(), chain.stages.end(), [](const auto &s) {
++      return s.type == bda::filter::StageType::GmCompensation;
++    });
++    if (type == bda::filter::StageType::GmCompensation && hasGm)
++    {
++      this->convNoteLabel->setText("A cascade holds one GM compensation stage.");
++      return;
++    }
++    this->convNoteLabel->clear();
++    chain.stages.push_back(bda::filter::FilterStage::withDefaults(type));
++    // Adding a stage means wanting to see it: switch the filter on with it, in one reload.
++    auto filter    = this->convolutionFilter;
++    filter.chain   = chain;
++    filter.enabled = true;
++    {
++      const QSignalBlocker block(this->convEnableCheckBox);
++      this->convEnableCheckBox->setChecked(true);
++    }
++    this->setConvolutionFilter(filter);
++    this->rebuildConvStageList();
++    this->convStageList->setCurrentRow(int(chain.stages.size()) - 1);
++  });
++  connect(this->convRemoveButton, &QPushButton::clicked, this, [this]() {
++    const int row   = this->convStageList->currentRow();
++    auto      chain = this->convolutionFilter.chain;
++    if (row < 0 || row >= int(chain.stages.size()))
++      return;
++    chain.stages.erase(chain.stages.begin() + row);
++    this->convNoteLabel->clear();
++    this->setConvolutionChain(chain);
++    this->rebuildConvStageList();
++    this->convStageList->setCurrentRow(std::min(row, int(chain.stages.size()) - 1));
++  });
++  const auto move = [this](int step) {
++    const int row   = this->convStageList->currentRow();
++    auto      chain = this->convolutionFilter.chain;
++    const int to    = row + step;
++    if (row < 0 || to < 0 || to >= int(chain.stages.size()))
++      return;
++    std::swap(chain.stages[size_t(row)], chain.stages[size_t(to)]);
++    this->setConvolutionChain(chain);
++    this->rebuildConvStageList();
++    this->convStageList->setCurrentRow(to);
++  };
++  connect(this->convUpButton, &QPushButton::clicked, this, [move]() { move(-1); });
++  connect(this->convDownButton, &QPushButton::clicked, this, [move]() { move(1); });
++  connect(this->convStageList, &QListWidget::itemChanged, this, [this](QListWidgetItem *item) {
++    const int row   = this->convStageList->row(item);
++    auto      chain = this->convolutionFilter.chain;
++    if (row < 0 || row >= int(chain.stages.size()))
++      return;
++    chain.stages[size_t(row)].enabled = item->checkState() == Qt::Checked;
++    this->setConvolutionChain(chain);
++  });
++  connect(this->convStageList, &QListWidget::currentRowChanged, this, [this]() {
++    this->rebuildConvParamBox();
++  });
+ 
+   return group;
+ }
+ 
+-void videoHandlerYUV::slotConvolutionFilterChanged()
++void videoHandlerYUV::rebuildConvStageList()
+ {
+-  if (!this->convKernelTable || !this->convEnableCheckBox)
++  if (!this->convStageList)
+     return;
++  const auto &stages = this->convolutionFilter.chain.stages;
++  {
++    const QSignalBlocker block(this->convStageList);
++    const int            row = this->convStageList->currentRow();
++    this->convStageList->clear();
++    for (size_t i = 0; i < stages.size(); i++)
++    {
++      const auto *info = bda::filter::stageInfo(stages[i].type);
++      // A stage this build does not offer (a chain from an OpenCV build in one without) is kept but
++      // passes the picture through.
++      const auto name = info ? QString::fromStdString(info->name) : QString("(not available)");
++      auto      *item = new QListWidgetItem(QString("%1. %2").arg(i + 1).arg(name));
++      item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
++      item->setCheckState(stages[i].enabled ? Qt::Checked : Qt::Unchecked);
++      if (info)
++        item->setToolTip(QString::fromStdString(info->tooltip));
++      this->convStageList->addItem(item);
++    }
++    this->convStageList->setCurrentRow(std::min(row, int(stages.size()) - 1));
++  }
++  this->convRemoveButton->setEnabled(!stages.empty());
++  this->convUpButton->setEnabled(stages.size() > 1);
++  this->convDownButton->setEnabled(stages.size() > 1);
++  this->rebuildConvParamBox();
++}
+ 
+-  ConvolutionFilter filter;
+-  filter.enabled = this->convEnableCheckBox->isChecked();
+-  for (int row = 0; row < 3; row++)
+-    for (int column = 0; column < 3; column++)
++void videoHandlerYUV::rebuildConvParamBox()
++{
++  if (!this->convParamBox)
++    return;
++  qDeleteAll(this->convParamBox->findChildren<QWidget *>(QString(), Qt::FindDirectChildrenOnly));
++  delete this->convParamBox->layout();
++
++  const int   row    = this->convStageList->currentRow();
++  const auto &stages = this->convolutionFilter.chain.stages;
++  if (row < 0 || row >= int(stages.size()))
++    return;
++  const auto *info = bda::filter::stageInfo(stages[size_t(row)].type);
++  if (!info || stages[size_t(row)].params.size() != info->params.size())
++    return;
++
++  // Every edit writes one parameter of this stage. The row is captured: a selection change rebuilds
++  // these widgets, so they never outlive the stage they were made for.
++  const auto setParam = [this, row](size_t index, double value) {
++    auto chain = this->convolutionFilter.chain;
++    if (row >= int(chain.stages.size()) || index >= chain.stages[size_t(row)].params.size())
++      return;
++    chain.stages[size_t(row)].params[index] = value;
++    this->setConvolutionChain(chain);
++  };
++  const auto spinBox = [&](size_t index) {
++    const auto &p    = info->params[index];
++    auto       *spin = new QDoubleSpinBox;
++    spin->setDecimals(p.integer ? 0 : (p.step < 0.1 ? 2 : (p.step < 1 ? 1 : 3)));
++    spin->setRange(p.min, p.max);
++    spin->setSingleStep(p.step);
++    spin->setValue(stages[size_t(row)].params[index]);
++    // Reload once the value is entered, not on every keystroke - each reload refilters the frame.
++    spin->setKeyboardTracking(false);
++    spin->setToolTip(QString::fromStdString(p.tooltip));
++    connect(spin, &QDoubleSpinBox::valueChanged, this, [setParam, index](double v) {
++      setParam(index, v);
++    });
++    return spin;
++  };
++
++  if (info->type == bda::filter::StageType::Custom3x3)
++  {
++    auto *grid = new QGridLayout(this->convParamBox);
++    grid->setContentsMargins(0, 0, 0, 0);
++    for (size_t i = 0; i < 9; i++)
++      grid->addWidget(spinBox(i), int(i / 3), int(i % 3));
++    return;
++  }
++
++  auto *form = new QFormLayout(this->convParamBox);
++  form->setContentsMargins(0, 0, 0, 0);
++  for (size_t i = 0; i < info->params.size(); i++)
++  {
++    const auto &p     = info->params[i];
++    const auto  label = QString::fromStdString(p.name);
++    if (p.choices.empty())
+     {
+-      const auto *cell = this->convKernelTable->item(row, column);
+-      // Unparsable text counts as 0 rather than rejecting the edit, so a half typed "-" or "." does
+-      // not fight the user while they are typing.
+-      filter.kernel[size_t(row * 3 + column)] = cell ? cell->text().toDouble() : 0.0;
++      form->addRow(label, spinBox(i));
++      continue;
+     }
++    auto *combo = new QComboBox;
++    for (const auto &c : p.choices)
++      combo->addItem(QString::fromStdString(c));
++    combo->setCurrentIndex(int(stages[size_t(row)].params[i]));
++    connect(combo, &QComboBox::currentIndexChanged, this, [setParam, i](int index) {
++      setParam(i, double(index));
++    });
++    form->addRow(label, combo);
++  }
++}
++
++void videoHandlerYUV::slotConvolutionFilterChanged()
++{
++  if (!this->convEnableCheckBox)
++    return;
+ 
++  auto filter    = this->convolutionFilter;
++  filter.enabled = this->convEnableCheckBox->isChecked();
++  this->setConvolutionFilter(filter);
++}
++
++void videoHandlerYUV::setConvolutionChain(const bda::filter::FilterChain &chain)
++{
++  auto filter  = this->convolutionFilter;
++  filter.chain = chain;
+   this->setConvolutionFilter(filter);
+ }
+ 
++void videoHandlerYUV::setFilterIsMeInput(bool on)
++{
++  if (on == this->filterMeInput)
++    return;
++  this->filterMeInput = on;
++  if (this->convMeCheckBox && this->convMeCheckBox->isChecked() != on)
++  {
++    const QSignalBlocker block(this->convMeCheckBox);
++    this->convMeCheckBox->setChecked(on);
++  }
++  // Nothing on screen changes, but the item reports a change, and that restarts motion estimation.
++  emit signalHandlerChanged(false, RECACHE_NONE);
++}
++
++void videoHandlerYUV::invalidateAllBuffers()
++{
++  videoHandler::invalidateAllBuffers();
++  this->gmRawGeneration++;
++}
++
++void videoHandlerYUV::dropStaleGmRaw()
++{
++  const auto generation = this->gmRawGeneration.load();
++  if (generation != this->gmRawCacheGeneration)
++  {
++    this->gmRawCache.clear();
++    this->gmRawCacheGeneration = generation;
++  }
++}
++
++void videoHandlerYUV::rememberRawForGm(int frameIndex, const QByteArray &raw)
++{
++  this->dropStaleGmRaw();
++  // A format or size change makes the kept frames unusable; drop them rather than mix sizes.
++  if (!this->gmRawCache.empty() && this->gmRawCache.front().second.size() != raw.size())
++    this->gmRawCache.clear();
++  for (const auto &entry : this->gmRawCache)
++    if (entry.first == frameIndex)
++      return;
++  this->gmRawCache.emplace_back(frameIndex, raw);
++  // A few frames, for the caching threads, which do not load strictly in order.
++  while (this->gmRawCache.size() > 4)
++    this->gmRawCache.pop_front();
++}
++
++QByteArray videoHandlerYUV::rawForGm(int frameIndex, bool caching)
++{
++  this->dropStaleGmRaw();
++  for (const auto &entry : this->gmRawCache)
++    if (entry.first == frameIndex)
++      return entry.second;
++  emit signalRequestRawData(frameIndex, caching);
++  if (frameIndex != this->rawData_frameIndex || this->rawData.isEmpty())
++    return {};
++  const auto raw = this->rawData;
++  this->rememberRawForGm(frameIndex, raw);
++  return raw;
++}
++
+ void videoHandlerYUV::setConvolutionFilter(const ConvolutionFilter &filter)
+ {
+   if (filter == this->convolutionFilter)
+     return;
+   // Two filters that both do nothing produce the same samples, so there is nothing to redo.
+   const auto wasNoOp = this->convolutionFilter.isNoOp();
+-  this->convolutionFilter = filter;
++  {
++    QMutexLocker lock(&this->convolutionFilterMutex);
++    this->convolutionFilter = filter;
++  }
+   if (wasNoOp && filter.isNoOp())
+     return;
+ 
+diff --git a/YUViewLib/src/video/yuv/videoHandlerYUV.h b/YUViewLib/src/video/yuv/videoHandlerYUV.h
+index 4ce3785b..70e9fe3d 100644
+--- a/YUViewLib/src/video/yuv/videoHandlerYUV.h
++++ b/YUViewLib/src/video/yuv/videoHandlerYUV.h
+@@ -36,8 +36,12 @@
+ #include <optional>
+ #include <video/videoHandler.h>
+ #include <QCheckBox>
++#include <QComboBox>
+ #include <QGroupBox>
+ #include <QHeaderView>
++#include <QLabel>
++#include <QListWidget>
++#include <QPushButton>
+ #include <QTableWidget>
+ 
+ #include <video/yuv/ConvolutionFilter.h>
+@@ -45,6 +49,8 @@
+ 
+ #include "ui_videoHandlerYUV.h"
+ 
++#include <atomic>
++#include <deque>
+ #include <map>
+ 
+ namespace video::yuv
+@@ -205,17 +211,36 @@ public:
+    * QByteArray is copy-on-write, so the returned copy is cheap and keeps its data even when the
+    * handler moves on to the next frame - that is what makes it safe to hand to a worker thread.
+    */
+-  // ----- 3x3 convolution of the luma plane -----
++  // ----- luma filter: a 3x3 convolution or a cascade of OpenCV filters -----
+   /* Applied to the raw samples right after they are read, so everything downstream sees the filtered
+    * picture: the displayed image, the cached frames, the pixel values under the cursor and the per
+    * block statistics. That way what is measured is what is on screen.
+    */
+-  ConvolutionFilter getConvolutionFilter() const { return this->convolutionFilter; }
+-  //!< The "Convolution filter" group for the properties pane (3x3 coefficients plus Enable).
++  /* A copy, safe from any thread: the caching threads take one per frame while the pane may be
++   * replacing the filter, and the chain holds vectors, so the copy and the assignment are locked.
++   */
++  ConvolutionFilter getConvolutionFilter() const
++  {
++    QMutexLocker lock(&this->convolutionFilterMutex);
++    return this->convolutionFilter;
++  }
++  /* The "Convolution filter" group for the properties pane: Enable, a filter list with an Add
++   * button, the stages of the cascade with the parameters of the selected one, and "Use as ME input".
++   */
+   QWidget          *createConvolutionFilterControls();
+   void              setConvolutionFilter(const ConvolutionFilter &filter);
+   //!< Identifies the filter for the statistics cache. See ConvolutionFilter::key().
+-  QByteArray        convolutionFilterKey() const { return this->convolutionFilter.key(); }
++  QByteArray        convolutionFilterKey() const { return this->getConvolutionFilter().key(); }
++  /* True when motion estimation should read the filtered frames (playlistItem::readMeFrame). Off by
++   * default, so the estimate describes the source unless asked otherwise.
++   */
++  bool filterIsMeInput() const
++  {
++    return this->filterMeInput && !this->getConvolutionFilter().isNoOp();
++  }
++  void setFilterIsMeInput(bool on);
++
++  void invalidateAllBuffers() override;
+ 
+   QByteArray getCurrentRawYUVData(int &frameIndex) const
+   {
+@@ -271,10 +296,40 @@ private:
+   bool           diffReady{};
+   QByteArray     diffYUV;
+ 
++  //!< Written on the GUI thread only, under convolutionFilterMutex; read elsewhere by copy.
+   ConvolutionFilter convolutionFilter;
++  mutable QMutex    convolutionFilterMutex;
++  bool              filterMeInput{false};
+   // Owned by the properties widget, so plain pointers. Null until createVideoHandlerControls() ran.
+-  QTableWidget     *convKernelTable{};
+   QCheckBox        *convEnableCheckBox{};
++  QComboBox        *convStageCombo{};
++  QPushButton      *convAddButton{};
++  QListWidget      *convStageList{};
++  QPushButton      *convRemoveButton{};
++  QPushButton      *convUpButton{};
++  QPushButton      *convDownButton{};
++  QWidget          *convParamBox{};
++  QLabel           *convNoteLabel{};
++  QCheckBox        *convMeCheckBox{};
++  void              rebuildConvStageList();
++  void              rebuildConvParamBox();
++  void              setConvolutionChain(const bda::filter::FilterChain &chain);
++
++  /* Unfiltered raw frames kept for a GM compensation stage, which needs frame k-1 while frame k is
++   * filtered. Sequential playback then finds k-1 here instead of asking the item for it again - for
++   * a compressed stream that request would mean seeking the decoder backwards. Guarded by
++   * requestDataMutex, like rawData.
++   */
++  std::deque<std::pair<int, QByteArray>> gmRawCache;
++  /* Bumped by invalidateAllBuffers() (a reload of the source). Lock-free on purpose: that can run
++   * inside loadRawData while requestDataMutex is held, so it must not take the mutex itself. The
++   * cache compares it under the mutex and drops what it kept from before.
++   */
++  std::atomic<unsigned> gmRawGeneration{0};
++  unsigned              gmRawCacheGeneration{0};
++  void                  dropStaleGmRaw();
++  void       rememberRawForGm(int frameIndex, const QByteArray &raw);
++  QByteArray rawForGm(int frameIndex, bool caching);
+   PixelFormatYUV diffYUVFormat{};
+ 
+   static std::vector<PixelFormatYUV> formatPresetList;
+@@ -285,7 +340,7 @@ private slots:
+   void slotYUVControlChanged();
+   // The YUV format combo box was changed
+   void slotYUVFormatControlChanged(int idx);
+-  //!< A coefficient or the enable box changed: rebuild the filter and reload.
++  //!< The enable box changed: rebuild the filter and reload.
+   void slotConvolutionFilterChanged();
+ };
+ 
