@@ -1,17 +1,6 @@
-diff --git a/YUViewLib/src/parser/AVFormat/ParserAVFormat.cpp b/YUViewLib/src/parser/AVFormat/ParserAVFormat.cpp
-index e0f7e22e..47a18323 100644
 --- a/YUViewLib/src/parser/AVFormat/ParserAVFormat.cpp
 +++ b/YUViewLib/src/parser/AVFormat/ParserAVFormat.cpp
-@@ -383,6 +383,8 @@ bool ParserAVFormat::parseAVPacket(unsigned         packetID,
-   // Log all the packet info
-   itemTree->createChildItem("stream_index", packet.getStreamIndex());
-   itemTree->createChildItem("Global AVPacket Count", packetID);
-+  if (packet.getPacketType() == PacketType::VIDEO)
-+    itemTree->createChildItem("YUView frame index", streamPacketID);
-   itemTree->createChildItem("pts", formatTimestamp(packet.getPTS(), timeBase));
-   itemTree->createChildItem("dts", formatTimestamp(packet.getDTS(), timeBase));
-   itemTree->createChildItem("duration", formatTimestamp(packet.getDuration(), timeBase));
-@@ -436,9 +438,15 @@ bool ParserAVFormat::parseAVPacket(unsigned         packetID,
+@@ -438,9 +438,15 @@
            if (!obuTypeName.empty())
              unitNames[obuTypeName]++;
  
