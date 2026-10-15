@@ -354,7 +354,7 @@ SequenceGeneratorWindow::SequenceGeneratorWindow(QWidget *parent) : QDialog(pare
   // Motion
   auto *motionBox  = new QGroupBox("Motion", this);
   auto *motionForm = new QFormLayout(motionBox);
-  this->vx = spin(-512, 512, 0), this->vy = spin(-512, 512, 0);
+  this->vx = dspin(-512, 512, 0, 0.25, 3), this->vy = dspin(-512, 512, 0, 0.25, 3);
   this->startFrame = spin(0, 10000, 0), this->endFrame = spin(-1, 10000, -1);
   this->endFrame->setSpecialValueText("last");
   this->edge = new QComboBox(this);
@@ -401,9 +401,9 @@ SequenceGeneratorWindow::SequenceGeneratorWindow(QWidget *parent) : QDialog(pare
   connect(remove, &QPushButton::clicked, this, &SequenceGeneratorWindow::deleteLayer);
   connect(this->layers, &QListWidget::currentRowChanged, this, &SequenceGeneratorWindow::layerRowChanged);
   connect(this->layers, &QListWidget::itemChanged, this, &SequenceGeneratorWindow::layerItemChanged);
-  for (auto *s : {this->x, this->y, this->w, this->h, this->alpha, this->vx, this->vy, this->startFrame, this->endFrame})
+  for (auto *s : {this->x, this->y, this->w, this->h, this->alpha, this->startFrame, this->endFrame})
     connect(s, &QSpinBox::valueChanged, this, &SequenceGeneratorWindow::propertiesEdited);
-  for (auto *s : {this->rotation, this->rotationPerFrame, this->scalePerFrame})
+  for (auto *s : {this->rotation, this->vx, this->vy, this->rotationPerFrame, this->scalePerFrame})
     connect(s, &QDoubleSpinBox::valueChanged, this, &SequenceGeneratorWindow::propertiesEdited);
   connect(this->edge, &QComboBox::currentIndexChanged, this, &SequenceGeneratorWindow::propertiesEdited);
   connect(this->colourButton, &QPushButton::clicked, this, [this] { this->pickColour(false); });
@@ -476,7 +476,7 @@ void SequenceGeneratorWindow::refreshProperties()
   this->alpha->setValue(l.alpha);
   setButtonColour(this->colourButton, l.colour);
   this->colourButton->setEnabled(l.kind != ShapeKind::Image);
-  this->vx->setValue(int(std::lround(l.motion.vx))), this->vy->setValue(int(std::lround(l.motion.vy)));
+  this->vx->setValue(l.motion.vx), this->vy->setValue(l.motion.vy);
   this->startFrame->setValue(l.motion.startFrame), this->endFrame->setValue(l.motion.endFrame);
   this->edge->setCurrentIndex(int(l.motion.edge));
   this->rotationPerFrame->setValue(l.motion.rotationPerFrame);

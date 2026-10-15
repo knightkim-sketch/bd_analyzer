@@ -7,10 +7,13 @@
 //     the playlist by itself, with the scene's size and frame count;
 //   * the file holds exactly what the Qt-free renderer draws (src/generator/Scene) - the window adds
 //     no pixels of its own;
+//   * the MV fields take fractional pixels per frame;
 //   * a scene saved to JSON and loaded back renders the same frames.
 #include <QAction>
 #include <QApplication>
 #include <QDir>
+#include <QDoubleSpinBox>
+#include <QListWidget>
 #include <QImage>
 #include <QSettings>
 #include <iostream>
@@ -143,6 +146,26 @@ int main(int argc, char **argv)
   check(same, "frames 0, 5 and 11 in the file are the renderer's frames");
   const auto f5 = renderFrame(s, 5);
   check(f5.y[std::size_t(20 + 2 * 5) * 320 + 20 + 3 * 5] == 180, "the rectangle has moved by 5 x MV(3, 2) at frame 5");
+
+  // The MV fields take fractions: 1.25 typed into the selected layer's MV x reaches the scene.
+  {
+    if (auto *list = gen->findChild<QListWidget *>())
+      list->setCurrentRow(0); // top of the list = the image patch, the last layer
+    settle(100);
+    QDoubleSpinBox *mvx = nullptr;
+    for (auto *box : gen->findChildren<QDoubleSpinBox *>())
+      if (box->minimum() == -512 && box->decimals() == 3 && !mvx)
+        mvx = box;
+    check(mvx != nullptr, "the MV x field is a fractional spin box");
+    if (mvx)
+    {
+      mvx->setValue(1.25);
+      settle(100);
+      check(s.layers.back().motion.vx == 1.25, "and 1.25 reaches the layer's motion");
+      mvx->setValue(1);
+      settle(100);
+    }
+  }
 
   // Scene round trip.
   const QString scenePath = QDir::tempPath() + "/bd-generated-48.json";

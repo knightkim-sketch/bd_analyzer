@@ -6,6 +6,7 @@
 //     f + 1 is frame f moved by (3, 2) where the object is;
 //   * the upper layer wins, swapping the order swaps the result, alpha 128 blends as specified;
 //   * wrap brings an object back on the other side, an object waits before its start frame;
+//   * a fractional MV keeps its fraction: MV(0.5, 0.25) is MV(2, 1) after four frames;
 //   * the written y4m reads back (src/me/YuvLumaReader) with the same size, length and luma.
 #include <cstdio>
 #include <iostream>
@@ -81,6 +82,23 @@ int main()
       for (int x = 0; x < 50; ++x)
         shifted = shifted && lumaAt(b, x + 3, y + 2) == lumaAt(a, x, y);
     check(shifted, "frame 3 is frame 2 moved by MV(3, 2)");
+  }
+
+  // Fractional MV(0.5, 0.25): the position keeps the fraction, whole pixels accumulate over frames.
+  {
+    auto s = smallScene();
+    auto l = rect(8, 6, 10, 10, {200, 128, 128});
+    l.motion.vx = 0.5, l.motion.vy = 0.25;
+    s.layers.push_back(l);
+    const auto st0 = layerStateAt(s.layers[0], s, 0), st1 = layerStateAt(s.layers[0], s, 1);
+    check(st1.cx - st0.cx == 0.5 && st1.cy - st0.cy == 0.25,
+          "MV(0.5, 0.25) moves the centre by exactly (0.5, 0.25) per frame");
+    const auto a = renderFrame(s, 0), b = renderFrame(s, 4);
+    bool       shifted = true;
+    for (int y = 0; y < 40; ++y)
+      for (int x = 0; x < 50; ++x)
+        shifted = shifted && lumaAt(b, x + 2, y + 1) == lumaAt(a, x, y);
+    check(shifted, "frame 4 is frame 0 moved by MV(2, 1) = 4 x MV(0.5, 0.25)");
   }
 
   // Layer order and alpha.

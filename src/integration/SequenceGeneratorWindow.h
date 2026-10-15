@@ -125,7 +125,8 @@ private:
   QSpinBox    *x{}, *y{}, *w{}, *h{}, *alpha{};
   QDoubleSpinBox *rotation{};
   QPushButton    *colourButton{};
-  QSpinBox       *vx{}, *vy{}, *startFrame{}, *endFrame{};
+  QDoubleSpinBox *vx{}, *vy{}; //!< Fractional pixels per frame (sub-pixel motion)
+  QSpinBox       *startFrame{}, *endFrame{};
   QComboBox      *edge{};
   QDoubleSpinBox *rotationPerFrame{}, *scalePerFrame{};
   QSlider        *frameSlider{};
