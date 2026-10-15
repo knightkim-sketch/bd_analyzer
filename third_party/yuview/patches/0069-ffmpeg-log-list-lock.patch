@@ -1,0 +1,47 @@
+--- a/YUViewLib/src/ffmpeg/FFmpegVersionHandler.cpp
++++ b/YUViewLib/src/ffmpeg/FFmpegVersionHandler.cpp
+@@ -33,6 +33,8 @@
+ #include "FFmpegVersionHandler.h"
+ #include <QDateTime>
+ #include <QDir>
++#include <QMutex>
++#include <QMutexLocker>
+ 
+ namespace FFmpeg
+ {
+@@ -308,6 +310,16 @@
+ 
+ QStringList FFmpegVersionHandler::logListFFmpeg;
+ 
++// av_log calls the callback from whichever thread is logging - the main thread opening a file and
++// the bitstream parser's pooled thread at the same time - so the shared list needs a lock.
++static QMutex logListFFmpegMutex;
++
++QStringList FFmpegVersionHandler::getFFmpegLog()
++{
++  QMutexLocker lock(&logListFFmpegMutex);
++  return logListFFmpeg;
++}
++
+ FFmpegVersionHandler::FFmpegVersionHandler()
+ {
+   this->librariesLoaded = false;
+@@ -325,6 +337,7 @@
+   // were a member (msg.vasprintf(...)) discards the result, so every logged line was empty.
+   auto msg = QString::vasprintf(fmt, vargs);
+   auto now = QDateTime::currentDateTime();
++  QMutexLocker lock(&logListFFmpegMutex);
+   FFmpegVersionHandler::logListFFmpeg.append(now.toString("hh:mm:ss.zzz") +
+                                              QString(" - L%1 - ").arg(level) + msg);
+ }
+--- a/YUViewLib/src/ffmpeg/FFmpegVersionHandler.h
++++ b/YUViewLib/src/ffmpeg/FFmpegVersionHandler.h
+@@ -126,7 +126,7 @@
+ 
+   // Logging. By default we set the logging level of ffmpeg to AV_LOG_ERROR (Log errors and
+   // everything worse)
+-  static QStringList getFFmpegLog() { return logListFFmpeg; }
++  static QStringList getFFmpegLog();
+   void               enableLoggingWarning();
+ 
+   QStringList getLog() const { return logList; }
