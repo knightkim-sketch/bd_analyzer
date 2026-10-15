@@ -8,6 +8,45 @@
 
 ---
 
+## 0.4.2 (2026-10-15)
+
+### Convolution filter (luma) (신규)
+
+- raw YUV / y4m 아이템의 Raw File Properties 에 OpenCV 필터 cascade 가 생겼습니다.
+- 필터를 거친 영상을 **File → Export Filtered Y4M...** 으로 저장하거나, **Use as ME input** 으로 motion
+  estimation 입력으로 쓸 수 있습니다.
+
+### Odyssey open-loop ME adv (신규)
+
+- ME 패널 알고리즘에 **Odyssey open-loop ME adv (GF + TMV)** 가 추가됐습니다. GF interval(2/4/8/16)
+  계층 순서대로 분석하고 temporal MV 를 후보로 씁니다.
+- 보고 있는 프레임의 GF 그룹 전체를 한 번에 계산해 보관하므로, 같은 그룹 안에서는 프레임을 옮겨도
+  바로 표시됩니다. Show 로 첫 번째/두 번째 참조 결과를 고릅니다.
+
+### Y4M sequence generator (신규)
+
+- **File → Generate Y4M Sequence...** 별도 창에서 사각형·원·삼각형·별·이미지 패치를 레이어로 그리고,
+  레이어마다 MV, 프레임 구간, 가장자리 동작, 회전·크기 변화를 줍니다.
+- 레이어를 겹쳐 Y4M 으로 만들고 playlist 에 바로 엽니다. 장면은 JSON 으로 저장/불러오기 합니다.
+
+### Info pane Frame 탭 (신규)
+
+- Info pane 의 File 과 OBU 사이에 **Frame** 탭이 생겼습니다. 화면에 보이는 프레임의 정보만 보여 줍니다.
+- **YUView frame index**, **coding_order**(인코더가 실제로 코딩한 순서 = 디코딩 순서, hidden 프레임 포함),
+  **order_hint**, frame_type, 같은 temporal unit 의 hidden 프레임 목록, 그 프레임의 OBU 트리.
+- `show_existing_frame` 프레임은 코딩된 프레임이 없으므로 coding_order 가 `-` 이고, order_hint 는 화면에
+  보여 주는 원래 프레임의 값입니다.
+- odyssey 인코더 trace(`trace_param_gen/cs_frame_*.txt`)의 coding_order·order_hint 와 40 프레임 모두
+  일치함을 확인했습니다.
+
+### 수정
+
+- FFmpeg 파일 여러 개를 동시에 열 때 드물게 나던 크래시(FFmpeg 로그 리스트 경쟁)를 고쳤습니다.
+- 작은 마지막 OBU(show_existing_frame 헤더 등)를 버리던 파싱 수정이 새 빌드에서 조용히 빠지던 패치
+  문제를 고쳤습니다.
+
+---
+
 ## 0.4.1 (2026-10-13)
 
 ### ME 블록 비교 팝업 (신규)

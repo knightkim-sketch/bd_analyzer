@@ -33,7 +33,7 @@
 %global __requires_exclude ^(%{__requires_exclude_bundled}|%{__requires_exclude_optional})$
 
 Name:           bd-analyzer
-Version:        %{?bda_version}%{!?bda_version:0.4.1}
+Version:        %{?bda_version}%{!?bda_version:0.4.2}
 Release:        %{?bda_release}%{!?bda_release:1}%{?dist}
 Summary:        Video bitstream and YUV analysis toolset
 Summary(ko):    비디오 비트스트림·YUV 분석 도구
@@ -142,6 +142,19 @@ fi
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Thu Oct 15 2026 knight.kim <knight.kim@blue-dot.io> - 0.4.2-1
+- Convolution filter (luma): a cascade of OpenCV filters on a raw YUV item, exported as a filtered
+  Y4M (File menu) or used as the motion estimation input.
+- Odyssey open-loop ME adv in the ME panel: GF-ordered analysis with temporal MVs, run per GF group
+  and kept, so other frames of the group show at once.
+- File > Generate Y4M Sequence: shapes and image patches on layers, each with its own motion,
+  composited into a Y4M that opens in the playlist.
+- Info pane Frame tab (between File and OBU): the frame on screen's YUView frame index,
+  coding_order (decode order; "-" for show_existing_frame), order_hint, hidden frames of its
+  temporal unit, and its OBUs.
+- Fix an intermittent crash when several FFmpeg files are opened at once (unlocked FFmpeg log list).
+- Fix the OBU parsing patch for small trailing OBUs, which a fresh build silently left out.
+
 * Tue Oct 13 2026 knight.kim <knight.kim@blue-dot.io> - 0.4.1-1
 - ME block compare popup: with motion estimation on, Shift+click a block to see the source block
   next to the reference block its vector fetched, or their luma difference. One tab per enabled
