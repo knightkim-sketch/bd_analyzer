@@ -1,0 +1,234 @@
+--- a/YUViewLib/src/ui/widgets/FileInfoWidget.cpp
++++ b/YUViewLib/src/ui/widgets/FileInfoWidget.cpp
+@@ -32,8 +32,10 @@
+ 
+ #include "FileInfoWidget.h"
+ 
++#include <QFormLayout>
+ #include <QGridLayout>
+ #include <QHeaderView>
++#include <QLabel>
+ #include <QPointer>
+ #include <QPushButton>
+ #include <QTabWidget>
+@@ -76,6 +78,35 @@
+   this->grid     = new QGridLayout(this->infoPage);
+   this->tabs->addTab(this->infoPage, "File");
+ 
++  // Between File and OBU: the OBU tab's information for the frame on screen only.
++  this->framePage = new QWidget(this->tabs);
++  this->framePage->setObjectName("frameInfoPage");
++  auto *frameLayout = new QVBoxLayout(this->framePage);
++  this->frameForm   = new QFormLayout;
++  for (const auto *key : {"YUView frame index",
++                          "coding_order",
++                          "order_hint",
++                          "frame_type",
++                          "show_existing_frame",
++                          "Hidden frames in this TU",
++                          "AVPacket"})
++  {
++    auto *value = new QLabel("-", this->framePage);
++    value->setObjectName(QString("frameInfo:%1").arg(key));
++    value->setTextInteractionFlags(Qt::TextSelectableByMouse);
++    value->setWordWrap(true);
++    this->frameForm->addRow(QString(key), value);
++    this->frameValues[key] = value;
++  }
++  frameLayout->addLayout(this->frameForm);
++  this->frameObuView = new QTreeView(this->framePage);
++  this->frameObuView->setObjectName("frameObuView");
++  this->frameObuView->setUniformRowHeights(true);
++  this->frameObuView->setAlternatingRowColors(true);
++  frameLayout->addWidget(this->frameObuView, 1);
++  this->frameTabIndex = this->tabs->addTab(this->framePage, "Frame");
++  this->tabs->setTabEnabled(this->frameTabIndex, false);
++
+   this->obuTreeView = new QTreeView(this->tabs);
+   this->obuTreeView->setRootIsDecorated(true);
+   this->obuTreeView->setUniformRowHeights(true);
+@@ -154,9 +185,33 @@
+ {
+   this->obuTreeView->setModel(model);
+   this->tabs->setTabEnabled(this->obuTabIndex, model != nullptr);
++
++  if (this->obuModel)
++    disconnect(this->obuModel, nullptr, this, nullptr);
++  this->obuModel = model;
++  this->frameIndex.reset();
++  this->frameObuView->setModel(model);
++  this->tabs->setTabEnabled(this->frameTabIndex, model != nullptr);
++  if (model)
++  {
++    // The parser fills the model in the background and reveals new packets every second or so.
++    connect(model, &QAbstractItemModel::rowsInserted, this, [this] { this->refreshFrameTab(); });
++    connect(model, &QAbstractItemModel::modelReset, this, [this] {
++      this->frameIndex.reset();
++      this->refreshFrameTab();
++    });
++  }
++  this->refreshFrameTab();
+   if (!model)
+     return;
+ 
++  // Narrower than the OBU tab: the summary above already names the frame, and the value column
++  // has to stay visible in a docked pane.
++  this->frameObuView->setColumnWidth(0, 220);
++  this->frameObuView->setColumnWidth(1, 70);
++  this->frameObuView->setColumnWidth(2, 90);
++  this->frameObuView->header()->setStretchLastSection(true);
++
+   this->obuTreeView->setColumnWidth(0, 360);
+   this->obuTreeView->setColumnWidth(1, 90);
+   this->obuTreeView->setColumnWidth(2, 110);
+@@ -194,3 +249,69 @@
+   if (this->parentWidget())
+     this->parentWidget()->setWindowTitle(topTitle);
+ }
++
++void FileInfoWidget::setCurrentFrame(int frameIdx)
++{
++  if (frameIdx == this->currentFrame)
++    return;
++  this->currentFrame = frameIdx;
++  this->refreshFrameTab();
++}
++
++void FileInfoWidget::refreshFrameTab()
++{
++  const auto set = [this](const char *key, const QString &text) {
++    this->frameValues[key]->setText(text);
++  };
++  const auto clear = [&](const QString &first) {
++    for (auto &[key, label] : this->frameValues)
++      label->setText("-");
++    set("YUView frame index", first);
++    this->frameObuView->setRootIndex({});
++    this->frameObuView->setVisible(false);
++  };
++
++  if (!this->obuModel)
++  {
++    clear("-");
++    return;
++  }
++  this->frameIndex.update(*this->obuModel);
++  const auto *frame = this->frameIndex.frame(this->currentFrame);
++  if (!frame)
++  {
++    clear(this->currentFrame < 0 ? QString("-")
++                                 : QString("%1 (not parsed yet)").arg(this->currentFrame));
++    return;
++  }
++
++  using bda::integration::frameTypeName;
++  set("YUView frame index", QString::number(frame->yuviewFrameIndex));
++  set("coding_order", frame->showExisting ? QString("-") : QString::number(frame->codingOrder));
++  set("order_hint", frame->orderHint < 0 ? QString("-") : QString::number(frame->orderHint));
++  set("frame_type", QString::fromStdString(frameTypeName(frame->frameType)));
++  if (frame->showExisting)
++    set("show_existing_frame",
++        QString("1 (frame_to_show_map_idx %1 = coding_order %2)")
++            .arg(frame->frameToShowMapIdx)
++            .arg(frame->shownCodingOrder < 0 ? QString("?")
++                                             : QString::number(frame->shownCodingOrder)));
++  else
++    set("show_existing_frame", "0");
++  QStringList hidden;
++  for (const auto &h : frame->hidden)
++    hidden << QString("coding_order %1, order_hint %2, %3")
++                  .arg(h.codingOrder)
++                  .arg(h.orderHint)
++                  .arg(QString::fromStdString(frameTypeName(h.frameType)));
++  set("Hidden frames in this TU", hidden.isEmpty() ? QString("none") : hidden.join("\n"));
++  set("AVPacket", QString::fromStdString(frame->packetName));
++
++  const auto packetIndex = this->obuModel->index(frame->packetRow, 0);
++  if (this->frameObuView->rootIndex() != packetIndex)
++  {
++    this->frameObuView->setRootIndex(packetIndex);
++    this->frameObuView->expandToDepth(0);
++  }
++  this->frameObuView->setVisible(true);
++}
+--- a/YUViewLib/src/ui/widgets/FileInfoWidget.h
++++ b/YUViewLib/src/ui/widgets/FileInfoWidget.h
+@@ -34,11 +34,18 @@
+ 
+ #include <QAbstractItemModel>
+ #include <QPixmap>
++#include <QPointer>
+ #include <QWidget>
+ 
++#include <map>
++#include <string>
++
+ #include "common/InfoItemAndData.h"
++#include "integration/FrameObuSummary.h"
+ 
++class QFormLayout;
+ class QGridLayout;
++class QLabel;
+ class QModelIndex;
+ class QTabWidget;
+ class QTreeView;
+@@ -56,6 +63,8 @@
+   // the QGridLayout infoLayout.
+   Q_SLOT void setInfo(const InfoData &info1 = InfoData(), const InfoData &info2 = InfoData());
+   Q_SLOT void setObuModel(QAbstractItemModel *model);
++  // The frame on screen; the Frame tab shows that frame's temporal unit from the OBU model.
++  Q_SLOT void setCurrentFrame(int frameIdx);
+ 
+   // One at a given row of a given infoIndex (0 or 1) was clicked.
+   // infoIndex 0 refers to info1 above, infoIndex 1 refers to info2 above
+@@ -64,7 +73,8 @@
+   Q_SIGNAL void obuTreeIndexActivated(const QModelIndex &index);
+ 
+ private:
+-  int addInfoDataItemsAndGetNextRowIndex(const InfoData &data, int row);
++  int  addInfoDataItemsAndGetNextRowIndex(const InfoData &data, int row);
++  void refreshFrameTab();
+ 
+   QVBoxLayout *rootLayout{};
+   QTabWidget  *tabs{};
+@@ -72,5 +82,15 @@
+   QGridLayout *grid{};
+   QTreeView   *obuTreeView{};
+   int          obuTabIndex{-1};
++
++  // Frame tab: a summary of the frame on screen, then the OBUs of its temporal unit.
++  QWidget                          *framePage{};
++  QFormLayout                      *frameForm{};
++  std::map<std::string, QLabel *>   frameValues;
++  QTreeView                        *frameObuView{};
++  int                               frameTabIndex{-1};
++  QPointer<QAbstractItemModel>      obuModel;
++  bda::integration::FrameObuIndex   frameIndex;
++  int                               currentFrame{-1};
+   QPixmap      warningIcon;
+ };
+--- a/YUViewLib/src/ui/Mainwindow.cpp
++++ b/YUViewLib/src/ui/Mainwindow.cpp
+@@ -177,6 +177,22 @@
+           &FileInfoWidget::obuTreeIndexActivated,
+           ui.bitstreamAnalysis,
+           &BitstreamAnalysisWidget::seekToPacketTreeIndex);
++  /* The Frame tab of the info pane follows the frame on screen of the first selected item, which is
++   * the one the OBU model was parsed from. viewFrameChanged does not fire when a file is only opened,
++   * so a new model also takes the current frame from the playback controller.
++   */
++  connect(ui.displaySplitView,
++          &splitViewWidget::viewFrameChanged,
++          ui.fileInfoWidget,
++          [this](playlistItem *item, int frameIdx)
++          {
++            if (item && item == ui.playlistTreeWidget->getSelectedItems()[0])
++              ui.fileInfoWidget->setCurrentFrame(frameIdx);
++          });
++  connect(ui.bitstreamAnalysis,
++          &BitstreamAnalysisWidget::packetItemModelChanged,
++          ui.fileInfoWidget,
++          [this] { ui.fileInfoWidget->setCurrentFrame(ui.playbackController->getCurrentFrame()); });
+   connect(ui.fileInfoWidget,
+           &FileInfoWidget::obuTreeIndexClicked,
+           [this](const QModelIndex &index)

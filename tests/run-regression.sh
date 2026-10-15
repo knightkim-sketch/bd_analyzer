@@ -441,6 +441,9 @@ run_test "$ROOT/tests/regression/28-playlist-no-duplicate-files.cpp"
 
 # 히스토그램/블록 통계가 표시 중인 프레임을 따라가는지 (전체 창을 띄워서 검사한다).
 run_test "$ROOT/tests/regression/17-frame-info-follows-frame.cpp"      "$STREAM"
+# Info pane Frame tab: File/Frame/OBU 순서, 표시 프레임의 YUView frame index·coding_order·order_hint,
+# show_existing_frame 은 coding_order "-" 와 보여주는 프레임의 order_hint, OBU 트리는 그 프레임의 AVPacket.
+run_test "$ROOT/tests/regression/50-frame-info-tab.cpp"                "$STREAM"
 
 # ME 오버레이: item 을 바꿔도 abort 하지 않는지, MV 선이 실제로 그려지는지, 통계 행이 종류별로
 # 나뉘는지. 테스트가 자기 클립을 만들므로 RAWYUV 유무와 무관하다.
