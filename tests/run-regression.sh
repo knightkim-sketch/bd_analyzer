@@ -282,6 +282,9 @@ run_unit_test "$ROOT/tests/unit/me-compare-crop.cpp" "$ROOT/src/me/MeCompareCrop
 # odyssey GF 구조 (openloop_adv): layer·bottom-up 분석 순서·참조·TMV 버퍼 개수를 odyssey 자체 trace
 # (Motorcycle 512x288, 40 프레임, GF16, TDMP/MCTF 끔) 와 프레임마다 대조.
 run_unit_test "$ROOT/tests/unit/me-odyssey-gf-structure.cpp" "$ROOT/src/me/OdysseyGfStructure.cpp"
+# Y4M sequence generator 코어: 도형 경계 화소, MV 이동, 레이어 순서·알파, wrap·시작 프레임, y4m 왕복.
+run_unit_test "$ROOT/tests/unit/generator-scene.cpp" \
+              "$ROOT/src/generator/Scene.cpp" "$ROOT/src/me/YuvLumaReader.cpp" "$ROOT/src/me/MePlane.cpp"
 
 # 루마 필터 체인 (Convolution filter pane 의 cascade) 과 Y4M 쓰기. OpenCV 가 있으면 전 stage 와
 # GM 보상(RANSAC)까지, 없으면 Custom 3x3 만 검사한다. 쓴 Y4M 은 YuvLumaReader 로 다시 읽어 맞춘다.
@@ -605,6 +608,9 @@ run_test_bda "$ROOT/tests/regression/43-global-motion-window.cpp" "$STREAM"
 run_test_bda "$ROOT/tests/regression/45-me-compare-popup.cpp"
 # Help > About bd-analyzer: 메뉴 맨 위, VERSION 파일의 버전과 build.sh 가 넣은 git 해시가 보이는지.
 run_test_bda "$ROOT/tests/regression/46-about-bd-analyzer.cpp" "$ROOT/VERSION"
+# File > Generate Y4M Sequence: 창 열기, 도형 4종 + 이미지 패치에 움직임, 생성 후 playlist 자동 로드,
+# 파일 화소 == 렌더러, 장면 JSON 왕복.
+run_test_bda "$ROOT/tests/regression/48-y4m-sequence-generator.cpp"
 # ME 패널의 odyssey open-loop adv: GF 그룹 실행, Block Info 의 common SAD == 코어 직접 호출 결과,
 # 같은 그룹의 다른 프레임은 캐시로 즉시 표시, "Second reference" 는 두 번째 search.
 run_test_bda "$ROOT/tests/regression/49-me-openloop-adv-panel.cpp"

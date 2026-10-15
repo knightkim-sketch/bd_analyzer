@@ -1,0 +1,85 @@
+--- a/YUViewLib/YUViewLib.pro
++++ b/YUViewLib/YUViewLib.pro
+@@ -25,6 +25,7 @@
+ #   src/yt/           Qt-free YouTube link list parsing, unit tested on its own
+ #   src/diff/         Qt-free syntax comparison for Find diff, unit tested on its own
+ #   src/filter/       Qt-free luma filter chain (OpenCV) and Y4M writer, unit tested on its own
++#   src/generator/    Qt-free Y4M sequence generator scene (layers, motion, compositing)
+ #   src/integration/  the only part of our tree allowed to know about upstream types
+ #
+ # $$PWD is .../third_party/yuview/upstream/YUViewLib, so four levels up is the repository root.
+@@ -38,6 +39,7 @@
+ SOURCES += $$files($$BDA_ROOT/src/yt/*.cpp, true)
+ SOURCES += $$files($$BDA_ROOT/src/diff/*.cpp, true)
+ SOURCES += $$files($$BDA_ROOT/src/filter/*.cpp, true)
++SOURCES += $$files($$BDA_ROOT/src/generator/*.cpp, true)
+ SOURCES += $$files($$BDA_ROOT/src/integration/*.cpp, true)
+ HEADERS += $$files($$BDA_ROOT/src/me/*.h, true)
+ HEADERS += $$files($$BDA_ROOT/src/bdrate/*.h, true)
+@@ -47,6 +49,7 @@
+ HEADERS += $$files($$BDA_ROOT/src/yt/*.h, true)
+ HEADERS += $$files($$BDA_ROOT/src/diff/*.h, true)
+ HEADERS += $$files($$BDA_ROOT/src/filter/*.h, true)
++HEADERS += $$files($$BDA_ROOT/src/generator/*.h, true)
+ HEADERS += $$files($$BDA_ROOT/src/integration/*.h, true)
+ 
+ # Optional static OpenCV (core, imgproc, features2d, video, flann, calib3d) from
+--- a/YUViewLib/src/ui/Mainwindow.h
++++ b/YUViewLib/src/ui/Mainwindow.h
+@@ -43,6 +43,7 @@
+ 
+ #include <integration/BdRatePlotWindow.h>
+ #include <integration/GlobalMotionWindow.h>
++#include <integration/SequenceGeneratorWindow.h>
+ #include <integration/MeCompareWindow.h>
+ #include <integration/StreamDiffWindow.h>
+ #include <integration/MeRunner.h>
+@@ -126,6 +127,8 @@
+                               QPoint        pixelPos);
+   void takeMotionEstimation();
+   void takeAdvMotionEstimation();
++  //!< File > Generate Y4M Sequence: the generator window; what it writes opens in the playlist.
++  void openSequenceGenerator();
+   void closeAndClearSettings();
+ 
+   void onMenuResetView(bool checked)
+@@ -274,6 +277,7 @@
+   QPointer<bda::integration::BdRatePlotWindow>     bdRateWindow;
+   QPointer<bda::integration::StreamDiffWindow>     streamDiffWindow;
+   QPointer<bda::integration::GlobalMotionWindow>   globalMotionWindow;
++  QPointer<bda::integration::SequenceGeneratorWindow> sequenceGeneratorWindow;
+   QPointer<bda::integration::MeCompareWindow>      meCompareWindow;
+ 
+   bool showNormalMaximized;     // When going to full screen: Was this windows maximized?
+--- a/YUViewLib/src/ui/Mainwindow.cpp
++++ b/YUViewLib/src/ui/Mainwindow.cpp
+@@ -723,6 +723,7 @@
+   connect(fileMenu->addAction(tr("Export &Filtered Y4M...")), &QAction::triggered, this, [this]() {
+     bda::integration::exportFilteredY4m(ui.playlistTreeWidget->getSelectedItems()[0], this);
+   });
++  addActionToMenu(fileMenu, "&Generate Y4M Sequence...", this, &MainWindow::openSequenceGenerator);
+   fileMenu->addSeparator();
+   addActionToMenu(fileMenu, "&Settings...", this, &MainWindow::showSettingsWindow);
+   fileMenu->addSeparator();
+@@ -1496,6 +1497,21 @@
+   ui.displaySplitView->update();
+ }
+ 
++void MainWindow::openSequenceGenerator()
++{
++  // Created once and kept, so the scene being drawn survives closing the window.
++  if (!this->sequenceGeneratorWindow)
++  {
++    this->sequenceGeneratorWindow = new bda::integration::SequenceGeneratorWindow(this);
++    connect(this->sequenceGeneratorWindow,
++            &bda::integration::SequenceGeneratorWindow::generated,
++            this,
++            [this](const QString &path) { this->loadFiles({path}); });
++  }
++  this->sequenceGeneratorWindow->show();
++  this->sequenceGeneratorWindow->raise();
++}
++
+ MainWindow::MeAdvKey MainWindow::meAdvKeyFor(playlistItem *item) const
+ {
+   const auto *panel = ui.motionEstimationWidget;
