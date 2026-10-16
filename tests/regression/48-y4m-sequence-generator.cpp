@@ -8,9 +8,17 @@
 //   * the file holds exactly what the Qt-free renderer draws (src/generator/Scene) - the window adds
 //     no pixels of its own;
 //   * the MV fields take fractional pixels per frame;
-//   * a scene saved to JSON and loaded back renders the same frames.
+//   * a scene saved to JSON and loaded back renders the same frames;
+//   * the preview grid is a viewing aid: toggling it changes the canvas, not one byte of the y4m;
+//   * "Flip horizontal" mirrors the written frames left-right, and the flips survive the JSON round
+//     trip (a scene file without the flip keys loads unflipped).
 #include <QAction>
 #include <QApplication>
+#include <QCheckBox>
+#include <QComboBox>
+#include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QListWidget>
@@ -67,6 +75,20 @@ bool sameFrames(const Scene &a, const Scene &b)
       return false;
   }
   return true;
+}
+
+QByteArray fileBytes(const QString &path)
+{
+  QFile f(path);
+  return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+}
+
+QCheckBox *checkBox(QWidget *parent, const QString &text)
+{
+  for (auto *c : parent->findChildren<QCheckBox *>())
+    if (c->text() == text)
+      return c;
+  return nullptr;
 }
 } // namespace
 
@@ -167,13 +189,93 @@ int main(int argc, char **argv)
     }
   }
 
-  // Scene round trip.
+  // The grid is drawn on the canvas only: the y4m is byte-identical with it on.
+  auto *grid  = checkBox(gen, "Grid");
+  auto *flipH = checkBox(gen, "Flip horizontal");
+  auto *flipV = checkBox(gen, "Flip vertical");
+  check(grid != nullptr && !grid->isChecked(), "the Grid checkbox exists and starts off");
+  check(flipH != nullptr && flipV != nullptr && !flipH->isChecked() && !flipV->isChecked(),
+        "Flip horizontal / Flip vertical exist and start off");
+  QComboBox *spacing = nullptr;
+  for (auto *c : gen->findChildren<QComboBox *>())
+    if (c->findData(64) >= 0 && c->findData(128) >= 0 && c->findData(8) >= 0)
+      spacing = c;
+  check(spacing != nullptr && spacing->currentData().toInt() == 64, "the grid spacing combo defaults to 64");
+  if (grid && spacing)
+  {
+    auto *canvas = gen->findChild<bda::integration::GeneratorCanvas *>();
+    const QString plainPath = QDir::tempPath() + "/bd-generated-48-nogrid.y4m";
+    const QString gridPath  = QDir::tempPath() + "/bd-generated-48-grid.y4m";
+    gen->generate(plainPath, &error);
+    const QImage withoutGrid = canvas ? canvas->grab().toImage() : QImage();
+    grid->setChecked(true);
+    spacing->setCurrentIndex(spacing->findData(16));
+    settle(100);
+    const QImage withGrid = canvas ? canvas->grab().toImage() : QImage();
+    check(!withoutGrid.isNull() && withGrid != withoutGrid, "ticking Grid draws on the canvas");
+    gen->generate(gridPath, &error);
+    const auto a = fileBytes(plainPath), b = fileBytes(gridPath);
+    check(!a.isEmpty() && a == b, "and the y4m written with the grid on is byte-identical");
+    check(QSettings().value("SequenceGenerator/grid").toBool() && QSettings().value("SequenceGenerator/gridSpacing").toInt() == 16,
+          "the grid setting is remembered");
+    grid->setChecked(false);
+    spacing->setCurrentIndex(spacing->findData(64));
+    settle(100);
+    QFile::remove(plainPath), QFile::remove(gridPath);
+  }
+
+  // Flip horizontal mirrors the written frames: luma (x, y) of the file is (w-1-x, y) unflipped.
+  if (flipH && flipV)
+  {
+    Scene unflipped = s;
+    flipH->setChecked(true);
+    settle(100);
+    check(s.flipH && !s.flipV, "ticking Flip horizontal sets the scene's flipH");
+    const QString flipPath = QDir::tempPath() + "/bd-generated-48-flip.y4m";
+    check(gen->generate(flipPath, &error), "the flipped y4m is written");
+    bda::me::YuvLumaReader fr;
+    bool mirrored = fr.openY4m(flipPath.toStdString(), err) && fr.frameCount() == 12;
+    for (int k : {0, 5})
+    {
+      const auto plane = fr.readLuma(k, 0, err);
+      const auto f     = renderFrame(unflipped, k);
+      for (int y = 0; mirrored && y < 192; ++y)
+        for (int x = 0; mirrored && x < 320; ++x)
+          mirrored = plane.at(319 - x, y) == f.y[std::size_t(y) * 320 + x];
+    }
+    check(mirrored, "frames 0 and 5 in the file are the unflipped frames mirrored left-right");
+    check(renderFrame(s, 5).y[std::size_t(20 + 2 * 5) * 320 + 319 - (20 + 3 * 5)] == 180,
+          "the rectangle at frame 5 is at the mirrored position (MV x reversed)");
+    QFile::remove(flipPath);
+    flipV->setChecked(true);
+    settle(100);
+  }
+
+  // Scene round trip, with both flips on.
   const QString scenePath = QDir::tempPath() + "/bd-generated-48.json";
   const Scene   before    = s;
   check(gen->saveScene(scenePath, &error), "the scene saves to JSON");
   gen->scene().layers.clear();
+  gen->scene().flipH = gen->scene().flipV = false;
   check(gen->loadScene(scenePath, &error) && gen->scene().layers.size() == 5, "and loads back with its five layers");
   check(sameFrames(before, gen->scene()), "rendering the same frames");
+  check(gen->scene().flipH && gen->scene().flipV && flipH && flipH->isChecked() && flipV && flipV->isChecked(),
+        "the flips come back from the JSON, checkboxes included");
+
+  // A scene saved before the flips existed has no flip keys: it loads unflipped.
+  {
+    QFile f(scenePath);
+    QJsonObject root;
+    if (f.open(QIODevice::ReadOnly))
+      root = QJsonDocument::fromJson(f.readAll()).object();
+    f.close();
+    root.remove("flipH"), root.remove("flipV");
+    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+      f.write(QJsonDocument(root).toJson());
+    f.close();
+    check(gen->loadScene(scenePath, &error) && !gen->scene().flipH && !gen->scene().flipV && flipH && !flipH->isChecked(),
+          "a scene file without flip keys loads with both flips off");
+  }
 
   std::cout << (g_failures == 0 ? "RESULT: PASS" : "RESULT: FAIL") << std::endl;
   _exit(g_failures == 0 ? 0 : 1);

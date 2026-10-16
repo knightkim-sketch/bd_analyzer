@@ -37,6 +37,8 @@ public:
   int  selected() const { return this->selectedLayer; }
   //!< The shape a drag on an empty area creates.
   void setCreateKind(generator::ShapeKind kind) { this->createKind = kind; }
+  //!< A viewing aid only: lines every `spacing` picture pixels, never in the rendered frames.
+  void setGrid(bool on, int spacing);
 
 signals:
   void selectionChanged(int layer);
@@ -51,7 +53,8 @@ protected:
 private:
   double  scale() const;
   QPointF origin() const;
-  QPointF toScene(const QPointF &widgetPos) const;
+  QPointF toScene(const QPointF &widgetPos) const; //!< Scene (unflipped) coordinates.
+  QPointF mirror(const QPointF &p) const;           //!< Scene <-> picture under the scene's flips.
   QRectF  layerBox(int layer) const; //!< Axis-aligned box at the shown frame, scene pixels.
   int     layerAt(const QPointF &scenePos) const;
 
@@ -59,6 +62,8 @@ private:
   int                  frameIdx{0};
   int                  selectedLayer{-1};
   generator::ShapeKind createKind{generator::ShapeKind::Rect};
+  bool                 gridOn{false};
+  int                  gridSpacing{64};
 
   enum class Drag
   {
@@ -120,6 +125,7 @@ private:
 
   QSpinBox    *width{}, *height{}, *frames{}, *fps{};
   QPushButton *backgroundButton{};
+  QCheckBox   *flipH{}, *flipV{};
   QComboBox   *shapeKind{};
   QListWidget *layers{};
   QSpinBox    *x{}, *y{}, *w{}, *h{}, *alpha{};
@@ -132,6 +138,8 @@ private:
   QSlider        *frameSlider{};
   QLabel         *frameLabel{}, *status{};
   QPushButton    *playButton{};
+  QCheckBox      *gridCheck{};
+  QComboBox      *gridSpacing{};
   QTimer          playTimer;
 };
 

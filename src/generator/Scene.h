@@ -70,6 +70,8 @@ struct Scene
   int                fpsNum{30}, fpsDen{1};
   Yuv8               background{128, 128, 128}; //!< Flat grey: easy to check ME against
   std::vector<Layer> layers; //!< Index 0 is the bottom layer.
+  // Whole-picture mirror of the composited frame, motion included: flipH negates MV x, flipV MV y.
+  bool flipH{false}, flipV{false};
 };
 
 //!< Where a layer is at a frame: box centre, size and angle after its motion.
@@ -88,6 +90,7 @@ struct Frame420
 /* Frame `frame` of the scene: background, then every visible layer bottom to top, each pixel
  * blended as (a*src + (255-a)*dst + 127) / 255. A pixel belongs to a shape when its centre does.
  * Chroma takes the top-left luma position of each 2x2 block. Width and height must be even.
+ * Last, scene.flipH / flipV mirror all three planes: luma (x, y) moves to (w-1-x, y) / (x, h-1-y).
  */
 Frame420 renderFrame(const Scene &scene, int frame);
 

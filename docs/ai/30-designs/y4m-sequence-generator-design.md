@@ -33,6 +33,9 @@
 | 출력 | 저장 대화상자(마지막 디렉토리 기억) → 저장 후 playlist 에 자동 로드 | 데모 흐름 |
 | 장면 저장 | JSON (이미지는 base64 RGBA 로 포함) | 재현성 |
 | GT MV 출력 | 이번 범위 밖 (후속 과제) | 지시 밖 |
+| 미리보기 격자 (2026-10-16) | Play 줄의 "Grid" + 간격 8/16/32/64/128 (기본 64, 꺼짐). picture 원점 기준 x = k·간격 에 반투명 선. `QSettings` `SequenceGenerator/grid`, `gridSpacing` 로 기억 | 블록 경계 확인용 보기 도구. 캔버스에만 그리고 장면·프레임·y4m 에는 들어가지 않는다 |
+| 전체 화면 뒤집기 (2026-10-16) | Sequence 그룹의 "Flip horizontal" / "Flip vertical". `Scene::flipH/flipV`, `renderFrame` 마지막에 Y·U·V 를 모두 mirror (luma (x, y) → (w−1−x, y) / (x, h−1−y)). 장면 JSON 에 `flipH`/`flipV` 저장, 키가 없으면 false | 장면 속성이라 미리보기와 y4m 이 같다. 움직임도 뒤집힌다: 가로 뒤집기는 MV x 부호, 세로는 MV y 부호가 바뀐다 (tooltip 에 명시) |
+| 뒤집힌 화면에서 마우스 | `toScene()` 이 화면 좌표를 같은 flip 으로 되돌려 장면(뒤집기 전) 좌표로 hit-test·이동·크기 조절·생성. 선택 박스·크기 핸들·MV 화살표는 뒤집힌 위치에 그리고, 라벨은 화면에 보이는 MV | 드래그가 화면의 마우스 방향을 그대로 따른다. 속성 폼의 x, y, MV 는 뒤집기 전 장면 값이다 |
 
 ## 3. 구조
 
@@ -44,8 +47,11 @@
 
 ## 4. 검증
 
-- `tests/unit/generator-scene.cpp` — 사각형 경계 화소, MV(3, 2) 이동, 프레임 간 이동 일치, 레이어 순서·알파·숨김, wrap, 시작 프레임, 원·별·삼각 안팎, 이미지 알파, y4m 왕복(`YuvLumaReader`), 홀수 크기 거절
-- 회귀 48번 — 창을 메뉴로 열고 장면을 채워 생성 → playlist 에 열린 아이템의 크기·프레임 수·화소 확인
+- `tests/unit/generator-scene.cpp` — 사각형 경계 화소, MV(3, 2) 이동, 프레임 간 이동 일치, 레이어 순서·알파·숨김, wrap, 시작 프레임, 원·별·삼각 안팎, 이미지 알파, y4m 왕복(`YuvLumaReader`), 홀수 크기 거절,
+  flipH (w−1−x, y)·flipV (x, h−1−y)·chroma mirror·둘 다 = 180° 회전·flip 끔은 그대로, flipH 에서 MV(3, 2) 가 (−3, 2) 로 보임
+- 회귀 48번 — 창을 메뉴로 열고 장면을 채워 생성 → playlist 에 열린 아이템의 크기·프레임 수·화소 확인.
+  Grid 체크박스·간격 콤보(기본 64) 존재, Grid 를 켜면 캔버스는 바뀌고 y4m 은 바이트 동일, 설정 기억.
+  Flip horizontal 을 켜면 파일 frame 0·5 가 뒤집기 전 렌더의 좌우 mirror, JSON 왕복에서 flip 유지, flip 키가 없는 JSON 은 flip 꺼짐
 - 회귀 49번 — 같은 패치 묶음의 ME 패널 adv 경로 (생성기와 별개, 0067)
 - 데모 (2026-10-15, scratch) — 640x360 30 프레임, 레이어 5개 (사각·원·삼각·별·이미지 패치, 각자 MV). 생성된 y4m 을 playlist 에서 adv ME (GF 8) 로 돌려 frame 10 = B, layer 3, L0 → 8 / L1 → 12. Shift+클릭 비교 팝업에서 이미지 패치 블록 MV(-4, -4) = 2 프레임 × MV(2, 2), SAD 0 으로 생성 움직임과 일치
 

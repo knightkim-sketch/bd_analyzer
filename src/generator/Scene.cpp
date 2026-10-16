@@ -176,6 +176,20 @@ Frame420 renderFrame(const Scene &scene, int frame)
         }
       }
   }
+
+  // Mirror the composited frame; width and height are even, so chroma mirrors with its luma.
+  const auto mirror = [&scene](std::vector<std::uint8_t> &plane, int w, int h) {
+    if (scene.flipH)
+      for (int r = 0; r < h; ++r)
+        std::reverse(plane.begin() + std::ptrdiff_t(r) * w, plane.begin() + std::ptrdiff_t(r + 1) * w);
+    if (scene.flipV)
+      for (int r = 0; r < h / 2; ++r)
+        std::swap_ranges(plane.begin() + std::ptrdiff_t(r) * w, plane.begin() + std::ptrdiff_t(r + 1) * w,
+                         plane.begin() + std::ptrdiff_t(h - 1 - r) * w);
+  };
+  mirror(f.y, scene.width, scene.height);
+  mirror(f.u, cw, ch);
+  mirror(f.v, cw, ch);
   return f;
 }
 

@@ -7,7 +7,9 @@
 //   * the upper layer wins, swapping the order swaps the result, alpha 128 blends as specified;
 //   * wrap brings an object back on the other side, an object waits before its start frame;
 //   * a fractional MV keeps its fraction: MV(0.5, 0.25) is MV(2, 1) after four frames;
-//   * the written y4m reads back (src/me/YuvLumaReader) with the same size, length and luma.
+//   * the written y4m reads back (src/me/YuvLumaReader) with the same size, length and luma;
+//   * flipH puts luma (x, y) at (w-1-x, y), flipV at (x, h-1-y), chroma mirrors the same way, both
+//     flips are a 180 degree rotation, and with both off the frame is unchanged.
 #include <cstdio>
 #include <iostream>
 #include <string>
@@ -165,6 +167,64 @@ int main()
     s.layers.push_back(l);
     const auto f = renderFrame(s, 0);
     check(lumaAt(f, 4, 4) == 235 && lumaAt(f, 5, 4) == 40, "image patch: white is Y 235, a transparent pixel shows the background");
+  }
+
+  // Whole-picture flips.
+  {
+    auto s = smallScene();
+    // An asymmetric object: a 2x2 dot at luma (10, 4) with its own chroma at chroma (5, 2).
+    s.layers.push_back(rect(10, 4, 2, 2, {200, 90, 160}));
+    s.layers.push_back(rect(30, 20, 6, 4, {120, 150, 100}));
+    const auto plain = renderFrame(s, 0);
+    const int  w = s.width, h = s.height, cw = w / 2, ch = h / 2;
+    check(lumaAt(plain, 10, 4) == 200 && lumaAt(plain, w - 1 - 10, 4) == 40, "flips off: the dot is where it was drawn");
+
+    auto sh  = s;
+    sh.flipH = true;
+    const auto fh = renderFrame(sh, 0);
+    bool       mh = true;
+    for (int y = 0; y < h; ++y)
+      for (int x = 0; x < w; ++x)
+        mh = mh && lumaAt(fh, w - 1 - x, y) == lumaAt(plain, x, y);
+    for (int y = 0; y < ch; ++y)
+      for (int x = 0; x < cw; ++x)
+        mh = mh && fh.u[std::size_t(y) * cw + cw - 1 - x] == plain.u[std::size_t(y) * cw + x] &&
+             fh.v[std::size_t(y) * cw + cw - 1 - x] == plain.v[std::size_t(y) * cw + x];
+    check(lumaAt(fh, w - 1 - 10, 4) == 200 && lumaAt(fh, 10, 4) == 40, "flipH: the pixel at (10, 4) is at (w-1-10, 4)");
+    check(fh.u[std::size_t(2) * cw + cw - 1 - 5] == 90 && fh.v[std::size_t(2) * cw + cw - 1 - 5] == 160,
+          "flipH: chroma (5, 2) is at (cw-1-5, 2)");
+    check(mh, "flipH: every Y, U and V sample is mirrored left-right");
+
+    auto sv  = s;
+    sv.flipV = true;
+    const auto fv = renderFrame(sv, 0);
+    bool       mv = true;
+    for (int y = 0; y < h; ++y)
+      for (int x = 0; x < w; ++x)
+        mv = mv && lumaAt(fv, x, h - 1 - y) == lumaAt(plain, x, y);
+    for (int y = 0; y < ch; ++y)
+      for (int x = 0; x < cw; ++x)
+        mv = mv && fv.u[std::size_t(ch - 1 - y) * cw + x] == plain.u[std::size_t(y) * cw + x] &&
+             fv.v[std::size_t(ch - 1 - y) * cw + x] == plain.v[std::size_t(y) * cw + x];
+    check(lumaAt(fv, 10, h - 1 - 4) == 200 && lumaAt(fv, 10, 4) == 40, "flipV: the pixel at (10, 4) is at (10, h-1-4)");
+    check(mv, "flipV: every Y, U and V sample is mirrored top-bottom");
+
+    auto sb  = s;
+    sb.flipH = sb.flipV = true;
+    const auto fb = renderFrame(sb, 0);
+    bool       rot = true;
+    for (int y = 0; y < h; ++y)
+      for (int x = 0; x < w; ++x)
+        rot = rot && lumaAt(fb, w - 1 - x, h - 1 - y) == lumaAt(plain, x, y);
+    for (int y = 0; y < ch; ++y)
+      for (int x = 0; x < cw; ++x)
+        rot = rot && fb.u[std::size_t(ch - 1 - y) * cw + cw - 1 - x] == plain.u[std::size_t(y) * cw + x] &&
+              fb.v[std::size_t(ch - 1 - y) * cw + cw - 1 - x] == plain.v[std::size_t(y) * cw + x];
+    check(rot, "both flips: the frame rotated by 180 degrees, chroma included");
+
+    // Motion is mirrored with the picture: MV(3, 2) shows as MV(-3, 2) under flipH.
+    sh.layers[0].motion.vx = 3, sh.layers[0].motion.vy = 2;
+    check(lumaAt(renderFrame(sh, 2), w - 1 - (10 + 6), 4 + 4) == 200, "flipH: MV(3, 2) moves the dot by (-3, 2) per frame");
   }
 
   // Y4M round trip.

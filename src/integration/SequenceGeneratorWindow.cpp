@@ -116,6 +116,13 @@ void GeneratorCanvas::setFrame(int frame)
   this->update();
 }
 
+void GeneratorCanvas::setGrid(bool on, int spacing)
+{
+  this->gridOn      = on;
+  this->gridSpacing = std::max(1, spacing);
+  this->update();
+}
+
 void GeneratorCanvas::setSelected(int layer)
 {
   this->selectedLayer = layer;
@@ -135,7 +142,14 @@ QPointF GeneratorCanvas::origin() const
   return {(this->width() - this->scene.width * s) / 2, (this->height() - this->scene.height * s) / 2};
 }
 
-QPointF GeneratorCanvas::toScene(const QPointF &p) const { return (p - this->origin()) / this->scale(); }
+// Hit-testing and edits work in scene coordinates, so a position on the flipped picture is mirrored
+// back first; drags then follow the mouse on screen.
+QPointF GeneratorCanvas::toScene(const QPointF &p) const { return this->mirror((p - this->origin()) / this->scale()); }
+
+QPointF GeneratorCanvas::mirror(const QPointF &p) const
+{
+  return {this->scene.flipH ? this->scene.width - p.x() : p.x(), this->scene.flipV ? this->scene.height - p.y() : p.y()};
+}
 
 QRectF GeneratorCanvas::layerBox(int layer) const
 {
@@ -162,21 +176,34 @@ void GeneratorCanvas::paintEvent(QPaintEvent *)
   painter.drawImage(QRectF(o, QSizeF(this->scene.width * s, this->scene.height * s)),
                     frameToImage(generator::renderFrame(this->scene, this->frameIdx)));
 
+  // Grid in picture coordinates (x = k * spacing from the picture origin): drawn here only.
+  if (this->gridOn)
+  {
+    painter.setPen(QPen(QColor(255, 255, 255, 70), 0));
+    for (int gx = this->gridSpacing; gx < this->scene.width; gx += this->gridSpacing)
+      painter.drawLine(QPointF(o.x() + gx * s, o.y()), QPointF(o.x() + gx * s, o.y() + this->scene.height * s));
+    for (int gy = this->gridSpacing; gy < this->scene.height; gy += this->gridSpacing)
+      painter.drawLine(QPointF(o.x(), o.y() + gy * s), QPointF(o.x() + this->scene.width * s, o.y() + gy * s));
+  }
+
   if (this->selectedLayer >= 0 && this->selectedLayer < int(this->scene.layers.size()))
   {
-    const auto box = this->layerBox(this->selectedLayer);
-    const QRectF wbox(o + box.topLeft() * s, box.size() * s);
+    // The box and its resize corner where they appear on the (possibly flipped) picture.
+    const auto   box = this->layerBox(this->selectedLayer);
+    const QRectF wbox(o + this->mirror(box.topLeft()) * s, o + this->mirror(box.bottomRight()) * s);
+    const QPointF handle = o + this->mirror(box.bottomRight()) * s;
     painter.setPen(QPen(Qt::yellow, 1, Qt::DashLine));
-    painter.drawRect(wbox);
-    painter.fillRect(QRectF(wbox.bottomRight() - QPointF(4, 4), QSizeF(8, 8)), Qt::yellow); // resize handle
-    // Where the object is one frame later: its motion vector, MV(x, y).
-    const auto &m = this->scene.layers[std::size_t(this->selectedLayer)].motion;
-    if (m.vx != 0 || m.vy != 0)
+    painter.drawRect(wbox.normalized());
+    painter.fillRect(QRectF(handle - QPointF(4, 4), QSizeF(8, 8)), Qt::yellow); // resize handle
+    // Where the object is one frame later: its motion vector as seen on the picture, MV(x, y).
+    const auto &m  = this->scene.layers[std::size_t(this->selectedLayer)].motion;
+    const double mx = this->scene.flipH ? 0.0 - m.vx : m.vx, my = this->scene.flipV ? 0.0 - m.vy : m.vy; // 0.0 - v: no "-0"
+    if (mx != 0 || my != 0)
     {
-      const QPointF c = wbox.center(), d = c + QPointF(m.vx, m.vy) * s * 4;
+      const QPointF c = wbox.center(), d = c + QPointF(mx, my) * s * 4;
       painter.setPen(QPen(Qt::cyan, 2));
       painter.drawLine(c, d);
-      painter.drawText(d + QPointF(4, -4), QString("MV(%1, %2)/frame").arg(m.vx).arg(m.vy));
+      painter.drawText(d + QPointF(4, -4), QString("MV(%1, %2)/frame").arg(mx).arg(my));
     }
   }
 }
@@ -283,6 +310,20 @@ SequenceGeneratorWindow::SequenceGeneratorWindow(QWidget *parent) : QDialog(pare
   preview->addWidget(this->playButton);
   preview->addWidget(this->frameSlider, 1);
   preview->addWidget(this->frameLabel);
+  this->gridCheck   = new QCheckBox("Grid", this);
+  this->gridSpacing = new QComboBox(this);
+  for (int g : {8, 16, 32, 64, 128})
+    this->gridSpacing->addItem(QString::number(g), g);
+  this->gridCheck->setToolTip("Preview only: lines on block boundaries, not written to the y4m.");
+  {
+    QSettings settings;
+    this->gridCheck->setChecked(settings.value("SequenceGenerator/grid", false).toBool());
+    const int i = this->gridSpacing->findData(settings.value("SequenceGenerator/gridSpacing", 64).toInt());
+    this->gridSpacing->setCurrentIndex(i >= 0 ? i : this->gridSpacing->findData(64));
+  }
+  this->canvas->setGrid(this->gridCheck->isChecked(), this->gridSpacing->currentData().toInt());
+  preview->addWidget(this->gridCheck);
+  preview->addWidget(this->gridSpacing);
   left->addLayout(preview);
   this->status = new QLabel("Drag on the canvas to draw the selected shape. Drag a shape to move it, "
                             "its yellow corner to resize it.", this);
@@ -308,6 +349,14 @@ SequenceGeneratorWindow::SequenceGeneratorWindow(QWidget *parent) : QDialog(pare
   seqForm->addRow("Frames", this->frames);
   seqForm->addRow("fps", this->fps);
   seqForm->addRow("Background", this->backgroundButton);
+  this->flipH = new QCheckBox("Flip horizontal", this);
+  this->flipV = new QCheckBox("Flip vertical", this);
+  for (auto *c : {this->flipH, this->flipV})
+    c->setToolTip("Mirrors the whole picture, in the preview and the y4m. Motion is mirrored too: "
+                  "a horizontal flip negates MV x, a vertical flip MV y.");
+  auto *flip = new QHBoxLayout();
+  flip->addWidget(this->flipH), flip->addWidget(this->flipV);
+  seqForm->addRow("Flip", flip);
   right->addWidget(seqBox);
 
   // Layers
@@ -410,6 +459,17 @@ SequenceGeneratorWindow::SequenceGeneratorWindow(QWidget *parent) : QDialog(pare
   connect(this->backgroundButton, &QPushButton::clicked, this, [this] { this->pickColour(true); });
   for (auto *s : {this->width, this->height, this->frames, this->fps})
     connect(s, &QSpinBox::valueChanged, this, &SequenceGeneratorWindow::sequenceEdited);
+  for (auto *c : {this->flipH, this->flipV})
+    connect(c, &QCheckBox::toggled, this, &SequenceGeneratorWindow::sequenceEdited);
+  const auto gridEdited = [this] {
+    const int g = this->gridSpacing->currentData().toInt();
+    this->canvas->setGrid(this->gridCheck->isChecked(), g);
+    QSettings settings;
+    settings.setValue("SequenceGenerator/grid", this->gridCheck->isChecked());
+    settings.setValue("SequenceGenerator/gridSpacing", g);
+  };
+  connect(this->gridCheck, &QCheckBox::toggled, this, gridEdited);
+  connect(this->gridSpacing, &QComboBox::currentIndexChanged, this, gridEdited);
   connect(this->frameSlider, &QSlider::valueChanged, this, &SequenceGeneratorWindow::frameChanged);
   connect(this->playButton, &QPushButton::clicked, this, &SequenceGeneratorWindow::togglePlay);
   connect(&this->playTimer, &QTimer::timeout, this, [this] {
@@ -431,6 +491,8 @@ void SequenceGeneratorWindow::sceneChanged()
   this->frames->setValue(this->sceneData.frames);
   this->fps->setValue(this->sceneData.fpsNum);
   setButtonColour(this->backgroundButton, this->sceneData.background);
+  this->flipH->setChecked(this->sceneData.flipH);
+  this->flipV->setChecked(this->sceneData.flipV);
   this->frameSlider->setRange(0, std::max(0, this->sceneData.frames - 1));
   this->updating = false;
   this->refreshLayerList();
@@ -509,6 +571,8 @@ void SequenceGeneratorWindow::sequenceEdited()
   this->sceneData.height = this->height->value() & ~1;
   this->sceneData.frames = this->frames->value();
   this->sceneData.fpsNum = this->fps->value();
+  this->sceneData.flipH  = this->flipH->isChecked();
+  this->sceneData.flipV  = this->flipV->isChecked();
   this->frameSlider->setRange(0, std::max(0, this->sceneData.frames - 1));
   this->canvas->setFrame(this->frameSlider->value());
 }
@@ -694,7 +758,8 @@ bool SequenceGeneratorWindow::saveScene(const QString &path, QString *error) con
   }
   const QJsonObject root{{"width", this->sceneData.width}, {"height", this->sceneData.height},
                          {"frames", this->sceneData.frames}, {"fps", this->sceneData.fpsNum},
-                         {"background", colour(this->sceneData.background)}, {"layers", list}};
+                         {"background", colour(this->sceneData.background)},
+                         {"flipH", this->sceneData.flipH}, {"flipV", this->sceneData.flipV}, {"layers", list}};
   QFile file(path);
   if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
   {
@@ -733,6 +798,8 @@ bool SequenceGeneratorWindow::loadScene(const QString &path, QString *error)
   s.frames     = root["frames"].toInt(s.frames);
   s.fpsNum     = root["fps"].toInt(s.fpsNum);
   s.background = colour(root["background"]);
+  s.flipH      = root["flipH"].toBool(false); // absent in scenes saved before the flips
+  s.flipV      = root["flipV"].toBool(false);
   for (const auto &v : root["layers"].toArray())
   {
     const auto o = v.toObject();
