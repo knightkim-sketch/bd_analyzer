@@ -58,9 +58,9 @@ public:
 
   /* Whether this estimator can run on the given pictures at all.
    *
-   * odyssey closed-loop answers false for a raw YUV pair: it needs a reconstruction to search
-   * against and an open-loop result to centre on. Asking up front lets the UI grey the choice out
-   * with a reason instead of producing an empty overlay.
+   * Asking up front lets the UI grey the choice out with a reason instead of producing an empty
+   * overlay. odyssey closed-loop runs on any frame pair: the encoder searches its reconstruction,
+   * an analyser searches the pair it is given.
    */
   virtual bool canRun(const MePictureSet &pictures, std::string *reason = nullptr) const = 0;
 

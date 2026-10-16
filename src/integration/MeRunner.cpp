@@ -53,7 +53,6 @@ me::MeFrameResult runMe(const MeRunRequest &request)
   auto estimator = me::makeEstimator(request.params.algorithm);
   if (!estimator)
   {
-    // The closed-loop estimator is the second phase; saying so beats an empty overlay.
     failed.error = "this algorithm is not implemented yet";
     return failed;
   }
@@ -91,6 +90,37 @@ me::MeFrameResult runMe(const MeRunRequest &request)
   {
     failed.error = why;
     return failed;
+  }
+
+  /* odyssey closed-loop centres every block on another estimate, as the encoder centres it on its
+   * open-loop result. The seed runs first on the same pair, for every block size so each block
+   * finds its co-located vector whatever sizes are shown; it shares the cancel token, and the
+   * progress bar follows the closed-loop pass that comes after it.
+   */
+  if (request.params.algorithm == me::Algorithm::OdysseyClosedLoop && request.params.seedAlgorithm &&
+      *request.params.seedAlgorithm != me::Algorithm::OdysseyClosedLoop)
+  {
+    auto seedEstimator = me::makeEstimator(*request.params.seedAlgorithm);
+    if (!seedEstimator)
+    {
+      failed.error = "the start vector algorithm cannot run on a frame pair";
+      return failed;
+    }
+    auto seedParams          = request.params;
+    seedParams.algorithm     = *request.params.seedAlgorithm;
+    seedParams.blockSizes    = me::BlockSizeSet::all();
+    seedParams.seedAlgorithm = std::nullopt;
+    seedParams.progress      = nullptr;
+    const auto seed          = seedEstimator->estimateFrame(pictures, seedParams);
+    if (seed.cancelled || !seed.error.empty())
+    {
+      failed.cancelled = seed.cancelled;
+      failed.error     = seed.error.empty() ? std::string() : "start vectors: " + seed.error;
+      return failed;
+    }
+    auto params = request.params;
+    params.seed = &seed;
+    return estimator->estimateFrame(pictures, params);
   }
 
   return estimator->estimateFrame(pictures, request.params);

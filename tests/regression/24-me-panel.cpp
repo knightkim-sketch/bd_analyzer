@@ -139,7 +139,6 @@ int main(int argc, char **argv)
     check(!panel->params().blockSizes.contains(bda::me::BlockSize::Blk8),
           "and unchecking takes it away");
 
-    // The closed-loop entry is visible so the plan shows, but cannot be chosen.
     check(algo->count() == 4, "all four algorithms are listed");
     algo->setCurrentIndex(3);
     settle(100);
@@ -148,9 +147,10 @@ int main(int argc, char **argv)
     check(panel->gfInterval() == 16, "and defaults to GF 16");
     algo->setCurrentIndex(2);
     settle(100);
-    check(algo->currentIndex() != 2 || panel->params().algorithm ==
-                                           bda::me::Algorithm::OdysseyClosedLoop,
-          "the closed-loop entry is disabled rather than hidden");
+    check(algo->currentIndex() == 2 &&
+              panel->params().algorithm == bda::me::Algorithm::OdysseyClosedLoop &&
+              !panel->params().seedAlgorithm,
+          "odyssey closed-loop can be chosen, starting from (0, 0) by default");
     algo->setCurrentIndex(0);
     settle(100);
   }

@@ -6,6 +6,7 @@
 #pragma once
 
 #include <atomic>
+#include <optional>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -95,7 +96,7 @@ enum class Algorithm
 {
   SvtIntegerMe = 0,  // SVT-AV1 v4.2.0, HME + integer search. Full-pel.
   OdysseyOpenLoop,   // odyssey lookahead ME. Full-pel, source reference.
-  OdysseyClosedLoop, // odyssey encoder ME. Needs a recon reference and an open-loop centre.
+  OdysseyClosedLoop, // odyssey encoder ME: full-pel window around a seed centre, then sub-pel.
   OdysseyOpenLoopAdv, // odyssey lookahead ME over a whole GF structure, with TMV. Full-pel.
 };
 
@@ -235,6 +236,16 @@ struct MeParams
   // Debug switch mirrored from odyssey's av1_dbg_srb_zero_center: pin the search centre to (0,0)
   // so a reproduction can be compared stage by stage.
   bool forceZeroCentre = false;
+
+  /* odyssey closed-loop only. The estimate whose vectors become each block's search centre - the
+   * role odyssey's open-loop result plays in the encoder. Empty means every block starts at (0,0).
+   * The runner computes the seed on the same frame pair and hands it over through `seed` below.
+   */
+  std::optional<Algorithm> seedAlgorithm;
+  const MeFrameResult     *seed = nullptr; //!< Borrowed, may be null
+
+  // odyssey closed-loop only: frame_header.allow_high_precision_mv (eighth-pel refinement, 8-tap).
+  bool allowHighPrecisionMv = true;
 
   /* Borrowed, may be null. Checked between superblocks - fine enough to stay responsive, coarse
    * enough not to cost anything in the inner loops.

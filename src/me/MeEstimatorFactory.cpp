@@ -1,4 +1,5 @@
 #include "IMotionEstimator.h"
+#include "OdysseyClosedLoopMe.h"
 #include "OdysseyOpenLoopMe.h"
 #include "SvtIntegerMe.h"
 
@@ -14,12 +15,7 @@ MotionEstimatorPtr makeEstimator(Algorithm algorithm)
   case Algorithm::OdysseyOpenLoop:
     return std::make_unique<OdysseyOpenLoopMe>();
   case Algorithm::OdysseyClosedLoop:
-    /* Second phase. It needs a reconstruction to search against and an open-loop result to centre
-     * on, so it cannot be dropped in as a third independent estimator - returning null here is
-     * what lets the UI grey the choice out instead of offering something that would produce an
-     * empty overlay.
-     */
-    return nullptr;
+    return std::make_unique<OdysseyClosedLoopMe>();
   case Algorithm::OdysseyOpenLoopAdv:
     /* Not a frame-pair estimator: it analyses a whole GF structure in odyssey's order through
      * estimateOdysseyOpenLoopAdv() (OdysseyOpenLoopAdvMe.h), which the GOP run path calls.

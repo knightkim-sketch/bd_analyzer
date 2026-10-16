@@ -7,7 +7,6 @@
 #include <QLabel>
 #include <QProgressBar>
 #include <QSpinBox>
-#include <QStandardItemModel>
 #include <QVBoxLayout>
 #include <algorithm>
 
@@ -43,15 +42,13 @@ MotionEstimationWidget::MotionEstimationWidget(QWidget *parent) : QWidget(parent
                             static_cast<int>(me::Algorithm::SvtIntegerMe));
   this->algorithm_->addItem(tr("Odyssey open-loop ME"),
                             static_cast<int>(me::Algorithm::OdysseyOpenLoop));
-  /* The closed-loop estimator is the second phase. It is listed so the plan is visible, and
-   * disabled so choosing it cannot produce an empty overlay: it needs a reconstruction to search
-   * against and an open-loop result to centre on.
-   */
-  this->algorithm_->addItem(tr("Odyssey closed-loop ME (not yet)"),
+  this->algorithm_->addItem(tr("Odyssey closed-loop ME"),
                             static_cast<int>(me::Algorithm::OdysseyClosedLoop));
-  if (auto *model = qobject_cast<QStandardItemModel *>(this->algorithm_->model()))
-    if (auto *item = model->item(2))
-      item->setEnabled(false);
+  this->algorithm_->setItemData(
+      2,
+      tr("odyssey's encoder ME: a full-pel 8x8 window around each block's start vector, then a "
+         "64-point quarter/eighth-pel search on the frame pair. Matches odyssey's own trace."),
+      Qt::ToolTipRole);
   this->algorithm_->addItem(tr("Odyssey open-loop ME adv (GF + TMV)"),
                             static_cast<int>(me::Algorithm::OdysseyOpenLoopAdv));
   this->algorithm_->setItemData(
@@ -81,6 +78,22 @@ MotionEstimationWidget::MotionEstimationWidget(QWidget *parent) : QWidget(parent
   this->advReference_->setToolTip(tr("B frames search L0 and L1, P frames two list-0 references; "
                                      "the overlay shows one of them."));
   form->addRow(tr("Show"), this->advReference_);
+
+  // odyssey closed-loop only (shown when it is chosen).
+  this->seed_ = new QComboBox(this);
+  this->seed_->addItem(tr("None (0, 0)"), -1);
+  this->seed_->addItem(tr("SVT-AV1 integer ME"), static_cast<int>(me::Algorithm::SvtIntegerMe));
+  this->seed_->addItem(tr("Odyssey open-loop ME"), static_cast<int>(me::Algorithm::OdysseyOpenLoop));
+  this->seed_->setToolTip(tr("Where each block's search starts: the vector the chosen ME finds for "
+                             "the same block and size (odyssey uses its open-loop result), or "
+                             "(0, 0)."));
+  form->addRow(tr("Start MV from"), this->seed_);
+  this->subpel_ = new QComboBox(this);
+  this->subpel_->addItem(tr("1/8 pel allowed"), true);
+  this->subpel_->addItem(tr("1/4 pel only"), false);
+  this->subpel_->setToolTip(tr("allow_high_precision_mv: eighth-pel refinement with the 8-tap "
+                               "filter, or quarter-pel with the 4-tap one."));
+  form->addRow(tr("Sub-pel"), this->subpel_);
 
   /* The block-size checkboxes are the only switch for which overlays exist - the statistics panel
    * gets exactly the types selected here. Putting the same choice in both places would leave the
@@ -128,7 +141,7 @@ MotionEstimationWidget::MotionEstimationWidget(QWidget *parent) : QWidget(parent
   connect(this->interval_, &QSpinBox::valueChanged, this, notify);
   connect(this->algorithm_, &QComboBox::currentIndexChanged, this, notify);
   connect(this->algorithm_, &QComboBox::currentIndexChanged, this, [this] { this->updateAdvControls(); });
-  for (auto *box : {this->gf_, this->tmvGrid_, this->advReference_})
+  for (auto *box : {this->gf_, this->tmvGrid_, this->advReference_, this->seed_, this->subpel_})
     connect(box, &QComboBox::currentIndexChanged, this, notify);
   this->updateAdvControls();
   connect(this->staticBypass_, &QCheckBox::toggled, this, notify);
@@ -148,6 +161,10 @@ void MotionEstimationWidget::updateAdvControls()
   for (QWidget *w : {static_cast<QWidget *>(this->gf_), static_cast<QWidget *>(this->tmvGrid_),
                      static_cast<QWidget *>(this->advReference_)})
     this->form_->setRowVisible(w, adv);
+  const bool closedLoop =
+      this->algorithm_->currentData().toInt() == static_cast<int>(me::Algorithm::OdysseyClosedLoop);
+  for (QWidget *w : {static_cast<QWidget *>(this->seed_), static_cast<QWidget *>(this->subpel_)})
+    this->form_->setRowVisible(w, closedLoop);
   if (this->controlsEnabled_)
     this->interval_->setEnabled(!adv);
   this->interval_->setToolTip(adv ? tr("Not used by odyssey open-loop adv: the GF structure picks "
@@ -185,6 +202,10 @@ me::MeParams MotionEstimationWidget::params() const
   if (this->size64_->isChecked())
     sizes.add(me::BlockSize::Blk64);
   p.blockSizes = sizes;
+
+  if (const int seed = this->seed_->currentData().toInt(); seed >= 0)
+    p.seedAlgorithm = static_cast<me::Algorithm>(seed);
+  p.allowHighPrecisionMv = this->subpel_->currentData().toBool();
 
   return p;
 }

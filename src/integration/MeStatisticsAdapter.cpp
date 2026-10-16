@@ -58,7 +58,7 @@ const char *nativeCostName(Algorithm algorithm)
   case Algorithm::OdysseyOpenLoopAdv:
     return "SSE + rate^2";
   case Algorithm::OdysseyClosedLoop:
-    return "SAD + rate";
+    return "sub-pel SAD";
   }
   return "cost";
 }
@@ -326,6 +326,18 @@ void fillMeStatistics(stats::StatisticsData &data, const me::MeFrameResult &resu
 {
   if (!result.ok())
     return;
+
+  /* A new estimate of the frame already shown (only a parameter changed, so setFrameIndex() kept
+   * the data) must replace the old blocks, not be appended behind them: Block Info returns the
+   * first block that covers a pixel.
+   */
+  for (int s = 0; s < me::kBlockSizeCount; ++s)
+  {
+    const auto size = static_cast<me::BlockSize>(s);
+    for (int id : {meVectorTypeId(result.algorithm, size), meCostTypeId(result.algorithm, size),
+                   meCommonSadTypeId(result.algorithm, size)})
+      data.eraseDataForTypeID(id);
+  }
 
   for (const auto &block : result.blocks)
   {

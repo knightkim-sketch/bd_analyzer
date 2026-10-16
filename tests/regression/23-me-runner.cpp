@@ -200,8 +200,14 @@ int main(int argc, char **argv)
     req.params.blockSizes.add(me::BlockSize::Blk64);
     req.params.algorithm = me::Algorithm::OdysseyClosedLoop;
     result               = integration::runMe(req);
-    check(!result.ok() && !result.error.empty(),
-          "the unimplemented algorithm says so: " + result.error);
+    check(result.ok() && !result.blocks.empty() &&
+              result.algorithm == me::Algorithm::OdysseyClosedLoop,
+          "odyssey closed-loop runs on a frame pair, starting from (0, 0)");
+    req.params.seedAlgorithm = me::Algorithm::OdysseyOpenLoop;
+    result                   = integration::runMe(req);
+    check(result.ok() && !result.blocks.empty(),
+          "and with open-loop start vectors, computed by the runner on the same pair");
+    req.params.seedAlgorithm = std::nullopt;
 
     req.params.algorithm  = me::Algorithm::SvtIntegerMe;
     req.referenceFrame    = QByteArray(16, '\0'); // far too short for a frame

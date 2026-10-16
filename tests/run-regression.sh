@@ -195,7 +195,8 @@ run_unit_test() {
 # 같은 파일들을 가져가지만(패치 0026), 테스트는 libYUViewLib.a 에 그것들이 들어있다고 가정하지
 # 않는다 - 그러면 .pro 배선이 깨져도 테스트가 통과해 버린다.
 BDA_ME_SRCS="$ROOT/src/me/MePlane.cpp $ROOT/src/me/MeCost.cpp $ROOT/src/me/SvtIntegerMe.cpp \
-             $ROOT/src/me/OdysseyOpenLoopMe.cpp $ROOT/src/me/MeEstimatorFactory.cpp \
+             $ROOT/src/me/OdysseyOpenLoopMe.cpp $ROOT/src/me/OdysseyClosedLoopMe.cpp \
+             $ROOT/src/me/MeEstimatorFactory.cpp \
              $ROOT/src/integration/MeStatisticsAdapter.cpp $ROOT/src/integration/MeFrameSource.cpp \
              $ROOT/src/integration/MeRunner.cpp"
 
@@ -271,6 +272,10 @@ run_unit_test "$ROOT/tests/unit/me-svt-integer.cpp" \
               "$ROOT/src/me/MePlane.cpp" "$ROOT/src/me/MeCost.cpp" "$ROOT/src/me/SvtIntegerMe.cpp"
 run_unit_test "$ROOT/tests/unit/me-odyssey-openloop.cpp" \
               "$ROOT/src/me/MePlane.cpp" "$ROOT/src/me/MeCost.cpp" "$ROOT/src/me/OdysseyOpenLoopMe.cpp"
+# odyssey closed-loop ME (SAD path): 예측 보간(8/4-tap), 정수 창·clamp·rate, 부화소 1/8·1/4, seed 중심.
+# 비트 단위 기준은 odyssey trace_cl_inter 대조 (docs/ai/30-designs/odyssey-closedloop-design.md).
+run_unit_test "$ROOT/tests/unit/me-odyssey-closedloop.cpp" \
+              "$ROOT/src/me/MePlane.cpp" "$ROOT/src/me/MeCost.cpp" "$ROOT/src/me/OdysseyClosedLoopMe.cpp"
 # 프레임 단위 global motion (integral projection, 4x4 윈도). 설계 §5 의 V1(평행이동, 부호 포함)·
 # V2(밝기 변화에도 같은 MV)·V3(같은 프레임은 기각)과 Qt 없는 Y4M/raw 리더. 판정은 설계 문구
 # 그대로 엄격하다 (Knight 결정) — 실패는 알고리즘 한계를 뜻하며 docs 의 global-motion-design 에 기록.
@@ -617,6 +622,9 @@ run_test_bda "$ROOT/tests/regression/48-y4m-sequence-generator.cpp"
 # ME 패널의 odyssey open-loop adv: GF 그룹 실행, Block Info 의 common SAD == 코어 직접 호출 결과,
 # 같은 그룹의 다른 프레임은 캐시로 즉시 표시, "Second reference" 는 두 번째 search.
 run_test_bda "$ROOT/tests/regression/49-me-openloop-adv-panel.cpp"
+# ME 패널의 odyssey closed-loop: Start MV from(open-loop / None) 과 Sub-pel(1/4) 이 바뀌면 Block Info 의
+# sub-pel SAD 가 코어 직접 호출(open-loop seed -> closed-loop) 결과와 같은지.
+run_test_bda "$ROOT/tests/regression/51-me-closedloop-panel.cpp"
 else
     echo "  SKIP  15-raw-av1-extension (raw AV1 생성 실패)"
     ((skip_count++))
