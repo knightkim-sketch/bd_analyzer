@@ -55,6 +55,9 @@ private:
   QPointF origin() const;
   QPointF toScene(const QPointF &widgetPos) const; //!< Scene (unflipped) coordinates.
   QPointF mirror(const QPointF &p) const;           //!< Scene <-> picture under the scene's flips.
+  //!< Camera shake at the shown frame: scene -> unflipped picture, and back (identity when Off).
+  QPointF cameraForward(const QPointF &p) const;
+  QPointF cameraInverse(const QPointF &p) const;
   QRectF  layerBox(int layer) const; //!< Axis-aligned box at the shown frame, scene pixels.
   int     layerAt(const QPointF &scenePos) const;
 
@@ -88,7 +91,9 @@ public:
   //!< After changing scene() directly, refresh the controls and the preview.
   void sceneChanged();
 
-  /* Write the sequence to `path`; emits generated(path) on success. For tests and the button. */
+  /* Write the sequence to `path`; emits generated(path) on success. For tests and the button.
+   * With camera shake on, the camera trajectory goes next to it as <path>.camera.csv.
+   */
   bool generate(const QString &path, QString *error = nullptr);
 
   bool saveScene(const QString &path, QString *error = nullptr) const;
@@ -126,6 +131,9 @@ private:
   QSpinBox    *width{}, *height{}, *frames{}, *fps{};
   QPushButton *backgroundButton{};
   QCheckBox   *flipH{}, *flipV{};
+  QComboBox      *cameraMode{}; //!< Camera shake: Off / Random walk / Sine
+  QDoubleSpinBox *cameraAmpX{}, *cameraAmpY{}, *cameraAmpDeg{};
+  QSpinBox       *cameraPeriod{}, *cameraSeed{};
   QComboBox   *shapeKind{};
   QListWidget *layers{};
   QSpinBox    *x{}, *y{}, *w{}, *h{}, *alpha{};

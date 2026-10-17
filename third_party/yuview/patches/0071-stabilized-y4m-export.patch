@@ -1,0 +1,20 @@
+--- a/YUViewLib/src/ui/Mainwindow.cpp
++++ b/YUViewLib/src/ui/Mainwindow.cpp
+@@ -38,6 +38,7 @@
+ #include <integration/MeFrameSource.h>
+ #include <integration/MeStatisticsAdapter.h>
+ #include <integration/MotionEstimationWidget.h>
++#include <integration/StabilizedY4mExport.h>
+ #include <playlistitem/playlistItemCompressedVideo.h>
+ #include <playlistitem/playlistItemRawFile.h>
+ #include <playlistitem/playlistItemWithVideo.h>
+@@ -739,6 +740,9 @@
+   connect(fileMenu->addAction(tr("Export &Filtered Y4M...")), &QAction::triggered, this, [this]() {
+     bda::integration::exportFilteredY4m(ui.playlistTreeWidget->getSelectedItems()[0], this);
+   });
++  connect(fileMenu->addAction(tr("Export &Stabilized Y4M...")), &QAction::triggered, this, [this]() {
++    bda::integration::exportStabilizedY4m(ui.playlistTreeWidget->getSelectedItems()[0], this);
++  });
+   addActionToMenu(fileMenu, "&Generate Y4M Sequence...", this, &MainWindow::openSequenceGenerator);
+   fileMenu->addSeparator();
+   addActionToMenu(fileMenu, "&Settings...", this, &MainWindow::showSettingsWindow);

@@ -9,8 +9,14 @@
 //   * a fractional MV keeps its fraction: MV(0.5, 0.25) is MV(2, 1) after four frames;
 //   * the written y4m reads back (src/me/YuvLumaReader) with the same size, length and luma;
 //   * flipH puts luma (x, y) at (w-1-x, y), flipV at (x, h-1-y), chroma mirrors the same way, both
-//     flips are a 180 degree rotation, and with both off the frame is unchanged.
+//     flips are a 180 degree rotation, and with both off the frame is unchanged;
+//   * camera shake: a whole-pixel camera translation is the unshaken frame shifted by it, a
+//     fractional one equals moving every layer by it, the random walk is bounded and the same on
+//     every run, and the trajectory CSV holds cameraInOutput (signs flipped with the picture).
+#include <cmath>
 #include <cstdio>
+#include <fstream>
+#include <sstream>
 #include <iostream>
 #include <string>
 
@@ -252,6 +258,108 @@ int main()
     std::remove(path.c_str());
     s.width = 63;
     check(!writeY4m(s, path).empty(), "an odd width is refused");
+  }
+
+  // Camera shake.
+  {
+    auto s = smallScene();
+    s.layers.push_back(rect(8, 6, 10, 10, {200, 90, 160}));
+    auto tri = rect(30, 20, 14, 12, {120, 60, 200});
+    tri.kind = ShapeKind::Triangle;
+    tri.motion.vx = 1.5;
+    s.layers.push_back(tri);
+
+    // Sine with amplitude 4 and period 4: frame 1 is (4, -4) - whole pixels, so a plain shift.
+    auto sh          = s;
+    sh.camera.mode   = CameraMode::Sine;
+    sh.camera.ampX   = 4, sh.camera.ampY = 4, sh.camera.period = 4;
+    const auto c1    = cameraAt(sh, 1);
+    check(std::abs(c1.dx - 4) < 1e-9 && std::abs(c1.dy + 4) < 1e-9 && c1.angle == 0, "Sine frame 1: camera at (4, -4)");
+    check(cameraAt(sh, 0).dx == 0 && cameraAt(sh, 0).dy == 0, "frame 0 is at rest");
+    const auto plain = renderFrame(s, 1), shaken = renderFrame(sh, 1);
+    bool       shifted = true;
+    for (int y = 0; y < 48; ++y)
+      for (int x = 0; x < 64; ++x)
+      {
+        const int sx = x - 4, sy = y + 4;
+        if (sx >= 0 && sy < 48)
+          shifted = shifted && lumaAt(shaken, x, y) == lumaAt(plain, sx, sy);
+      }
+    check(shifted, "shaken frame 1 == unshaken frame 1 shifted by cameraAt(1) = (4, -4)");
+
+    // Random walk, fractional: the same as moving every layer by the camera offset.
+    auto rw          = s;
+    rw.frames        = 40;
+    rw.camera.mode   = CameraMode::RandomWalk;
+    rw.camera.ampX   = 6, rw.camera.ampY = 3, rw.camera.seed = 7;
+    bool bounded = true, same = true, fractional = false;
+    for (int k = 0; k < rw.frames; ++k)
+    {
+      const auto c = cameraAt(rw, k);
+      bounded      = bounded && std::abs(c.dx) <= 6 && std::abs(c.dy) <= 3 && c.angle == 0;
+      fractional   = fractional || c.dx != std::floor(c.dx);
+      auto moved   = rw;
+      moved.camera = {};
+      for (auto &l : moved.layers)
+        l.x += c.dx, l.y += c.dy;
+      const auto a = renderFrame(rw, k), b = renderFrame(moved, k);
+      same         = same && a.y == b.y && a.u == b.u && a.v == b.v;
+    }
+    check(bounded && fractional, "random walk: fractional steps, within the amplitudes");
+    check(same, "random walk: every frame == the layers moved by cameraAt(k) (Y, U, V)");
+    check(cameraAt(rw, 23).dx == cameraAt(rw, 23).dx && cameraAt(rw, 23).dy == cameraAt(rw, 23).dy &&
+              cameraAt(rw, 17).dx != cameraAt(rw, 18).dx,
+          "random walk: deterministic, and it moves");
+    // Pinned values: the LCG must not change behind the tests' back (seed 7, ampX 6: k = 1).
+    {
+      std::uint32_t st = 7;
+      st               = st * 1103515245u + 12345u;
+      const double u   = double((st >> 16) & 0x7fffu) / 32767.0 * 2 - 1;
+      check(std::abs(cameraAt(rw, 1).dx - u * 3) < 1e-12, "random walk: frame 1 is the first LCG draw times ampX / 2");
+    }
+    auto off = rw;
+    off.camera.ampX = 0, off.camera.ampY = 0;
+    auto still = off;
+    still.camera = {};
+    check(renderFrame(off, 9).y == renderFrame(still, 9).y, "a random walk with zero amplitude renders the unshaken frame");
+
+    // Trajectory CSV, flipped: dx and the angle negate under flipH, dy under flipV.
+    rw.camera.ampDeg = 2;
+    rw.flipH         = true;
+    const std::string csv = "/tmp/bd-generator-unit.camera.csv";
+    check(writeTrajectoryCsv(rw, csv).empty(), "the camera CSV is written");
+    std::ifstream in(csv);
+    std::string   line;
+    std::getline(in, line);
+    bool header = line == "frame,dx,dy,angle", rows = true;
+    int  n      = 0;
+    while (std::getline(in, line))
+    {
+      int    k;
+      double dx, dy, a;
+      if (std::sscanf(line.c_str(), "%d,%lf,%lf,%lf", &k, &dx, &dy, &a) != 4)
+      {
+        rows = false;
+        break;
+      }
+      const auto c = cameraAt(rw, k);
+      rows         = rows && k == n && std::abs(dx + c.dx) < 1e-5 && std::abs(dy - c.dy) < 1e-5 && std::abs(a + c.angle) < 1e-5;
+      ++n;
+    }
+    check(header && rows && n == rw.frames, "camera CSV: one row per frame, flipH negates dx and the angle");
+    std::remove(csv.c_str());
+    rw.flipH = false, rw.flipV = true;
+    const auto o = cameraInOutput(rw, 5), c = cameraAt(rw, 5);
+    check(o.dx == c.dx && o.dy == -c.dy && o.angle == -c.angle, "flipV negates dy and the angle");
+
+    // Rotation about the picture centre: a layer centred on the picture centre stays put.
+    auto rot = smallScene();
+    rot.layers.push_back(rect(30, 22, 4, 4, {220, 128, 128}));
+    rot.camera.mode   = CameraMode::Sine;
+    rot.camera.ampX   = 0, rot.camera.ampY = 0, rot.camera.ampDeg = 30, rot.camera.period = 4;
+    const auto fr     = renderFrame(rot, 1);
+    check(lumaAt(fr, 31, 23) == 220 && lumaAt(fr, 32, 24) == 220 && lumaAt(fr, 20, 10) == 40,
+          "camera rotation turns about the picture centre");
   }
 
   std::cout << (g_failures == 0 ? "PASS" : "FAIL") << std::endl;

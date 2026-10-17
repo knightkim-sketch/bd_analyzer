@@ -11,7 +11,10 @@
 //   * a scene saved to JSON and loaded back renders the same frames;
 //   * the preview grid is a viewing aid: toggling it changes the canvas, not one byte of the y4m;
 //   * "Flip horizontal" mirrors the written frames left-right, and the flips survive the JSON round
-//     trip (a scene file without the flip keys loads unflipped).
+//     trip (a scene file without the flip keys loads unflipped);
+//   * "Camera shake" (mode, amplitudes, period, seed) reaches the scene, Generate writes
+//     <y4m>.camera.csv with one row per frame, the camera survives the JSON round trip and a scene
+//     file without the "camera" key loads with the camera off.
 #include <QAction>
 #include <QApplication>
 #include <QCheckBox>
@@ -24,6 +27,8 @@
 #include <QListWidget>
 #include <QImage>
 #include <QSettings>
+#include <QSpinBox>
+#include <cmath>
 #include <iostream>
 #include <string>
 #include <unistd.h>
@@ -251,16 +256,71 @@ int main(int argc, char **argv)
     settle(100);
   }
 
-  // Scene round trip, with both flips on.
+  // Camera shake from the Sequence group.
+  {
+    auto *mode   = gen->findChild<QComboBox *>("cameraMode");
+    auto *ampX   = gen->findChild<QDoubleSpinBox *>("cameraAmpX");
+    auto *ampY   = gen->findChild<QDoubleSpinBox *>("cameraAmpY");
+    auto *ampDeg = gen->findChild<QDoubleSpinBox *>("cameraAmpDeg");
+    auto *seed   = gen->findChild<QSpinBox *>("cameraSeed");
+    auto *period = gen->findChild<QSpinBox *>("cameraPeriod");
+    check(mode && ampX && ampY && ampDeg && seed && period && mode->currentIndex() == 0 && mode->count() == 3,
+          "the Sequence group has Camera shake (Off / Random walk / Sine) with amplitudes, period and seed");
+    if (mode && ampX && ampY && ampDeg && seed && period)
+    {
+      mode->setCurrentIndex(1);
+      ampX->setValue(5.5), ampY->setValue(3), ampDeg->setValue(0.5), seed->setValue(42), period->setValue(20);
+      settle(100);
+      const auto &cam = s.camera;
+      check(cam.mode == CameraMode::RandomWalk && cam.ampX == 5.5 && cam.ampY == 3 && cam.ampDeg == 0.5 &&
+                cam.seed == 42 && cam.period == 20,
+            "and the fields reach the scene's camera");
+      const QString shakePath = QDir::tempPath() + "/bd-generated-48-shake.y4m";
+      check(gen->generate(shakePath, &error), "the shaken y4m is written");
+      QFile csv(shakePath + ".camera.csv");
+      int   rows = -1;
+      bool  firstRow = false;
+      if (csv.open(QIODevice::ReadOnly))
+      {
+        const auto lines = QString::fromUtf8(csv.readAll()).split('\n', Qt::SkipEmptyParts);
+        rows             = int(lines.size()) - 1;
+        const auto c1    = cameraInOutput(s, 1);
+        const auto f     = lines.size() > 2 ? lines[2].split(',') : QStringList();
+        firstRow = lines.value(0) == "frame,dx,dy,angle" && f.size() == 4 && f[0] == "1" &&
+                   std::abs(f[1].toDouble() - c1.dx) < 1e-5 && std::abs(f[2].toDouble() - c1.dy) < 1e-5 &&
+                   std::abs(f[3].toDouble() - c1.angle) < 1e-5;
+      }
+      check(rows == 12 && firstRow, "Generate writes <y4m>.camera.csv: header, 12 rows, cameraInOutput values (flips applied)");
+      bda::me::YuvLumaReader sr;
+      bool                   shaken = sr.openY4m(shakePath.toStdString(), err);
+      const auto             plane  = shaken ? sr.readLuma(7, 0, err) : bda::me::MePlane();
+      const auto             f7     = renderFrame(s, 7);
+      for (int y = 0; shaken && y < 192; ++y)
+        for (int x = 0; shaken && x < 320; ++x)
+          shaken = plane.at(x, y) == f7.y[std::size_t(y) * 320 + x];
+      check(shaken, "the shaken file's frame 7 is the renderer's frame 7 with the camera");
+      QFile::remove(shakePath), QFile::remove(shakePath + ".camera.csv");
+    }
+  }
+
+  // Scene round trip, with both flips and the camera on.
   const QString scenePath = QDir::tempPath() + "/bd-generated-48.json";
   const Scene   before    = s;
   check(gen->saveScene(scenePath, &error), "the scene saves to JSON");
   gen->scene().layers.clear();
   gen->scene().flipH = gen->scene().flipV = false;
+  gen->scene().camera = {};
   check(gen->loadScene(scenePath, &error) && gen->scene().layers.size() == 5, "and loads back with its five layers");
   check(sameFrames(before, gen->scene()), "rendering the same frames");
   check(gen->scene().flipH && gen->scene().flipV && flipH && flipH->isChecked() && flipV && flipV->isChecked(),
         "the flips come back from the JSON, checkboxes included");
+  {
+    const auto &c = gen->scene().camera;
+    auto *mode    = gen->findChild<QComboBox *>("cameraMode");
+    check(c.mode == CameraMode::RandomWalk && c.ampX == 5.5 && c.ampY == 3 && c.ampDeg == 0.5 && c.seed == 42 &&
+              c.period == 20 && mode && mode->currentIndex() == 1,
+          "the camera comes back from the JSON, combo included");
+  }
 
   // A scene saved before the flips existed has no flip keys: it loads unflipped.
   {
@@ -269,12 +329,15 @@ int main(int argc, char **argv)
     if (f.open(QIODevice::ReadOnly))
       root = QJsonDocument::fromJson(f.readAll()).object();
     f.close();
-    root.remove("flipH"), root.remove("flipV");
+    root.remove("flipH"), root.remove("flipV"), root.remove("camera");
     if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
       f.write(QJsonDocument(root).toJson());
     f.close();
     check(gen->loadScene(scenePath, &error) && !gen->scene().flipH && !gen->scene().flipV && flipH && !flipH->isChecked(),
           "a scene file without flip keys loads with both flips off");
+    auto *mode = gen->findChild<QComboBox *>("cameraMode");
+    check(gen->scene().camera.mode == CameraMode::Off && mode && mode->currentIndex() == 0,
+          "and without the camera key with the camera off");
   }
 
   std::cout << (g_failures == 0 ? "RESULT: PASS" : "RESULT: FAIL") << std::endl;

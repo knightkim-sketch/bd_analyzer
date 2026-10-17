@@ -144,7 +144,28 @@ QPointF GeneratorCanvas::origin() const
 
 // Hit-testing and edits work in scene coordinates, so a position on the flipped picture is mirrored
 // back first; drags then follow the mouse on screen.
-QPointF GeneratorCanvas::toScene(const QPointF &p) const { return this->mirror((p - this->origin()) / this->scale()); }
+QPointF GeneratorCanvas::toScene(const QPointF &p) const
+{
+  return this->cameraInverse(this->mirror((p - this->origin()) / this->scale()));
+}
+
+// The forward camera of generator::CameraMotion: p = c + R(a) (q - c) + d.
+QPointF GeneratorCanvas::cameraForward(const QPointF &q) const
+{
+  const auto cam = generator::cameraAt(this->scene, this->frameIdx);
+  const double r = cam.angle * 3.14159265358979323846 / 180.0, c = std::cos(r), s = std::sin(r);
+  const double cx = this->scene.width / 2.0, cy = this->scene.height / 2.0, ux = q.x() - cx, uy = q.y() - cy;
+  return {cx + c * ux - s * uy + cam.dx, cy + s * ux + c * uy + cam.dy};
+}
+
+QPointF GeneratorCanvas::cameraInverse(const QPointF &p) const
+{
+  const auto cam = generator::cameraAt(this->scene, this->frameIdx);
+  const double r = cam.angle * 3.14159265358979323846 / 180.0, c = std::cos(r), s = std::sin(r);
+  const double cx = this->scene.width / 2.0, cy = this->scene.height / 2.0;
+  const double ux = p.x() - cx - cam.dx, uy = p.y() - cy - cam.dy;
+  return {cx + c * ux + s * uy, cy - s * ux + c * uy};
+}
 
 QPointF GeneratorCanvas::mirror(const QPointF &p) const
 {
@@ -188,12 +209,15 @@ void GeneratorCanvas::paintEvent(QPaintEvent *)
 
   if (this->selectedLayer >= 0 && this->selectedLayer < int(this->scene.layers.size()))
   {
-    // The box and its resize corner where they appear on the (possibly flipped) picture.
-    const auto   box = this->layerBox(this->selectedLayer);
-    const QRectF wbox(o + this->mirror(box.topLeft()) * s, o + this->mirror(box.bottomRight()) * s);
-    const QPointF handle = o + this->mirror(box.bottomRight()) * s;
+    // The box and its resize corner where they appear on the (possibly shaken and flipped)
+    // picture; under a rotating camera the box is drawn as the quadrilateral it becomes.
+    const auto box    = this->layerBox(this->selectedLayer);
+    const auto toView = [&](const QPointF &q) { return o + this->mirror(this->cameraForward(q)) * s; };
+    const QPolygonF quad{toView(box.topLeft()), toView(box.topRight()), toView(box.bottomRight()), toView(box.bottomLeft())};
+    const QRectF  wbox   = quad.boundingRect();
+    const QPointF handle = toView(box.bottomRight());
     painter.setPen(QPen(Qt::yellow, 1, Qt::DashLine));
-    painter.drawRect(wbox.normalized());
+    painter.drawPolygon(quad);
     painter.fillRect(QRectF(handle - QPointF(4, 4), QSizeF(8, 8)), Qt::yellow); // resize handle
     // Where the object is one frame later: its motion vector as seen on the picture, MV(x, y).
     const auto &m  = this->scene.layers[std::size_t(this->selectedLayer)].motion;
@@ -357,6 +381,28 @@ SequenceGeneratorWindow::SequenceGeneratorWindow(QWidget *parent) : QDialog(pare
   auto *flip = new QHBoxLayout();
   flip->addWidget(this->flipH), flip->addWidget(this->flipV);
   seqForm->addRow("Flip", flip);
+  // Camera shake: the whole picture moves under a camera, before the flips (generator::CameraMotion).
+  this->cameraMode = new QComboBox(this);
+  this->cameraMode->setObjectName("cameraMode");
+  this->cameraMode->addItems({"Off", "Random walk", "Sine"});
+  this->cameraMode->setToolTip("Moves the whole picture as a shaking camera would. Generate also writes "
+                               "the camera trajectory (as seen after the flips) to <y4m>.camera.csv.");
+  this->cameraAmpX   = dspin(0, 256, this->sceneData.camera.ampX, 0.5, 2);
+  this->cameraAmpY   = dspin(0, 256, this->sceneData.camera.ampY, 0.5, 2);
+  this->cameraAmpDeg = dspin(0, 45, this->sceneData.camera.ampDeg, 0.1, 2);
+  this->cameraPeriod = spin(1, 10000, this->sceneData.camera.period);
+  this->cameraSeed   = spin(0, 2147483647, int(this->sceneData.camera.seed));
+  this->cameraAmpX->setObjectName("cameraAmpX"), this->cameraAmpY->setObjectName("cameraAmpY");
+  this->cameraAmpDeg->setObjectName("cameraAmpDeg"), this->cameraPeriod->setObjectName("cameraPeriod");
+  this->cameraSeed->setObjectName("cameraSeed");
+  auto *amp = new QHBoxLayout();
+  amp->addWidget(this->cameraAmpX), amp->addWidget(this->cameraAmpY), amp->addWidget(this->cameraAmpDeg);
+  auto *camMisc = new QHBoxLayout();
+  camMisc->addWidget(new QLabel("period", this)), camMisc->addWidget(this->cameraPeriod);
+  camMisc->addWidget(new QLabel("seed", this)), camMisc->addWidget(this->cameraSeed);
+  seqForm->addRow("Camera shake", this->cameraMode);
+  seqForm->addRow("Amplitude x, y px, deg", amp);
+  seqForm->addRow("", camMisc);
   right->addWidget(seqBox);
 
   // Layers
@@ -461,6 +507,11 @@ SequenceGeneratorWindow::SequenceGeneratorWindow(QWidget *parent) : QDialog(pare
     connect(s, &QSpinBox::valueChanged, this, &SequenceGeneratorWindow::sequenceEdited);
   for (auto *c : {this->flipH, this->flipV})
     connect(c, &QCheckBox::toggled, this, &SequenceGeneratorWindow::sequenceEdited);
+  connect(this->cameraMode, &QComboBox::currentIndexChanged, this, &SequenceGeneratorWindow::sequenceEdited);
+  for (auto *d : {this->cameraAmpX, this->cameraAmpY, this->cameraAmpDeg})
+    connect(d, &QDoubleSpinBox::valueChanged, this, &SequenceGeneratorWindow::sequenceEdited);
+  for (auto *sp : {this->cameraPeriod, this->cameraSeed})
+    connect(sp, &QSpinBox::valueChanged, this, &SequenceGeneratorWindow::sequenceEdited);
   const auto gridEdited = [this] {
     const int g = this->gridSpacing->currentData().toInt();
     this->canvas->setGrid(this->gridCheck->isChecked(), g);
@@ -493,6 +544,12 @@ void SequenceGeneratorWindow::sceneChanged()
   setButtonColour(this->backgroundButton, this->sceneData.background);
   this->flipH->setChecked(this->sceneData.flipH);
   this->flipV->setChecked(this->sceneData.flipV);
+  this->cameraMode->setCurrentIndex(int(this->sceneData.camera.mode));
+  this->cameraAmpX->setValue(this->sceneData.camera.ampX);
+  this->cameraAmpY->setValue(this->sceneData.camera.ampY);
+  this->cameraAmpDeg->setValue(this->sceneData.camera.ampDeg);
+  this->cameraPeriod->setValue(this->sceneData.camera.period);
+  this->cameraSeed->setValue(int(this->sceneData.camera.seed));
   this->frameSlider->setRange(0, std::max(0, this->sceneData.frames - 1));
   this->updating = false;
   this->refreshLayerList();
@@ -573,6 +630,13 @@ void SequenceGeneratorWindow::sequenceEdited()
   this->sceneData.fpsNum = this->fps->value();
   this->sceneData.flipH  = this->flipH->isChecked();
   this->sceneData.flipV  = this->flipV->isChecked();
+  auto &cam              = this->sceneData.camera;
+  cam.mode               = generator::CameraMode(this->cameraMode->currentIndex());
+  cam.ampX               = this->cameraAmpX->value();
+  cam.ampY               = this->cameraAmpY->value();
+  cam.ampDeg             = this->cameraAmpDeg->value();
+  cam.period             = this->cameraPeriod->value();
+  cam.seed               = std::uint32_t(this->cameraSeed->value());
   this->frameSlider->setRange(0, std::max(0, this->sceneData.frames - 1));
   this->canvas->setFrame(this->frameSlider->value());
 }
@@ -714,6 +778,17 @@ bool SequenceGeneratorWindow::generate(const QString &path, QString *error)
     this->status->setText("Not written: " + QString::fromStdString(why));
     return false;
   }
+  if (this->sceneData.camera.mode != generator::CameraMode::Off)
+  {
+    const auto csv = generator::writeTrajectoryCsv(this->sceneData, (path + ".camera.csv").toStdString());
+    if (!csv.empty())
+    {
+      if (error)
+        *error = QString::fromStdString(csv);
+      this->status->setText("Camera trajectory not written: " + QString::fromStdString(csv));
+      return false;
+    }
+  }
   this->status->setText(QString("Wrote %1 (%2 frames, %3x%4) and opened it in the playlist.")
                             .arg(path)
                             .arg(this->sceneData.frames)
@@ -756,10 +831,17 @@ bool SequenceGeneratorWindow::saveScene(const QString &path, QString *error) con
     }
     list.append(o);
   }
-  const QJsonObject root{{"width", this->sceneData.width}, {"height", this->sceneData.height},
+  const QJsonObject rootBase{{"width", this->sceneData.width}, {"height", this->sceneData.height},
                          {"frames", this->sceneData.frames}, {"fps", this->sceneData.fpsNum},
                          {"background", colour(this->sceneData.background)},
                          {"flipH", this->sceneData.flipH}, {"flipV", this->sceneData.flipV}, {"layers", list}};
+  QJsonObject root = rootBase;
+  if (this->sceneData.camera.mode != generator::CameraMode::Off)
+  {
+    const auto &cam = this->sceneData.camera;
+    root["camera"]  = QJsonObject{{"mode", int(cam.mode)}, {"ampX", cam.ampX}, {"ampY", cam.ampY},
+                                  {"ampDeg", cam.ampDeg}, {"period", cam.period}, {"seed", double(cam.seed)}};
+  }
   QFile file(path);
   if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
   {
@@ -800,6 +882,16 @@ bool SequenceGeneratorWindow::loadScene(const QString &path, QString *error)
   s.background = colour(root["background"]);
   s.flipH      = root["flipH"].toBool(false); // absent in scenes saved before the flips
   s.flipV      = root["flipV"].toBool(false);
+  if (root["camera"].isObject()) // absent in scenes saved before camera shake: Off
+  {
+    const auto c    = root["camera"].toObject();
+    s.camera.mode   = generator::CameraMode(std::clamp(c["mode"].toInt(), 0, 2));
+    s.camera.ampX   = c["ampX"].toDouble(s.camera.ampX);
+    s.camera.ampY   = c["ampY"].toDouble(s.camera.ampY);
+    s.camera.ampDeg = c["ampDeg"].toDouble(s.camera.ampDeg);
+    s.camera.period = std::max(1, c["period"].toInt(s.camera.period));
+    s.camera.seed   = std::uint32_t(c["seed"].toDouble(s.camera.seed));
+  }
   for (const auto &v : root["layers"].toArray())
   {
     const auto o = v.toObject();

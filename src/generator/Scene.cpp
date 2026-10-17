@@ -115,6 +115,47 @@ Yuv8 rgbToYuv709(int r, int g, int b)
   return {clip8(y), clip8(u), clip8(v)};
 }
 
+CameraState cameraAt(const Scene &scene, int frame)
+{
+  const auto &cam = scene.camera;
+  CameraState st;
+  if (cam.mode == CameraMode::Off || frame <= 0)
+    return st;
+  if (cam.mode == CameraMode::Sine)
+  {
+    const double ph = 2 * kPi * frame / std::max(1, cam.period);
+    st.dx           = cam.ampX * std::sin(ph);
+    st.dy           = cam.ampY * std::cos(ph) - cam.ampY;
+    st.angle        = cam.ampDeg * std::sin(ph);
+    return st;
+  }
+  // RandomWalk: own LCG, three draws per frame, so the walk does not depend on the library.
+  std::uint32_t state = cam.seed;
+  const auto    draw  = [&state] {
+    state = state * 1103515245u + 12345u;
+    return double((state >> 16) & 0x7fffu) / 32767.0 * 2 - 1; // [-1, 1]
+  };
+  for (int k = 1; k <= frame; ++k)
+  {
+    const double sx = draw(), sy = draw(), sa = draw();
+    st.dx    = std::clamp(st.dx + sx * cam.ampX / 2, -cam.ampX, cam.ampX);
+    st.dy    = std::clamp(st.dy + sy * cam.ampY / 2, -cam.ampY, cam.ampY);
+    st.angle = std::clamp(st.angle + sa * cam.ampDeg / 2, -cam.ampDeg, cam.ampDeg);
+  }
+  return st;
+}
+
+CameraState cameraInOutput(const Scene &scene, int frame)
+{
+  auto st = cameraAt(scene, frame);
+  // "0.0 - v" rather than "-v": keeps a zero from printing as -0.
+  if (scene.flipH)
+    st.dx = 0.0 - st.dx, st.angle = 0.0 - st.angle;
+  if (scene.flipV)
+    st.dy = 0.0 - st.dy, st.angle = 0.0 - st.angle;
+  return st;
+}
+
 LayerState layerStateAt(const Layer &layer, const Scene &scene, int frame)
 {
   const auto &m    = layer.motion;
@@ -143,23 +184,51 @@ Frame420 renderFrame(const Scene &scene, int frame)
   f.u.assign(std::size_t(cw) * ch, scene.background.u);
   f.v.assign(std::size_t(cw) * ch, scene.background.v);
 
+  // Camera: scene position q = c + R(-a) (p - c - d) for picture position p (see CameraMotion).
+  const auto   cam    = cameraAt(scene, frame);
+  const bool   moved  = cam.dx != 0 || cam.dy != 0 || cam.angle != 0;
+  const double camRad = cam.angle * kPi / 180.0, cc = std::cos(camRad), cs = std::sin(camRad);
+  const double pcx = scene.width / 2.0, pcy = scene.height / 2.0;
+
   for (const auto &layer : scene.layers)
   {
     if (!layer.visible || layer.w <= 0 || layer.h <= 0)
       continue;
     const auto   st  = layerStateAt(layer, scene, frame);
     const double rad = st.rotation * kPi / 180.0, c = std::cos(rad), s = std::sin(rad);
-    // Bounding box of the rotated box.
+    // Bounding box of the rotated box, in scene coordinates.
     const double ex = (std::abs(c) * st.w + std::abs(s) * st.h) / 2;
     const double ey = (std::abs(s) * st.w + std::abs(c) * st.h) / 2;
-    const int    x0 = std::max(0, int(std::floor(st.cx - ex))), x1 = std::min(scene.width - 1, int(std::ceil(st.cx + ex)));
-    const int    y0 = std::max(0, int(std::floor(st.cy - ey))), y1 = std::min(scene.height - 1, int(std::ceil(st.cy + ey)));
+    double       bx0 = st.cx - ex, bx1 = st.cx + ex, by0 = st.cy - ey, by1 = st.cy + ey;
+    if (moved)
+    {
+      // Where that box lands in the picture: the bounds of its four corners carried forward.
+      double nx0 = 1e300, nx1 = -1e300, ny0 = 1e300, ny1 = -1e300;
+      for (const double qx : {bx0, bx1})
+        for (const double qy : {by0, by1})
+        {
+          const double px = pcx + cc * (qx - pcx) - cs * (qy - pcy) + cam.dx;
+          const double py = pcy + cs * (qx - pcx) + cc * (qy - pcy) + cam.dy;
+          nx0 = std::min(nx0, px), nx1 = std::max(nx1, px), ny0 = std::min(ny0, py), ny1 = std::max(ny1, py);
+        }
+      bx0 = nx0, bx1 = nx1, by0 = ny0, by1 = ny1;
+    }
+    const int x0 = std::max(0, int(std::floor(bx0))), x1 = std::min(scene.width - 1, int(std::ceil(bx1)));
+    const int y0 = std::max(0, int(std::floor(by0))), y1 = std::min(scene.height - 1, int(std::ceil(by1)));
 
     for (int py = y0; py <= y1; ++py)
       for (int px = x0; px <= x1; ++px)
       {
-        // Pixel centre into the layer's box, undoing rotation about the centre.
-        const double dx = px + 0.5 - st.cx, dy = py + 0.5 - st.cy;
+        // Pixel centre back through the camera (exactly the centre when it has not moved), then
+        // into the layer's box, undoing rotation about the box centre.
+        double qx = px + 0.5, qy = py + 0.5;
+        if (moved)
+        {
+          const double ux = qx - pcx - cam.dx, uy = qy - pcy - cam.dy;
+          qx = pcx + cc * ux + cs * uy;
+          qy = pcy - cs * ux + cc * uy;
+        }
+        const double dx = qx - st.cx, dy = qy - st.cy;
         const double lx = c * dx + s * dy + st.w / 2;
         const double ly = -s * dx + c * dy + st.h / 2;
         Yuv8         col;
@@ -211,6 +280,21 @@ std::string writeY4m(const Scene &scene, const std::string &path)
     if (std::fwrite(f.y.data(), 1, f.y.size(), file.get()) != f.y.size() ||
         std::fwrite(f.u.data(), 1, f.u.size(), file.get()) != f.u.size() ||
         std::fwrite(f.v.data(), 1, f.v.size(), file.get()) != f.v.size())
+      return "write failed (disk full?)";
+  }
+  return {};
+}
+
+std::string writeTrajectoryCsv(const Scene &scene, const std::string &path)
+{
+  std::unique_ptr<FILE, int (*)(FILE *)> file(std::fopen(path.c_str(), "wb"), &std::fclose);
+  if (!file)
+    return "cannot open " + path + " for writing";
+  std::fputs("frame,dx,dy,angle\n", file.get());
+  for (int k = 0; k < scene.frames; ++k)
+  {
+    const auto st = cameraInOutput(scene, k);
+    if (std::fprintf(file.get(), "%d,%.6f,%.6f,%.6f\n", k, st.dx, st.dy, st.angle) < 0)
       return "write failed (disk full?)";
   }
   return {};

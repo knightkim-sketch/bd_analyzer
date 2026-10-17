@@ -291,6 +291,9 @@ run_unit_test "$ROOT/tests/unit/me-odyssey-gf-structure.cpp" "$ROOT/src/me/Odyss
 # Y4M sequence generator 코어: 도형 경계 화소, MV 이동, 레이어 순서·알파, wrap·시작 프레임, y4m 왕복.
 run_unit_test "$ROOT/tests/unit/generator-scene.cpp" \
               "$ROOT/src/generator/Scene.cpp" "$ROOT/src/me/YuvLumaReader.cpp" "$ROOT/src/me/MePlane.cpp"
+# DIS 코어: bilinear affine warp (정수 이동·반화소·chroma siting) 와 궤적 평활·보정. Qt/OpenCV 없음.
+run_unit_test "$ROOT/tests/unit/affine-warp-stabilizer.cpp" \
+              "$ROOT/src/filter/AffineWarp.cpp" "$ROOT/src/filter/Stabilizer.cpp"
 
 # RANSAC 전역 모델 (src/me/GlobalModel): translation/rotzoom/affine 를 outlier 30% 섞인 블록 MV 에서 복원,
 # outlier 마스크 정확, 결정적(두 번 실행 비트 동일), 점 부족은 오류, closed-loop 용 seed 합성.
@@ -630,6 +633,8 @@ run_test_bda "$ROOT/tests/regression/49-me-openloop-adv-panel.cpp"
 # ME 패널의 odyssey closed-loop: Start MV from(open-loop / None) 과 Sub-pel(1/4) 이 바뀌면 Block Info 의
 # sub-pel SAD 가 코어 직접 호출(open-loop seed -> closed-loop) 결과와 같은지.
 run_test_bda "$ROOT/tests/regression/51-me-closedloop-panel.cpp"
+# File > Export Stabilized Y4M: generator camera shake 클립 -> 안정화. 흔들림 std 80% 이상 감소, 보정이 카메라 CSV 와 1 px 이내.
+run_test_bda "$ROOT/tests/regression/52-stabilized-y4m-export.cpp"
 else
     echo "  SKIP  15-raw-av1-extension (raw AV1 생성 실패)"
     ((skip_count++))
