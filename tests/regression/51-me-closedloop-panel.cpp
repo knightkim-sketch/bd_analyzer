@@ -5,7 +5,8 @@
 //   * with "Start MV from: Odyssey open-loop ME" the Block Info row of a 64x64 block carries the same
 //     sub-pel SAD as running the open-loop estimator and then the closed-loop one directly on the same
 //     frames (src/me/OdysseyClosedLoopMe) - the panel and runner add no arithmetic of their own;
-//   * "None (0, 0)" gives the direct no-seed result, and "1/4 pel only" the quarter-pel one.
+//   * "None (0, 0)" gives the direct no-seed result, and "1/4 pel only" the quarter-pel one;
+//   * "Global model (SVT ME)" gives SVT ME -> RANSAC rotzoom -> synthesised start vectors.
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
@@ -19,7 +20,9 @@
 #include <unistd.h>
 
 #include "integration/MotionEstimationWidget.h"
+#include "me/GlobalModel.h"
 #include "me/OdysseyClosedLoopMe.h"
+#include "me/SvtIntegerMe.h"
 #include "me/OdysseyOpenLoopMe.h"
 #include "me/YuvLumaReader.h"
 #include "playlistitem/playlistItem.h"
@@ -142,6 +145,26 @@ long long directSad(const bda::me::MePictureSet &pictures, bool seeded, bool hp,
       return b.nativeCost;
   return -3;
 }
+// The direct global-model start: SVT ME, RANSAC rotzoom, its vector at every block centre.
+long long directModelSad(const bda::me::MePictureSet &pictures, bool hp, QPoint pixel)
+{
+  bda::me::MeParams params;
+  params.frameInterval        = 1;
+  params.allowHighPrecisionMv = hp;
+  const auto svt              = bda::me::SvtIntegerMe().estimateFrame(pictures, params);
+  const auto model = bda::me::fitGlobalModel(svt, pictures.current.width(), pictures.current.height(), {});
+  if (!model.ok())
+    return -4;
+  const auto seed = bda::me::synthesiseModelSeed(model, pictures.current.width(), pictures.current.height());
+  params.seed     = &seed;
+  params.blockSizes = bda::me::BlockSizeSet();
+  params.blockSizes.add(bda::me::BlockSize::Blk64);
+  const auto r = bda::me::OdysseyClosedLoopMe().estimateFrame(pictures, params);
+  for (const auto &b : r.blocks)
+    if (QRect(b.block.x, b.block.y, 64, 64).contains(pixel))
+      return b.nativeCost;
+  return -3;
+}
 } // namespace
 
 int main(int argc, char **argv)
@@ -224,6 +247,16 @@ int main(int argc, char **argv)
   const auto quarter     = wantQuarter == none ? waitSad(-2) : waitSad(none);
   check(quarter == wantQuarter, "1/4 pel only: the direct quarter-pel estimate (" + std::to_string(quarter) +
                                     " vs " + std::to_string(wantQuarter) + ")");
+
+  seed->setCurrentIndex(seed->findText("Global model (SVT ME)"));
+  settle(100);
+  check(panel->params().seedModel == bda::me::GmModelType::RotZoom &&
+            panel->params().seedAlgorithm == bda::me::Algorithm::SvtIntegerMe,
+        "Global model (SVT ME) asks for a rotzoom fit of SVT's vectors");
+  const auto wantModel = directModelSad(pictures, false, pixel);
+  const auto model     = wantModel == quarter ? waitSad(-2) : waitSad(quarter);
+  check(model >= 0 && model == wantModel, "global model start: the direct estimate (" + std::to_string(model) +
+                                              " vs " + std::to_string(wantModel) + ")");
 
   std::cout << (g_failures == 0 ? "RESULT: PASS" : "RESULT: FAIL") << std::endl;
   _exit(g_failures == 0 ? 0 : 1);

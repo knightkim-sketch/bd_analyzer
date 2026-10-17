@@ -91,6 +91,7 @@ private:
   QComboBox *advReference_{};
   QComboBox *seed_{};   //!< closed-loop: which estimate gives the start vectors
   QComboBox *subpel_{}; //!< closed-loop: allow_high_precision_mv
+  QComboBox *seedModel_{}; //!< closed-loop, global model start: which model
   QFormLayout *form_{};
   QCheckBox *size8_{};
   QCheckBox *size16_{};

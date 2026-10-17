@@ -16,6 +16,7 @@
 
 #include <statistics/StatisticsData.h>
 
+#include "me/GlobalModel.h"
 #include "me/GlobalMotion.h"
 
 namespace bda::integration
@@ -25,8 +26,12 @@ inline constexpr int kGmStatTypeBase   = 300;
 inline constexpr int kGmAcceptedTypeId = kGmStatTypeBase;
 inline constexpr int kGmRawTypeId      = kGmStatTypeBase + 1;
 inline constexpr int kGmWindowTypeId   = kGmStatTypeBase + 2;
+inline constexpr int kGmInlierTypeId   = kGmStatTypeBase + 3; //!< RANSAC model: 1 inlier, 0 outlier
+inline constexpr int kGmModelTypeId    = kGmStatTypeBase + 4; //!< RANSAC model: its vector per 64x64
+inline constexpr int kGmLastTypeId     = kGmModelTypeId;
 
-/* Register the three types if they are missing. True when anything was added - the caller then
+/* Register the types if they are missing (the window grid and its vectors, and the RANSAC model's
+ * inlier mask and vectors). True when anything was added - the caller then
  * rebuilds the statistics controls, which is the only time it should.
  */
 bool syncGmStatTypes(stats::StatisticsData &data);
@@ -42,5 +47,14 @@ void fillGmStatistics(stats::StatisticsData &  data,
                       const me::GmFrameResult &frame,
                       int                      width,
                       int                      height);
+
+/* Replace the model blocks with one frame's RANSAC model: the inlier mask on the blocks it was fitted
+ * to, and the model's vector at the centre of every 64x64 block of the picture. A frame without a
+ * model (switched off, or the fit failed) leaves both empty.
+ */
+void fillGmModelStatistics(stats::StatisticsData &  data,
+                           const me::GmModelResult *model,
+                           int                      width,
+                           int                      height);
 
 } // namespace bda::integration

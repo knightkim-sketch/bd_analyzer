@@ -17,7 +17,7 @@ bool hasType(stats::StatisticsData &data, int typeId)
                      [typeId](const stats::StatisticsType &t) { return t.typeID == typeId; });
 }
 
-bool isGmType(int typeId) { return typeId >= kGmAcceptedTypeId && typeId <= kGmWindowTypeId; }
+bool isGmType(int typeId) { return typeId >= kGmAcceptedTypeId && typeId <= kGmLastTypeId; }
 
 stats::StatisticsType vectorType(int id, const QString &name, const Color &colour, int width)
 {
@@ -67,6 +67,28 @@ bool syncGmStatTypes(stats::StatisticsData &data)
     data.addStatType(type);
     changed = true;
   }
+  if (!hasType(data, kGmInlierTypeId))
+  {
+    stats::StatisticsType type(kGmInlierTypeId, "GM model inlier",
+                               stats::color::ColorMapper({0, 1}, Color(230, 40, 40), Color(40, 200, 80)));
+    type.description = "The RANSAC global model's verdict per block of the ME result it was fitted to: "
+                       "1 (green) follows the model, 0 (red) does not - local motion, or a mismatch.";
+    type.render          = true;
+    type.renderValueData = true;
+    type.alphaFactor     = 35;
+    type.setInitialState();
+    type.uiGroup = "Global motion";
+    data.addStatType(type);
+    changed = true;
+  }
+  if (!hasType(data, kGmModelTypeId))
+  {
+    auto type = vectorType(kGmModelTypeId, "GM model vector", Color(255, 200, 0), 2);
+    type.vectorScale = 8; // eighth-pel, as the model is evaluated
+    type.description = "The RANSAC global model's vector at the centre of each 64x64 block.";
+    data.addStatType(type);
+    changed = true;
+  }
   return changed;
 }
 
@@ -76,7 +98,7 @@ void clearGmStatTypes(stats::StatisticsData &data)
   types.erase(std::remove_if(types.begin(), types.end(),
                              [](const stats::StatisticsType &t) { return isGmType(t.typeID); }),
               types.end());
-  for (int id = kGmAcceptedTypeId; id <= kGmWindowTypeId; ++id)
+  for (int id = kGmAcceptedTypeId; id <= kGmLastTypeId; ++id)
     data.eraseDataForTypeID(id);
 }
 
@@ -104,6 +126,33 @@ void fillGmStatistics(stats::StatisticsData &  data,
     if (!w.acceptX || !w.acceptY)
       data.at(kGmRawTypeId).addBlockVector(px, py, pw, ph, w.dxQpel, w.dyQpel);
   }
+}
+
+void fillGmModelStatistics(stats::StatisticsData &  data,
+                           const me::GmModelResult *model,
+                           const int                width,
+                           const int                height)
+{
+  data.eraseDataForTypeID(kGmInlierTypeId);
+  data.eraseDataForTypeID(kGmModelTypeId);
+  if (model == nullptr || !model->ok())
+    return;
+  for (std::size_t i = 0; i < model->blocks.size(); ++i)
+  {
+    const auto &b = model->blocks[i];
+    const auto  s = static_cast<unsigned short>(me::blockSizeInPixels(b.size));
+    data.at(kGmInlierTypeId)
+        .addBlockValue(static_cast<unsigned short>(b.x), static_cast<unsigned short>(b.y), s, s, model->inlier[i]);
+  }
+  for (int y = 0; y < height; y += 64)
+    for (int x = 0; x < width; x += 64)
+    {
+      const int  w = std::min(64, width - x), h = std::min(64, height - y);
+      const auto mv = me::gmModelMvAt(*model, x + w / 2.0, y + h / 2.0);
+      data.at(kGmModelTypeId)
+          .addBlockVector(static_cast<unsigned short>(x), static_cast<unsigned short>(y), static_cast<unsigned short>(w),
+                          static_cast<unsigned short>(h), mv.x, mv.y);
+    }
 }
 
 } // namespace bda::integration

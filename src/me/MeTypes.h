@@ -215,6 +215,16 @@ private:
   std::atomic<int> done_{0};
 };
 
+/* The global motion models src/me/GlobalModel fits with RANSAC. Here rather than there so that
+ * MeParams can ask for one.
+ */
+enum class GmModelType
+{
+  Translation, //!< x' = x + p0,  y' = y + p1
+  RotZoom,     //!< x' = p0 + p2 x + p3 y,  y' = p1 - p3 x + p2 y
+  Affine,      //!< x' = p0 + p2 x + p3 y,  y' = p1 + p4 x + p5 y
+};
+
 struct MeParams
 {
   /* Signed on purpose. A positive interval takes the reference from the past
@@ -243,6 +253,11 @@ struct MeParams
    */
   std::optional<Algorithm> seedAlgorithm;
   const MeFrameResult     *seed = nullptr; //!< Borrowed, may be null
+  /* With a seed algorithm: fit this global model to its 16x16 vectors (RANSAC, src/me/GlobalModel)
+   * and start every block from the model's vector at its centre instead. A failed fit falls back
+   * to the seed's own vectors.
+   */
+  std::optional<GmModelType> seedModel;
 
   // odyssey closed-loop only: frame_header.allow_high_precision_mv (eighth-pel refinement, 8-tap).
   bool allowHighPrecisionMv = true;

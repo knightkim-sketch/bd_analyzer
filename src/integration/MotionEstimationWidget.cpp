@@ -13,6 +13,12 @@
 namespace bda::integration
 {
 
+namespace
+{
+// "Start MV from" data: an Algorithm value, -1 for (0, 0), or this for the global model.
+constexpr int kSeedGlobalModel = -2;
+} // namespace
+
 MotionEstimationWidget::MotionEstimationWidget(QWidget *parent) : QWidget(parent)
 {
   auto *outer = new QVBoxLayout(this);
@@ -84,10 +90,19 @@ MotionEstimationWidget::MotionEstimationWidget(QWidget *parent) : QWidget(parent
   this->seed_->addItem(tr("None (0, 0)"), -1);
   this->seed_->addItem(tr("SVT-AV1 integer ME"), static_cast<int>(me::Algorithm::SvtIntegerMe));
   this->seed_->addItem(tr("Odyssey open-loop ME"), static_cast<int>(me::Algorithm::OdysseyOpenLoop));
+  this->seed_->addItem(tr("Global model (SVT ME)"), kSeedGlobalModel);
   this->seed_->setToolTip(tr("Where each block's search starts: the vector the chosen ME finds for "
                              "the same block and size (odyssey uses its open-loop result), or "
                              "(0, 0)."));
   form->addRow(tr("Start MV from"), this->seed_);
+  this->seedModel_ = new QComboBox(this);
+  this->seedModel_->addItem(tr("Translation"), static_cast<int>(me::GmModelType::Translation));
+  this->seedModel_->addItem(tr("RotZoom"), static_cast<int>(me::GmModelType::RotZoom));
+  this->seedModel_->addItem(tr("Affine"), static_cast<int>(me::GmModelType::Affine));
+  this->seedModel_->setCurrentIndex(1);
+  this->seedModel_->setToolTip(tr("The global model fitted with RANSAC to SVT integer ME 16x16 vectors; "
+                                  "each block starts from the model's vector at its centre."));
+  form->addRow(tr("Model"), this->seedModel_);
   this->subpel_ = new QComboBox(this);
   this->subpel_->addItem(tr("1/8 pel allowed"), true);
   this->subpel_->addItem(tr("1/4 pel only"), false);
@@ -141,7 +156,8 @@ MotionEstimationWidget::MotionEstimationWidget(QWidget *parent) : QWidget(parent
   connect(this->interval_, &QSpinBox::valueChanged, this, notify);
   connect(this->algorithm_, &QComboBox::currentIndexChanged, this, notify);
   connect(this->algorithm_, &QComboBox::currentIndexChanged, this, [this] { this->updateAdvControls(); });
-  for (auto *box : {this->gf_, this->tmvGrid_, this->advReference_, this->seed_, this->subpel_})
+  connect(this->seed_, &QComboBox::currentIndexChanged, this, [this] { this->updateAdvControls(); });
+  for (auto *box : {this->gf_, this->tmvGrid_, this->advReference_, this->seed_, this->subpel_, this->seedModel_})
     connect(box, &QComboBox::currentIndexChanged, this, notify);
   this->updateAdvControls();
   connect(this->staticBypass_, &QCheckBox::toggled, this, notify);
@@ -165,6 +181,8 @@ void MotionEstimationWidget::updateAdvControls()
       this->algorithm_->currentData().toInt() == static_cast<int>(me::Algorithm::OdysseyClosedLoop);
   for (QWidget *w : {static_cast<QWidget *>(this->seed_), static_cast<QWidget *>(this->subpel_)})
     this->form_->setRowVisible(w, closedLoop);
+  this->form_->setRowVisible(this->seedModel_,
+                             closedLoop && this->seed_->currentData().toInt() == kSeedGlobalModel);
   if (this->controlsEnabled_)
     this->interval_->setEnabled(!adv);
   this->interval_->setToolTip(adv ? tr("Not used by odyssey open-loop adv: the GF structure picks "
@@ -205,6 +223,11 @@ me::MeParams MotionEstimationWidget::params() const
 
   if (const int seed = this->seed_->currentData().toInt(); seed >= 0)
     p.seedAlgorithm = static_cast<me::Algorithm>(seed);
+  else if (seed == kSeedGlobalModel)
+  {
+    p.seedAlgorithm = me::Algorithm::SvtIntegerMe;
+    p.seedModel     = static_cast<me::GmModelType>(this->seedModel_->currentData().toInt());
+  }
   p.allowHighPrecisionMv = this->subpel_->currentData().toBool();
 
   return p;

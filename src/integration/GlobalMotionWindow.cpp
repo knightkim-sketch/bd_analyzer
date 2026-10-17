@@ -9,11 +9,13 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <optional>
 #include <fstream>
 #include <vector>
 
 #include "integration/GmStatisticsAdapter.h"
 #include "me/GmCsv.h"
+#include "me/IMotionEstimator.h"
 #include "me/YuvLumaReader.h"
 #include "playlistitem/playlistItem.h"
 #include "statistics/StatisticUIHandler.h"
@@ -83,6 +85,14 @@ GlobalMotionWindow::GlobalMotionWindow(QWidget *parent) : QDialog(parent)
   this->brightness->addItems({"off", "DC", "DC + gain"});
   this->brightness->setCurrentIndex(int(defaults.brightness));
   form->addWidget(this->brightness);
+  form->addWidget(new QLabel("Model", this));
+  this->model = new QComboBox(this);
+  this->model->addItems({"off", "translation", "rotzoom", "affine"});
+  this->model->setCurrentIndex(2);
+  this->model->setToolTip("A global model fitted with RANSAC to SVT integer ME 16x16 vectors of the same "
+                          "frame pair: blocks that do not follow it (local motion, mismatches) are "
+                          "outliers. rotzoom is what libaom tries.");
+  form->addWidget(this->model);
   form->addStretch(1);
   layout->addLayout(form);
 
@@ -90,17 +100,20 @@ GlobalMotionWindow::GlobalMotionWindow(QWidget *parent) : QDialog(parent)
   this->runButton    = new QPushButton("Run", this);
   this->stopButton   = new QPushButton("Stop", this);
   this->exportButton = new QPushButton("Export CSV…", this);
+  this->exportModelButton = new QPushButton("Export model CSV…", this);
   this->progress     = new QLabel(this);
   buttons->addWidget(this->runButton);
   buttons->addWidget(this->stopButton);
   buttons->addWidget(this->exportButton);
+  buttons->addWidget(this->exportModelButton);
   buttons->addWidget(this->progress, 1);
   layout->addLayout(buttons);
 
-  this->frames = new QTableWidget(0, 8, this);
+  this->frames = new QTableWidget(0, 12, this);
   this->frames->setHorizontalHeaderLabels({"poc", "ref", "n", "accepted x", "accepted y",
                                            "median dx (px)", "median dy (px)",
-                                           "refine moved (px)"});
+                                           "refine moved (px)", "model", "model MV at centre (px)",
+                                           "scale / angle (deg)", "inliers"});
   this->frames->setSelectionBehavior(QAbstractItemView::SelectRows);
   this->frames->setSelectionMode(QAbstractItemView::SingleSelection);
   this->frames->verticalHeader()->setVisible(false);
@@ -129,6 +142,14 @@ GlobalMotionWindow::GlobalMotionWindow(QWidget *parent) : QDialog(parent)
     if (!out.isEmpty() && !this->exportCsv(out, &error))
       this->progress->setText(error);
   });
+  connect(this->exportModelButton, &QPushButton::clicked, this, [this] {
+    const auto out = QFileDialog::getSaveFileName(this, "Export global model CSV",
+                                                  QFileInfo(this->path).baseName() + ".gm-model.csv",
+                                                  "CSV (*.csv)");
+    QString error;
+    if (!out.isEmpty() && !this->exportModelCsv(out, &error))
+      this->progress->setText(error);
+  });
   connect(this->frames, &QTableWidget::itemSelectionChanged, this,
           &GlobalMotionWindow::frameRowSelected);
   connect(this, &GlobalMotionWindow::frameDone, this, &GlobalMotionWindow::addFinishedFrames,
@@ -139,6 +160,7 @@ GlobalMotionWindow::GlobalMotionWindow(QWidget *parent) : QDialog(parent)
   this->stopButton->setEnabled(false);
   this->runButton->setEnabled(false);
   this->exportButton->setEnabled(false);
+  this->exportModelButton->setEnabled(false);
 }
 
 GlobalMotionWindow::~GlobalMotionWindow()
@@ -206,6 +228,7 @@ StreamDiffResult GlobalMotionWindow::setTarget(const QList<playlistItem *> &sele
   {
     std::lock_guard<std::mutex> guard(this->lock);
     this->done.clear();
+    this->modelDone.clear();
   }
   this->shownRows    = 0;
   this->overlayFrame = -1;
@@ -252,6 +275,7 @@ bool GlobalMotionWindow::run()
   {
     std::lock_guard<std::mutex> guard(this->lock);
     this->done.clear();
+    this->modelDone.clear();
   }
   this->shownRows    = 0;
   this->overlayFrame = -1;
@@ -263,6 +287,7 @@ bool GlobalMotionWindow::run()
   this->runButton->setEnabled(false);
   this->stopButton->setEnabled(true);
   this->exportButton->setEnabled(false);
+  this->exportModelButton->setEnabled(false);
 
   /* Register the overlay types now, on the GUI thread and once per run, which is when the
    * statistics panel may rebuild its rows - never from a repaint (see MainWindow's ME path).
@@ -277,9 +302,10 @@ bool GlobalMotionWindow::run()
   const auto file  = this->path.toStdString();
   const bool y4m   = this->isY4m;
   const int  w = this->width, h = this->height, depth = this->bitDepth;
+  const int  modelType = this->model->currentIndex() - 1; // -1: off
   this->progress->setText(QString("Estimating %1 frames …").arg(last - first + 1));
 
-  this->worker = QThread::create([this, p, first, last, file, y4m, w, h, depth] {
+  this->worker = QThread::create([this, p, first, last, file, y4m, w, h, depth, modelType] {
     me::YuvLumaReader reader;
     std::string       error;
     if (!(y4m ? reader.openY4m(file, error) : reader.openRaw(file, w, h, depth, error)))
@@ -288,17 +314,40 @@ bool GlobalMotionWindow::run()
       emit this->runFinished();
       return;
     }
-    // Each frame is read once: this frame's current is the next one's reference.
-    me::MePlane ref = reader.readLuma(first - 1, 0, error);
+    /* Each frame is read once: this frame's current is the next one's reference. The block ME the
+     * model is fitted to reads past the picture edge, so then the planes carry odyssey's full pad;
+     * the window estimator only reads inside the picture and does not care.
+     */
+    const int   pad = modelType >= 0 ? me::kOdysseyPadFull : 0;
+    me::MePlane ref = reader.readLuma(first - 1, pad, error);
+    auto        estimator = me::makeEstimator(me::Algorithm::SvtIntegerMe);
     for (int poc = first; poc <= last && !ref.empty() && !this->cancel; ++poc)
     {
-      me::MePlane cur = reader.readLuma(poc, 0, error);
+      me::MePlane cur = reader.readLuma(poc, pad, error);
       if (cur.empty())
         break;
       auto result = me::estimateGlobalMotion(cur, ref, p);
+      std::optional<me::GmModelResult> model;
+      if (modelType >= 0)
+      {
+        me::MePictureSet pictures;
+        pictures.current     = cur;
+        pictures.reference   = ref;
+        pictures.frameIdx    = poc;
+        pictures.refFrameIdx = poc - 1;
+        me::MeParams meParams;
+        meParams.blockSizes = me::BlockSizeSet();
+        meParams.blockSizes.add(me::BlockSize::Blk16);
+        const auto        blocks = estimator->estimateFrame(pictures, meParams);
+        me::GmModelParams mp;
+        mp.type = me::GmModelType(modelType);
+        model   = me::fitGlobalModel(blocks, w, h, mp);
+      }
       {
         std::lock_guard<std::mutex> guard(this->lock);
         this->done[poc] = std::move(result);
+        if (model)
+          this->modelDone[poc] = std::move(*model);
       }
       emit this->frameDone();
       ref = std::move(cur);
@@ -326,10 +375,17 @@ std::map<int, me::GmFrameResult> GlobalMotionWindow::results() const
   return this->done;
 }
 
+std::map<int, me::GmModelResult> GlobalMotionWindow::modelResults() const
+{
+  std::lock_guard<std::mutex> guard(this->lock);
+  return this->modelDone;
+}
+
 void GlobalMotionWindow::addFinishedFrames()
 {
-  const auto all = this->results();
-  int        row = 0;
+  const auto all    = this->results();
+  const auto models = this->modelResults();
+  int        row    = 0;
   for (const auto &[poc, r] : all)
   {
     if (row++ < this->shownRows)
@@ -357,6 +413,21 @@ void GlobalMotionWindow::addFinishedFrames()
     this->frames->setItem(at, 5, cell(median(dxs)));
     this->frames->setItem(at, 6, cell(median(dys)));
     this->frames->setItem(at, 7, cell(moved));
+    if (const auto m = models.find(poc); m != models.end())
+    {
+      const auto &model = m->second;
+      if (model.ok())
+      {
+        const auto mv = me::gmModelMvAt(model, this->width / 2.0, this->height / 2.0);
+        this->frames->setItem(at, 8, cell(me::gmModelTypeName(model.type)));
+        this->frames->setItem(at, 9, cell(QString("(%1, %2)").arg(mv.x / 8.0).arg(mv.y / 8.0)));
+        this->frames->setItem(
+            at, 10, cell(QString("%1 / %2").arg(model.scale(), 0, 'f', 4).arg(model.angleDegrees(), 0, 'f', 3)));
+      }
+      else
+        this->frames->setItem(at, 8, cell(QString::fromStdString(model.error)));
+      this->frames->setItem(at, 11, cell(QString("%1 / %2").arg(model.inliers).arg(model.total)));
+    }
     ++this->shownRows;
   }
   this->progress->setText(QString("%1 of %2 frames")
@@ -371,6 +442,7 @@ void GlobalMotionWindow::finishRun()
   this->runButton->setEnabled(true);
   this->stopButton->setEnabled(false);
   this->exportButton->setEnabled(this->shownRows > 0);
+  this->exportModelButton->setEnabled(!this->modelResults().empty());
 
   long accepted = 0, axes = 0;
   for (const auto &[poc, r] : this->results())
@@ -399,6 +471,28 @@ bool GlobalMotionWindow::exportCsv(const QString &out, QString *error) const
   me::writeGmCsvHeader(file);
   for (const auto &[poc, r] : this->results())
     me::writeGmCsvRows(file, poc, poc - 1, r);
+  return bool(file);
+}
+
+bool GlobalMotionWindow::exportModelCsv(const QString &out, QString *error) const
+{
+  std::ofstream file(out.toStdString());
+  if (!file)
+  {
+    if (error)
+      *error = "Cannot write " + out;
+    return false;
+  }
+  // p0..p5 map a current-picture position to the reference: x' = p0 + p2 x + p3 y, y' = p1 + p4 x + p5 y.
+  file << "poc,ref_poc,type,ok,p0,p1,p2,p3,p4,p5,inliers,total,rms\n";
+  file.precision(9);
+  for (const auto &[poc, m] : this->modelResults())
+  {
+    file << poc << ',' << poc - 1 << ',' << me::gmModelTypeName(m.type) << ',' << int(m.ok());
+    for (double v : m.p)
+      file << ',' << v;
+    file << ',' << m.inliers << ',' << m.total << ',' << m.rms << '\n';
+  }
   return bool(file);
 }
 
@@ -472,7 +566,7 @@ void GlobalMotionWindow::drawOverlay(int frameIdx)
   {
     // Not estimated: take the windows away rather than leave another frame's on screen. The data
     // only - the types stay, the statistics panel holds rows for them.
-    for (int id = kGmAcceptedTypeId; id <= kGmWindowTypeId; ++id)
+    for (int id = kGmAcceptedTypeId; id <= kGmLastTypeId; ++id)
       data->eraseDataForTypeID(id);
   }
   else
@@ -482,6 +576,9 @@ void GlobalMotionWindow::drawOverlay(int frameIdx)
      */
     data->setFrameIndex(frameIdx);
     fillGmStatistics(*data, it->second, this->width, this->height);
+    const auto models = this->modelResults();
+    const auto m      = models.find(frameIdx);
+    fillGmModelStatistics(*data, m == models.end() ? nullptr : &m->second, this->width, this->height);
   }
   this->overlayFrame = frameIdx;
   emit this->overlayChanged();

@@ -207,6 +207,12 @@ int main(int argc, char **argv)
     result                   = integration::runMe(req);
     check(result.ok() && !result.blocks.empty(),
           "and with open-loop start vectors, computed by the runner on the same pair");
+    req.params.seedAlgorithm = me::Algorithm::SvtIntegerMe;
+    req.params.seedModel     = me::GmModelType::RotZoom;
+    result                   = integration::runMe(req);
+    check(result.ok() && !result.blocks.empty(),
+          "and with start vectors from a RANSAC global model of SVT's vectors");
+    req.params.seedModel     = std::nullopt;
     req.params.seedAlgorithm = std::nullopt;
 
     req.params.algorithm  = me::Algorithm::SvtIntegerMe;

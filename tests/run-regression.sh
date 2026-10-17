@@ -196,6 +196,7 @@ run_unit_test() {
 # 않는다 - 그러면 .pro 배선이 깨져도 테스트가 통과해 버린다.
 BDA_ME_SRCS="$ROOT/src/me/MePlane.cpp $ROOT/src/me/MeCost.cpp $ROOT/src/me/SvtIntegerMe.cpp \
              $ROOT/src/me/OdysseyOpenLoopMe.cpp $ROOT/src/me/OdysseyClosedLoopMe.cpp \
+             $ROOT/src/me/GlobalModel.cpp \
              $ROOT/src/me/MeEstimatorFactory.cpp \
              $ROOT/src/integration/MeStatisticsAdapter.cpp $ROOT/src/integration/MeFrameSource.cpp \
              $ROOT/src/integration/MeRunner.cpp"
@@ -290,6 +291,10 @@ run_unit_test "$ROOT/tests/unit/me-odyssey-gf-structure.cpp" "$ROOT/src/me/Odyss
 # Y4M sequence generator 코어: 도형 경계 화소, MV 이동, 레이어 순서·알파, wrap·시작 프레임, y4m 왕복.
 run_unit_test "$ROOT/tests/unit/generator-scene.cpp" \
               "$ROOT/src/generator/Scene.cpp" "$ROOT/src/me/YuvLumaReader.cpp" "$ROOT/src/me/MePlane.cpp"
+
+# RANSAC 전역 모델 (src/me/GlobalModel): translation/rotzoom/affine 를 outlier 30% 섞인 블록 MV 에서 복원,
+# outlier 마스크 정확, 결정적(두 번 실행 비트 동일), 점 부족은 오류, closed-loop 용 seed 합성.
+run_unit_test "$ROOT/tests/unit/gm-model.cpp" "$ROOT/src/me/GlobalModel.cpp"
 
 # 루마 필터 체인 (Convolution filter pane 의 cascade) 과 Y4M 쓰기. OpenCV 가 있으면 전 stage 와
 # GM 보상(RANSAC)까지, 없으면 Custom 3x3 만 검사한다. 쓴 Y4M 은 YuvLumaReader 로 다시 읽어 맞춘다.

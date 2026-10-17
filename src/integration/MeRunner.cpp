@@ -1,5 +1,7 @@
 #include "MeRunner.h"
 
+#include "me/GlobalModel.h"
+
 #include <string>
 
 #include "MeFrameSource.h"
@@ -120,6 +122,23 @@ me::MeFrameResult runMe(const MeRunRequest &request)
     }
     auto params = request.params;
     params.seed = &seed;
+    me::MeFrameResult modelSeed;
+    if (request.params.seedModel)
+    {
+      me::GmModelParams modelParams;
+      modelParams.type = *request.params.seedModel;
+      const auto model = me::fitGlobalModel(seed, pictures.current.width(), pictures.current.height(), modelParams);
+      if (model.ok())
+      {
+        modelSeed   = me::synthesiseModelSeed(model, pictures.current.width(), pictures.current.height());
+        params.seed = &modelSeed;
+      }
+    }
+    if (request.params.cancel != nullptr && request.params.cancel->cancelled())
+    {
+      failed.cancelled = true;
+      return failed;
+    }
     return estimator->estimateFrame(pictures, params);
   }
 

@@ -27,6 +27,7 @@
 #include <string>
 
 #include "integration/StreamDiffWindow.h" // StreamDiffResult - the same refusal shape
+#include "me/GlobalModel.h"
 #include "me/GlobalMotion.h"
 
 class playlistItem;
@@ -59,6 +60,12 @@ public:
 
   //!< Write every finished frame as odyssey's CSV. False with the reason when it could not.
   bool exportCsv(const QString &path, QString *error = nullptr) const;
+
+  /* The RANSAC global model per frame, fitted to SVT integer ME 16x16 vectors of the same frame
+   * pair (src/me/GlobalModel). Empty when the Model control is Off.
+   */
+  std::map<int, me::GmModelResult> modelResults() const;
+  bool exportModelCsv(const QString &path, QString *error = nullptr) const;
 
   //!< Select the frame's row, as clicking it would.
   void selectFrame(int frameIdx);
@@ -93,8 +100,8 @@ private:
   QLabel *      summary{};
   QLabel *      progress{};
   QSpinBox *    firstFrame{}, *lastFrame{}, *range{}, *refine{};
-  QComboBox *   smoothing{}, *brightness{};
-  QPushButton * runButton{}, *stopButton{}, *exportButton{};
+  QComboBox *   smoothing{}, *brightness{}, *model{};
+  QPushButton * runButton{}, *stopButton{}, *exportButton{}, *exportModelButton{};
   QTableWidget *frames{}, *windows{};
 
   QPointer<playlistItem> item;
@@ -105,6 +112,7 @@ private:
 
   mutable std::mutex               lock;
   std::map<int, me::GmFrameResult> done; //!< Written by the worker under lock.
+  std::map<int, me::GmModelResult> modelDone; //!< Likewise, when a model is fitted.
   int                              shownRows{};
   QString                          workerError;
   std::atomic<bool>                cancel{};

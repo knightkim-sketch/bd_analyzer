@@ -8,7 +8,10 @@
 //   * selecting a frame moves the main window there and draws the 16 windows over the picture, on
 //     the item's motion estimation container, with type ids of their own;
 //   * the Block Info pane lists the window under a pixel, since it walks every type with data;
-//   * the CSV export is odyssey's format, 16 rows a frame.
+//   * the CSV export is odyssey's format, 16 rows a frame;
+//   * the RANSAC global model (rotzoom by default, fitted to SVT ME 16x16 vectors) reads the pan as
+//     a pure translation of (+8, +4) with nearly every block an inlier, draws its inlier mask and its
+//     vectors, and exports one CSV row a frame.
 #include <QAction>
 #include <QApplication>
 #include <QDir>
@@ -196,6 +199,23 @@ int main(int argc, char **argv)
   check(other == 0 && matched >= accepted - (frames - 1) * 7,
         "accepted windows report (+8, +4) - sign and scale included - bar the entering edge");
 
+  // ---- the RANSAC global model ----------------------------------------------------------------
+  const auto models = window->modelResults();
+  check(int(models.size()) == frames - 1, "a global model per frame");
+  bool translationOnly = true, mostlyInliers = true;
+  for (const auto &[poc, m] : models)
+  {
+    const auto mv = bda::me::gmModelMvAt(m, 640, 360);
+    translationOnly = translationOnly && m.ok() && std::abs(mv.x - 64) <= 2 && std::abs(mv.y - 32) <= 2 &&
+                      std::abs(m.scale() - 1) < 0.002 && std::abs(m.angleDegrees()) < 0.05;
+    mostlyInliers = mostlyInliers && m.inliers * 100 >= m.total * 85;
+    std::cout << "        model poc " << poc << ": MV at centre (" << mv.x / 8.0 << ", " << mv.y / 8.0
+              << "), scale " << m.scale() << ", angle " << m.angleDegrees() << ", inliers " << m.inliers
+              << " / " << m.total << std::endl;
+  }
+  check(translationOnly, "the rotzoom model reads the pan as (+8, +4), scale 1, no rotation");
+  check(mostlyInliers, "with at least 85% of the 16x16 blocks as inliers");
+
   auto *table = window->findChildren<QTableWidget *>().value(0);
   check(table != nullptr && table->rowCount() == frames - 1, "the frame table has a row per frame");
 
@@ -213,6 +233,11 @@ int main(int argc, char **argv)
     const auto vectors = data->at(bda::integration::kGmAcceptedTypeId).vectorData.size() +
                          data->at(bda::integration::kGmRawTypeId).vectorData.size();
     check(vectors >= 16, "every window carries a vector, accepted or raw");
+    const auto &m3 = models.count(3) ? models.at(3) : bda::me::GmModelResult{};
+    check(int(data->at(bda::integration::kGmInlierTypeId).valueData.size()) == m3.total && m3.total > 0,
+          "the model's inlier mask covers the blocks it was fitted to");
+    check(data->at(bda::integration::kGmModelTypeId).vectorData.size() == 20 * 12,
+          "and its vector is drawn on every 64x64 block (20 x 12)");
 
     const auto info = item->getBlockInfoAt(QPoint(640, 360), 3);
     bool       listed = false;
@@ -233,6 +258,16 @@ int main(int argc, char **argv)
       ++lines;
   check(lines == 1 + 16 * (frames - 1), "header plus 16 rows a frame (" + std::to_string(lines) + ")");
   QFile::remove(csvPath);
+
+  const auto modelPath = QDir::tempPath() + "/bd-gm-window-model.csv";
+  check(window->exportModelCsv(modelPath, &error), "the model CSV is written " + error.toStdString());
+  QFile modelCsv(modelPath);
+  int   modelLines = 0;
+  if (modelCsv.open(QIODevice::ReadOnly))
+    while (!modelCsv.readLine().isEmpty())
+      ++modelLines;
+  check(modelLines == frames, "header plus one row a frame (" + std::to_string(modelLines) + ")");
+  QFile::remove(modelPath);
   QFile::remove(clip);
 
   std::cout << "RESULT: " << (failures == 0 ? "PASS" : "FAIL") << std::endl;
