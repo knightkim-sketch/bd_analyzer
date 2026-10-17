@@ -8,6 +8,39 @@
 
 ---
 
+## 0.4.3 (2026-10-17)
+
+### Odyssey closed-loop ME (신규)
+
+- ME 패널 알고리즘에서 **Odyssey closed-loop ME** 를 고를 수 있습니다. 블록마다 시작 MV 주변 정수 8×8 창을 찾고,
+  1/4·1/8 pel 부화소 탐색을 합니다. odyssey 인코더 trace 와 196,350 블록 전부 비트 단위로 일치함을 확인했습니다.
+- **Start MV from**: None (0, 0) / SVT-AV1 integer ME / Odyssey open-loop ME / **Global model (SVT ME)**.
+  **Sub-pel**: 1/8 pel allowed / 1/4 pel only.
+
+### Global motion 창: RANSAC 전역 모델 (신규)
+
+- **Model** (off / translation / rotzoom / affine, 기본 rotzoom) 을 켜면 프레임마다 SVT ME 16×16 벡터에 RANSAC
+  (libaom 과 같은 규칙, 결정적) 으로 전역 모델을 맞춥니다.
+- 표에 모델 중심 MV, scale / angle, inlier 수가 나오고, **GM model inlier** (녹색 inlier / 빨강 outlier) 와
+  **GM model vector** overlay 를 볼 수 있습니다. **Export model CSV…** 로 모델 파라미터를 내보냅니다.
+
+### File → Export Stabilized Y4M (신규, DIS)
+
+- 프레임 간 전역 모델 → 누적 궤적 → 이동평균 평활 → 보정 warp (Y/U/V) 로 흔들림을 줄인 Y4M 과 궤적 CSV 를 만듭니다.
+  출력 크기는 입력과 같고 가장자리는 복제합니다.
+
+### Y4M sequence generator
+
+- MV 를 소수로 입력할 수 있습니다 (0.25 단위, 소수 3자리).
+- 미리보기 **Grid** (8–128), 화면 전체 **Flip horizontal / vertical**.
+- **Camera shake** (RandomWalk / Sine): 화면 전체 흔들림을 주고 정답 궤적 `<y4m>.camera.csv` 를 함께 저장합니다.
+
+### 수정
+
+- 같은 프레임에서 ME 파라미터만 바꿔 다시 계산하면 Block Info 에 이전 값이 남던 문제를 고쳤습니다.
+
+---
+
 ## 0.4.2 (2026-10-15)
 
 ### Convolution filter (luma) (신규)

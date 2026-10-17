@@ -33,7 +33,7 @@
 %global __requires_exclude ^(%{__requires_exclude_bundled}|%{__requires_exclude_optional})$
 
 Name:           bd-analyzer
-Version:        %{?bda_version}%{!?bda_version:0.4.2}
+Version:        %{?bda_version}%{!?bda_version:0.4.3}
 Release:        %{?bda_release}%{!?bda_release:1}%{?dist}
 Summary:        Video bitstream and YUV analysis toolset
 Summary(ko):    비디오 비트스트림·YUV 분석 도구
@@ -142,6 +142,17 @@ fi
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Sat Oct 17 2026 knight.kim <knight.kim@blue-dot.io> - 0.4.3-1
+- Odyssey closed-loop ME in the ME panel: full-pel window around each block's start vector, then
+  quarter/eighth-pel search; bit-exact to odyssey's own trace. Start MV from: none, SVT ME, odyssey
+  open-loop, or a RANSAC global model of SVT's vectors.
+- Global motion window: a RANSAC global model (translation / rotzoom / affine) per frame, with an
+  inlier mask and model vector overlay and a model CSV export.
+- File > Export Stabilized Y4M: digital image stabilisation (model trajectory, smoothing, warp).
+- Y4M sequence generator: fractional MVs, preview grid, whole-picture flips, camera shake with a
+  ground-truth trajectory CSV.
+- Fix stale Block Info values after re-estimating the same frame with other ME parameters.
+
 * Thu Oct 15 2026 knight.kim <knight.kim@blue-dot.io> - 0.4.2-1
 - Convolution filter (luma): a cascade of OpenCV filters on a raw YUV item, exported as a filtered
   Y4M (File menu) or used as the motion estimation input.
