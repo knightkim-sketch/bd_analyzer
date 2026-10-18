@@ -344,6 +344,11 @@ run_unit_test "$ROOT/tests/unit/block-syntax-diff.cpp" \
 # 기대값으로 고정한다.
 run_unit_test "$ROOT/tests/unit/recon-diff.cpp" "$ROOT/src/diff/ReconDiff.cpp"
 
+# LCEVC 구문. 기준은 MPEG LTM(BITSTREAM_DEBUG) trace 다 - 두 스트림(HEVC/H.264 base)의 모든 필드를
+# LTM 이 읽은 값과 줄 단위로 맞추고, T.35·AV1 metadata OBU 경로가 같은 payload 를 주는지 본다.
+run_unit_test "$ROOT/tests/unit/lcevc-syntax.cpp" \
+              "$ROOT/src/lcevc/LcevcBitstream.cpp" "$ROOT/src/lcevc/LcevcSyntax.cpp"
+
 # MP4 컨테이너. box 트리와 sample table(stsc/stco/stsz)을 실제 ffmpeg 산출물로 검증한다 -
 # 손으로 만든 픽스처는 "내가 생각하는 포맷" 과의 일치만 증명하기 때문이다.
 MP4="$(ensure_mp4)" || MP4=""
@@ -638,6 +643,21 @@ run_test_bda "$ROOT/tests/regression/52-stabilized-y4m-export.cpp"
 # GM 창 Stabilization (DIS): 프레임별 RANSAC 모델 -> 궤적·평활(Gaussian 기본), Apply to view 의 화면 raw ==
 # 같은 설정 export 의 프레임, ME 는 원본, 방법 변경 시 다시 그림, 끄면 원본.
 run_test_bda "$ROOT/tests/regression/53-gm-stabilization-view.cpp"
+# LCEVC 구문 트리 (패치 0073): HEVC/H.264 base .lvc 의 LCEVC NAL 이 "LCEVC IDR/non-IDR" 노드로, AV1 metadata OBU(T.35)
+# 가 "Metadata (LCEVC)" 로 보이는지, base NAL 은 그대로 파싱되는지.
+run_test "$ROOT/tests/regression/54-lcevc-syntax-tree.cpp" \
+    "$ROOT/tests/data/lcevc/old_town_cross_ltm_hevc.lvc" "$ROOT/tests/data/lcevc/hw_encoder_h264.lvc"
+# LCEVC 디코딩 (패치 0074 FFmpeg drain, 0075): .lvc 2종을 item 경로로 디코딩해 프레임별 MD5 == LTM ModelDecoder
+# (LTM·LCEVCdec 둘 다), 역방향 seek, Base/residual signal, residual overlay, Frame 탭, base 디코더로 복귀.
+# 디코더 라이브러리는 scripts/setup-lcevc-ltm.sh, scripts/setup-lcevcdec.sh 가 만든다.
+if [[ -e "$APPDIR/decoder/libbda-lcevc-ltm.so" && -e "$APPDIR/decoder/liblcevc_dec_api.so" ]]; then
+    run_test "$ROOT/tests/regression/55-lcevc-decode.cpp" \
+        "$ROOT/tests/data/lcevc/old_town_cross_ltm_hevc.lvc" "$ROOT/tests/data/lcevc/old_town_cross_ltm_hevc.ltm-md5.txt" \
+        "$ROOT/tests/data/lcevc/hw_encoder_h264.lvc" "$ROOT/tests/data/lcevc/hw_encoder_h264.ltm-md5.txt"
+else
+    echo "  SKIP  55-lcevc-decode (LCEVC 디코더 라이브러리 없음: scripts/setup-lcevc-ltm.sh, setup-lcevcdec.sh)"
+    ((skip_count++))
+fi
 else
     echo "  SKIP  15-raw-av1-extension (raw AV1 생성 실패)"
     ((skip_count++))

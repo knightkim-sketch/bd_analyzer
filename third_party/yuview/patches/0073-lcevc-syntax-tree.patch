@@ -1,0 +1,171 @@
+--- a/YUViewLib/YUViewLib.pro
++++ b/YUViewLib/YUViewLib.pro
+@@ -26,6 +26,7 @@
+ #   src/diff/         Qt-free syntax comparison for Find diff, unit tested on its own
+ #   src/filter/       Qt-free luma filter chain (OpenCV) and Y4M writer, unit tested on its own
+ #   src/generator/    Qt-free Y4M sequence generator scene (layers, motion, compositing)
++#   src/lcevc/        Qt-free LCEVC (MPEG-5 Part 2) enhancement data extraction and syntax
+ #   src/integration/  the only part of our tree allowed to know about upstream types
+ #
+ # $$PWD is .../third_party/yuview/upstream/YUViewLib, so four levels up is the repository root.
+@@ -40,6 +41,7 @@
+ SOURCES += $$files($$BDA_ROOT/src/diff/*.cpp, true)
+ SOURCES += $$files($$BDA_ROOT/src/filter/*.cpp, true)
+ SOURCES += $$files($$BDA_ROOT/src/generator/*.cpp, true)
++SOURCES += $$files($$BDA_ROOT/src/lcevc/*.cpp, true)
+ SOURCES += $$files($$BDA_ROOT/src/integration/*.cpp, true)
+ HEADERS += $$files($$BDA_ROOT/src/me/*.h, true)
+ HEADERS += $$files($$BDA_ROOT/src/bdrate/*.h, true)
+@@ -50,6 +52,7 @@
+ HEADERS += $$files($$BDA_ROOT/src/diff/*.h, true)
+ HEADERS += $$files($$BDA_ROOT/src/filter/*.h, true)
+ HEADERS += $$files($$BDA_ROOT/src/generator/*.h, true)
++HEADERS += $$files($$BDA_ROOT/src/lcevc/*.h, true)
+ HEADERS += $$files($$BDA_ROOT/src/integration/*.h, true)
+ 
+ # Optional static OpenCV (core, imgproc, features2d, video, flann, calib3d) from
+--- a/YUViewLib/src/parser/ParserAnnexB.h
++++ b/YUViewLib/src/parser/ParserAnnexB.h
+@@ -44,6 +44,8 @@
+ #include <parser/common/TreeItem.h>
+ #include <video/yuv/videoHandlerYUV.h>
+ 
++#include "lcevc/LcevcSyntax.h"
++
+ namespace parser
+ {
+ 
+@@ -141,6 +143,11 @@
+   bool runParsingOfFile(const std::filesystem::path &compressedFilePath) override;
+ 
+ protected:
++  /* LCEVC enhancement NAL units interleaved with the base (bd-analyzer): their syntax depends on the
++   * last global_config, so one parser follows the whole stream.
++   */
++  bda::lcevc::SyntaxParser lcevcSyntax;
++
+   struct AnnexBFrame
+   {
+     AnnexBFrame() = default;
+--- a/YUViewLib/src/parser/AVC/ParserAnnexBAVC.cpp
++++ b/YUViewLib/src/parser/AVC/ParserAnnexBAVC.cpp
+@@ -30,6 +30,7 @@
+  *   along with this program. If not, see <http://www.gnu.org/licenses/>.
+  */
+ 
++#include "integration/LcevcTree.h"
+ #include "ParserAnnexBAVC.h"
+ 
+ #include <cmath>
+@@ -229,6 +230,14 @@
+   if (nalRoot)
+     ParserAnnexB::logNALSize(data, nalRoot, nalStartEndPosFile);
+ 
++  // An LCEVC enhancement NAL unit (bd-analyzer): its own syntax, not this codec's.
++  if (bda::integration::addLcevcNalUnit(data, getStartCodeOffset(data), nalRoot, this->lcevcSyntax, nalID))
++  {
++    parseResult.success     = true;
++    parseResult.nalTypeName = "LCEVC ";
++    return parseResult;
++  }
++
+   reader::SubByteReaderLogging reader(data, nalRoot, "", getStartCodeOffset(data));
+ 
+   std::string specificDescription;
+--- a/YUViewLib/src/parser/HEVC/ParserAnnexBHEVC.cpp
++++ b/YUViewLib/src/parser/HEVC/ParserAnnexBHEVC.cpp
+@@ -30,6 +30,7 @@
+  *   along with this program. If not, see <http://www.gnu.org/licenses/>.
+  */
+ 
++#include "integration/LcevcTree.h"
+ #include "ParserAnnexBHEVC.h"
+ 
+ #include <algorithm>
+@@ -330,6 +331,14 @@
+   if (nalRoot)
+     ParserAnnexB::logNALSize(data, nalRoot, nalStartEndPosFile);
+ 
++  // An LCEVC enhancement NAL unit (bd-analyzer): its own syntax, not this codec's.
++  if (bda::integration::addLcevcNalUnit(data, getStartCodeOffset(data), nalRoot, this->lcevcSyntax, nalID))
++  {
++    parseResult.success     = true;
++    parseResult.nalTypeName = "LCEVC ";
++    return parseResult;
++  }
++
+   reader::SubByteReaderLogging reader(data, nalRoot, "", getStartCodeOffset(data));
+ 
+   std::stringstream specificDescription;
+--- a/YUViewLib/src/parser/VVC/ParserAnnexBVVC.cpp
++++ b/YUViewLib/src/parser/VVC/ParserAnnexBVVC.cpp
+@@ -30,6 +30,7 @@
+  *   along with this program. If not, see <http://www.gnu.org/licenses/>.
+  */
+ 
++#include "integration/LcevcTree.h"
+ #include "ParserAnnexBVVC.h"
+ 
+ #include <algorithm>
+@@ -311,6 +312,14 @@
+   if (nalRoot)
+     ParserAnnexB::logNALSize(data, nalRoot, nalStartEndPosFile);
+ 
++  // An LCEVC enhancement NAL unit (bd-analyzer): its own syntax, not this codec's.
++  if (bda::integration::addLcevcNalUnit(data, readOffset, nalRoot, this->lcevcSyntax, nalID))
++  {
++    parseResult.success     = true;
++    parseResult.nalTypeName = "LCEVC ";
++    return parseResult;
++  }
++
+   reader::SubByteReaderLogging reader(data, nalRoot, "", readOffset);
+ 
+   std::stringstream specificDescription;
+--- a/YUViewLib/src/parser/AV1/ParserAV1OBU.h
++++ b/YUViewLib/src/parser/AV1/ParserAV1OBU.h
+@@ -39,6 +39,8 @@
+ #include "frame_header_obu.h"
+ #include "sequence_header_obu.h"
+ 
++#include "lcevc/LcevcSyntax.h"
++
+ namespace parser
+ {
+ 
+@@ -72,6 +74,8 @@
+   // A tile group can arrive in its own OBU, after the frame header it belongs to. Its tile sizes
+   // cannot be read without that header's tile grid, so the last one parsed is kept here.
+   std::shared_ptr<av1::frame_header_obu> active_frame_header;
++  // LCEVC enhancement data in metadata OBUs (ITU-T T.35), followed across the stream (bd-analyzer).
++  bda::lcevc::SyntaxParser lcevcSyntax;
+ };
+ 
+ } // namespace parser
+--- a/YUViewLib/src/parser/AV1/ParserAV1OBU.cpp
++++ b/YUViewLib/src/parser/AV1/ParserAV1OBU.cpp
+@@ -37,6 +37,8 @@
+ #include "tile_group_obu.h"
+ #include "parser/common/SubByteReaderLogging.h"
+ 
++#include "integration/LcevcTree.h"
++
+ namespace parser
+ {
+ 
+@@ -163,6 +165,15 @@
+       if (obu.header.obu_type == ObuType::OBU_FRAME)
+         this->decValues.SeenFrameHeader = false;
+     }
++    else if (obu.header.obu_type == ObuType::OBU_METADATA)
++    {
++      // Only LCEVC (ITU-T T.35) is understood here; other metadata keeps the raw-byte handling below.
++      obuTypeName              = "Metadata";
++      const auto payloadBytes  = obuPayloadBytesLeft(obu.header, data.size(), nrHeaderBytes, reader);
++      if (payloadBytes > 0 && nrHeaderBytes + payloadBytes <= data.size() &&
++          bda::integration::addLcevcAv1Metadata(data.data() + nrHeaderBytes, payloadBytes, obuRoot, this->lcevcSyntax))
++        obuTypeName = "Metadata (LCEVC)";
++    }
+     else if (obu.header.obu_type == ObuType::OBU_TILE_GROUP)
+     {
+       if (!this->active_frame_header)

@@ -1,0 +1,115 @@
+# Applied by scripts/setup-lcevc-ltm.sh to copies of the LTM sources in the build directory
+# (never to third_party/ltm). Every change is guarded by BDA_LTM_LIBRARY, so the patched files
+# behave exactly like upstream when that macro is not defined.
+diff -ru a/decoder/src/Decoder.cpp b/decoder/src/Decoder.cpp
+--- a/decoder/src/Decoder.cpp	2026-10-18 19:46:45.332875432 +0900
++++ b/decoder/src/Decoder.cpp	2026-10-18 19:47:01.536948074 +0900
+@@ -649,12 +649,15 @@
+ 	const auto output_desc = ImageDescription(ext_base.description().format(), output[0].width(), output[0].height())
+ 	                             .with_depth(configuration_.global_configuration.enhancement_depth);
+ 
++#ifndef BDA_LTM_LIBRARY
++	// bd-analyzer library build: no base decoder fills the report queue and stdout belongs to the host.
+ 	goReportStructure = goReportQueue.top();
+ 	goReportQueue.pop();
+ 	goPsnr.miBaseBytes += goReportStructure.miBaseSize;
+ 	goPsnr.miEnhancementBytes += goReportStructure.miEnhancementSize;
+ 	fprintf(stdout, "DEC. [pts. %4d] [type %4d] [base %8d] [enha %8d] ", goReportStructure.miTimeStamp,
+ 	        goReportStructure.miPictureType, goReportStructure.miBaseSize, goReportStructure.miEnhancementSize);
++#endif
+ 
+ 	// XXX THis should get hoisted into App.
+ 	if (report) {
+@@ -707,10 +710,14 @@
+ 		}
+ 		// clang-format on
+ 	} else {
++#ifndef BDA_LTM_LIBRARY
+ 		fprintf(stdout, "\n");
++#endif
+ 	}
+ 
++#ifndef BDA_LTM_LIBRARY
+ 	fflush(stdout);
++#endif
+ 
+ 	return Image(std::string("output"), output_desc, ext_base.timestamp(), output);
+ }
+diff -ru a/util/src/Diagnostics.cpp b/util/src/Diagnostics.cpp
+--- a/util/src/Diagnostics.cpp	2026-10-18 19:46:45.331875427 +0900
++++ b/util/src/Diagnostics.cpp	2026-10-18 19:47:01.536948074 +0900
+@@ -40,6 +40,7 @@
+ #include <cstdarg>
+ #include <cstdio>
+ #include <sstream>
++#include <stdexcept>
+ 
+ namespace lctm {
+ 
+@@ -68,7 +69,16 @@
+ 	return r;
+ }
+ 
++#ifdef BDA_LTM_LIBRARY
++// bd-analyzer library build: logging is off unless the wrapper enables it, and a failed CHECK
++// throws instead of terminating the host process.
++bool bda_log_enabled = false;
++#endif
++
+ void _check_failed(const char *file, int line, const char *func, const std::string &message) {
++#ifdef BDA_LTM_LIBRARY
++	throw std::runtime_error(format("%s:%d (%s) %s", file, line, func, message.c_str()));
++#endif
+ 	fprintf(stderr, "Error: %s:%d (%s) %s\n", file, line, func, message.c_str());
+ #ifdef DIAGNOSTICS_CHECK_ABORTS
+ 	abort()
+@@ -86,6 +96,10 @@
+ }
+ 
+ void _log(const char *file, int line, const char *func, const std::string &message) {
++#ifdef BDA_LTM_LIBRARY
++	if (!bda_log_enabled)
++		return;
++#endif
+ 	const std::string source_coords = format("%s:%d (%s) ", file, line, func);
+ 	fprintf(stderr, "%s%s\n", source_coords.c_str(), message.c_str());
+ 	// prevent log "concurrency"
+@@ -93,6 +107,10 @@
+ }
+ 
+ void _log_report(const std::string &message) {
++#ifdef BDA_LTM_LIBRARY
++	if (!bda_log_enabled)
++		return;
++#endif
+ 	fprintf(stderr, "%s\n", message.c_str());
+ 	// prevent log "concurrency"
+ 	fflush(stderr);
+diff -ru a/util/src/Surface.cpp b/util/src/Surface.cpp
+--- a/util/src/Surface.cpp	2026-10-18 19:46:45.331875427 +0900
++++ b/util/src/Surface.cpp	2026-10-18 19:47:01.536948074 +0900
+@@ -61,6 +61,11 @@
+ 
+ void Surface::set_dump_surfaces(bool b) { dump_surfaces = b; }
+ 
++#ifdef BDA_LTM_LIBRARY
++// bd-analyzer library build: when set, dump() hands the surface to this hook instead of writing a file.
++void (*bda_dump_hook)(const std::string &name, const Surface &surface) = nullptr;
++#endif
++
+ bool Surface::get_dump_surfaces() { return dump_surfaces; }
+ 
+ // Dump surface as 8bit p420, with dummy chroma planes
+@@ -132,6 +137,12 @@
+ // Dump surface as 8 or 16 bit Y
+ //
+ void Surface::dump(const std::string &name) const {
++#ifdef BDA_LTM_LIBRARY
++	if (bda_dump_hook) {
++		bda_dump_hook(name, *this);
++		return;
++	}
++#endif
+ 	if (!dump_surfaces)
+ 		return;
+ 

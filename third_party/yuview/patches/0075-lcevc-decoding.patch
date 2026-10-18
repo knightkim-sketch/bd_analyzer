@@ -1,0 +1,646 @@
+--- a/YUViewLib/YUViewLib.pro
++++ b/YUViewLib/YUViewLib.pro
+@@ -32,6 +32,8 @@
+ # $$PWD is .../third_party/yuview/upstream/YUViewLib, so four levels up is the repository root.
+ BDA_ROOT = $$PWD/../../../..
+ INCLUDEPATH += $$BDA_ROOT/src
++# LCEVCdec's public API declarations; the library itself is loaded at run time (src/integration).
++INCLUDEPATH += $$BDA_ROOT/third_party/lcevcdec-api
+ SOURCES += $$files($$BDA_ROOT/src/me/*.cpp, true)
+ SOURCES += $$files($$BDA_ROOT/src/bdrate/*.cpp, true)
+ SOURCES += $$files($$BDA_ROOT/src/assist/*.cpp, true)
+--- a/YUViewLib/src/decoder/decoderBase.h
++++ b/YUViewLib/src/decoder/decoderBase.h
+@@ -61,17 +61,28 @@
+   VTM,      // The VTM reference software decoder
+   VVDec,    // The VVDec VVC decoder
+   Dav1d,    // The dav1d AV1 decoder
+-  FFMpeg    // The FFMpeg decoder
++  FFMpeg,   // The FFMpeg decoder
++  // LCEVC enhancement over a base decoder (bd-analyzer, src/integration/DecoderLcevc): offered only
++  // for streams that carry LCEVC data.
++  LcevcLtm, // MPEG LTM - analysis: intermediate surfaces and per picture configuration
++  LcevcDec  // V-Nova LCEVCdec - playback
+ };
+ 
+-constexpr EnumMapper<DecoderEngine, 7> DecoderEngineMapper = {
++constexpr EnumMapper<DecoderEngine, 9> DecoderEngineMapper = {
+     std::make_pair(DecoderEngine::Invalid, "Invalid"),
+     std::make_pair(DecoderEngine::Libde265, "Libde265"),
+     std::make_pair(DecoderEngine::HM, "HM"),
+     std::make_pair(DecoderEngine::VTM, "VTM"),
+     std::make_pair(DecoderEngine::VVDec, "VVDec"),
+     std::make_pair(DecoderEngine::Dav1d, "Dav1d"),
+-    std::make_pair(DecoderEngine::FFMpeg, "FFMpeg")};
++    std::make_pair(DecoderEngine::FFMpeg, "FFMpeg"),
++    std::make_pair(DecoderEngine::LcevcLtm, "LCEVC (LTM, analysis)"),
++    std::make_pair(DecoderEngine::LcevcDec, "LCEVC (LCEVCdec)")};
++
++inline bool isLcevcEngine(DecoderEngine e)
++{
++  return e == DecoderEngine::LcevcLtm || e == DecoderEngine::LcevcDec;
++}
+ 
+ const auto DecodersHEVC =
+     std::vector<DecoderEngine>({DecoderEngine::Libde265, DecoderEngine::HM, DecoderEngine::FFMpeg});
+--- a/YUViewLib/src/parser/ParserAnnexB.h
++++ b/YUViewLib/src/parser/ParserAnnexB.h
+@@ -139,6 +139,13 @@
+ 
+   bool parseAnnexBFile(std::unique_ptr<FileSourceAnnexBFile> &file, QWidget *mainWindow = nullptr);
+ 
++  /* The LCEVC NAL units of the file (bd-analyzer), one per frame in display order as Annex-B bytes,
++   * empty for a frame without one; empty altogether when the stream has none. Each unit belongs to
++   * the base picture that follows it in the file, the order LTM's encoder and the hardware encoder
++   * write (the unit leads its access unit, like a prefix SEI).
++   */
++  std::vector<std::vector<uint8_t>> getLcevcPerFrameDisplayOrder();
++
+   // Called from the bitstream analyzer. This function can run in a background process.
+   bool runParsingOfFile(const std::filesystem::path &compressedFilePath) override;
+ 
+@@ -147,6 +154,8 @@
+    * last global_config, so one parser follows the whole stream.
+    */
+   bda::lcevc::SyntaxParser lcevcSyntax;
++  // Every LCEVC NAL unit parseAnnexBFile() met: its file position and its Annex-B bytes.
++  std::vector<std::pair<uint64_t, std::vector<uint8_t>>> lcevcUnits;
+ 
+   struct AnnexBFrame
+   {
+--- a/YUViewLib/src/parser/ParserAnnexB.cpp
++++ b/YUViewLib/src/parser/ParserAnnexB.cpp
+@@ -37,6 +37,7 @@
+ 
+ #include <QElapsedTimer>
+ #include <QProgressDialog>
++#include <algorithm>
+ #include <assert.h>
+ 
+ #define PARSERANNEXB_DEBUG_OUTPUT 0
+@@ -199,6 +200,8 @@
+     {
+       auto nalData = reader::SubByteReaderLogging::convertToByteVector(
+           file->getNextNALUnit(false, &nalStartEndPosFile));
++      if (const auto lcevcNal = bda::lcevc::lcevcNalFromUnit(nalData.data(), nalData.size()))
++        this->lcevcUnits.emplace_back(nalStartEndPosFile.first, bda::lcevc::toAnnexB(*lcevcNal));
+       auto parsingResult =
+           this->parseAndAddNALUnit(nalID, nalData, {}, nalStartEndPosFile, nullptr);
+       if (!parsingResult.success)
+@@ -318,6 +321,31 @@
+   return infoList;
+ }
+ 
++std::vector<std::vector<uint8_t>> ParserAnnexB::getLcevcPerFrameDisplayOrder()
++{
++  std::vector<std::vector<uint8_t>> perFrame;
++  if (this->lcevcUnits.empty())
++    return perFrame;
++  this->updateFrameListDisplayOrder();
++  perFrame.resize(this->frameListDisplayOder.size());
++  for (const auto &[filePos, bytes] : this->lcevcUnits)
++  {
++    // The first frame (coding order is file order) that ends after the unit. Not "starts after": a
++    // frame's range may begin at the parameter sets in front of the unit.
++    const auto frame = std::find_if(
++        this->frameListCodingOrder.begin(), this->frameListCodingOrder.end(), [filePos = filePos](const auto &f) {
++          return f.fileStartEndPos && f.fileStartEndPos->second > filePos;
++        });
++    if (frame == this->frameListCodingOrder.end())
++      continue;
++    const auto shown =
++        std::find(this->frameListDisplayOder.begin(), this->frameListDisplayOder.end(), *frame);
++    if (shown != this->frameListDisplayOder.end())
++      perFrame[std::size_t(std::distance(this->frameListDisplayOder.begin(), shown))] = bytes;
++  }
++  return perFrame;
++}
++
+ int ParserAnnexB::getFramePOC(FrameIndexDisplayOrder frameIdx)
+ {
+   this->updateFrameListDisplayOrder();
+--- a/YUViewLib/src/playlistitem/playlistItem.h
++++ b/YUViewLib/src/playlistitem/playlistItem.h
+@@ -178,6 +178,10 @@
+   // If the playlist item indicates to put a button into the fileInfo, this call back is called if
+   // the user presses the button.
+   virtual void infoListButtonPressed(int) {}
++  /* What the item knows about one frame besides the OBU model, for the Frame tab of the info pane
++   * (bd-analyzer): the LCEVC picture configuration of a stream with LCEVC data. Empty by default.
++   */
++  virtual InfoData getFrameInfo(int) const { return InfoData(); }
+ 
+   QWidget *getPropertiesWidget()
+   {
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
+@@ -45,6 +45,10 @@
+ #include "playlistItemWithVideo.h"
+ 
+ class videoHandler;
++namespace bda::integration
++{
++struct LcevcStream;
++}
+ 
+ /* This playlist item encapsulates all compressed video sequences.
+  * We can read the data from a plain binary file (we support various raw annexB formats) or we can
+@@ -75,6 +79,8 @@
+   // Return the info title and info list to be shown in the fileInfo groupBox.
+   virtual InfoData getInfo() const override;
+   virtual void     infoListButtonPressed(int buttonID) override;
++  //!< The LCEVC picture configuration of the frame, when the stream carries LCEVC data.
++  InfoData getFrameInfo(int frameIdx) const override;
+ 
+   // Draw the compressed item using the given painter and zoom factor.
+   virtual void
+@@ -170,6 +176,16 @@
+   // Delete existing decoders and allocate decoders for the type "decoderEngineType"
+   bool allocateDecoder(int displayComponent = 0);
+ 
++  /* LCEVC (bd-analyzer). A stream that carries LCEVC enhancement data lists it here per display
++   * frame, and offers the LCEVC engines. Those wrap a base decoder, so the input is read the way
++   * that base decoder wants it (dataPathEngine), and the picture has the enhanced size while one of
++   * them is selected - the base size and format are kept to switch back.
++   */
++  std::shared_ptr<bda::integration::LcevcStream> lcevcStream;
++  Size                                           baseFrameSize;
++  video::yuv::PixelFormatYUV                     baseFormatYuv;
++  decoder::DecoderEngine                         dataPathEngine() const;
++
+   // In order to parse raw annexB files, we need a file reader (that can read NAL units)
+   // and a parser that can understand what the NAL units mean. We open the file source twice (once
+   // for interactive loading, once for the background caching). The parser is only needed once and
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+@@ -61,6 +61,11 @@
+ #include <video/rgb/videoHandlerRGB.h>
+ #include <video/yuv/videoHandlerYUV.h>
+ 
++#include "integration/DecoderLcevc.h"
++#include "lcevc/LcevcBitstream.h"
++
++#include <QFile>
++
+ using namespace functions;
+ using namespace decoder;
+ 
+@@ -149,6 +154,20 @@
+       this->inputFormat = InputFormat::AnnexBVVC;
+     else if (ext == "avc" || ext == "h264" || ext == "264")
+       this->inputFormat = InputFormat::AnnexBAVC;
++    else if (ext == "lvc")
++    {
++      // An Annex-B stream with LCEVC NAL units (bd-analyzer): the base codec decides the reader.
++      QFile file(compressedFilePath);
++      QByteArray head;
++      if (file.open(QIODevice::ReadOnly))
++        head = file.read(1 << 20);
++      const auto codec = bda::lcevc::detectAnnexBBaseCodec(
++          reinterpret_cast<const std::uint8_t *>(head.constData()), std::size_t(head.size()));
++      this->inputFormat = codec == bda::lcevc::AnnexBCodec::HEVC  ? InputFormat::AnnexBHEVC
++                          : codec == bda::lcevc::AnnexBCodec::VVC ? InputFormat::AnnexBVVC
++                          : codec == bda::lcevc::AnnexBCodec::AVC ? InputFormat::AnnexBAVC
++                                                                  : InputFormat::Libav;
++    }
+     else
+       this->inputFormat = InputFormat::Libav;
+   }
+@@ -213,6 +232,9 @@
+     DEBUG_COMPRESSED(
+       "playlistItemCompressedVideo::playlistItemCompressedVideo sample aspect ratio ("
+       << this->prop.sampleAspectRatio.num << "," << this->prop.sampleAspectRatio.den << ")");
++
++    if (auto perFrame = this->inputFileAnnexBParser->getLcevcPerFrameDisplayOrder(); !perFrame.empty())
++      this->lcevcStream = bda::integration::makeLcevcStream(std::move(perFrame));
+   }
+   else
+   {
+@@ -265,6 +287,19 @@
+     if (this->ffmpegCodec.isAV1())
+       codec = Codec::AV1;
+ 
++    // LCEVC in AV1 metadata OBUs (ITU-T T.35), one per temporal unit of an IVF file (bd-analyzer).
++    if (codec == Codec::AV1 && QFileInfo(compressedFilePath).suffix().toLower() == "ivf")
++    {
++      QFile file(compressedFilePath);
++      if (file.open(QIODevice::ReadOnly))
++        if (const auto *data = file.map(0, file.size()))
++        {
++          auto perFrame = bda::lcevc::lcevcPerIvfFrame(data, std::size_t(file.size()));
++          if (std::any_of(perFrame.begin(), perFrame.end(), [](const auto &f) { return !f.empty(); }))
++            this->lcevcStream = bda::integration::makeLcevcStream(std::move(perFrame));
++        }
++    }
++
+     if (this->cachingEnabled)
+     {
+       // Open the file again for caching
+@@ -303,6 +338,12 @@
+     return;
+   }
+ 
++  // Without a global_config there is nothing to enhance with.
++  if (this->lcevcStream && !this->lcevcStream->valid())
++    this->lcevcStream.reset();
++  this->baseFrameSize = frameSize;
++  this->baseFormatYuv = formatYuv;
++
+   // Allocate the videoHandler (RGB or YUV)
+   if (this->rawFormat == video::RawFormat::YUV)
+   {
+@@ -338,6 +379,11 @@
+     this->possibleDecoders = DecodersAV1;
+   else
+     this->possibleDecoders = {DecoderEngine::FFMpeg};
++  if (this->lcevcStream && this->rawFormat == video::RawFormat::YUV)
++  {
++    this->possibleDecoders.push_back(DecoderEngine::LcevcLtm);
++    this->possibleDecoders.push_back(DecoderEngine::LcevcDec);
++  }
+ 
+   if (decoder != DecoderEngine::Invalid && vectorContains(possibleDecoders, decoder))
+   {
+@@ -360,8 +406,10 @@
+       if (codec == Codec::AV1)
+         defaultDecSetting = "DefaultDecoderAV1";
+ 
+-      auto defaultDecoder = DecoderEngineMapper.getValue(
+-        settings.value(defaultDecSetting, -1).toString().toStdString());
++      auto defaultDecoder =
++        defaultDecSetting.isEmpty()
++          ? std::nullopt
++          : DecoderEngineMapper.getValue(settings.value(defaultDecSetting, -1).toString().toStdString());
+       if (!defaultDecSetting.isEmpty() && defaultDecoder &&
+           vectorContains(possibleDecoders, *defaultDecoder))
+       {
+@@ -385,6 +433,11 @@
+     }
+   }
+ 
++  // A stream with LCEVC data opens enhanced: that is the picture it is meant to show.
++  if (vectorContains(this->possibleDecoders, DecoderEngine::LcevcLtm) &&
++      !(decoder != DecoderEngine::Invalid && vectorContains(this->possibleDecoders, decoder)))
++    this->decoderEngine = DecoderEngine::LcevcLtm;
++
+   this->statisticsUIHandler.setStatisticsData(&this->statisticsData);
+ 
+   // Allocate the decoders
+@@ -392,7 +445,19 @@
+     "playlistItemCompressedVideo::playlistItemCompressedVideo Initializing "
+     << QString::fromStdString(std::string(DecoderEngineMapper.getName(this->decoderEngine)))
+     << " decoder");
+-  if (!this->allocateDecoder(displayComponent))
++  bool allocated = this->allocateDecoder(displayComponent);
++  // The LCEVC decoder libraries are optional too: LCEVCdec when LTM is missing, then the base alone.
++  if (!allocated && this->decoderEngine == DecoderEngine::LcevcLtm)
++  {
++    this->decoderEngine = DecoderEngine::LcevcDec;
++    allocated           = this->allocateDecoder(displayComponent);
++  }
++  if (!allocated && isLcevcEngine(this->decoderEngine))
++  {
++    this->decoderEngine = this->dataPathEngine();
++    allocated           = this->allocateDecoder(displayComponent);
++  }
++  if (!allocated)
+   {
+     // libdav1d is an optional runtime dependency. If it could not be loaded, fall back to FFmpeg
+     // once. This has to happen here rather than later: returning leaves the item permanently
+@@ -593,6 +658,62 @@
+   return info;
+ }
+ 
++InfoData playlistItemCompressedVideo::getFrameInfo(int frameIdx) const
++{
++  if (!this->lcevcStream)
++    return {};
++  const auto &summary = this->lcevcStream->summary;
++  InfoData    info("LCEVC");
++  if (frameIdx < 0 || std::size_t(frameIdx) >= summary.pictures.size() ||
++      !summary.present[std::size_t(frameIdx)])
++  {
++    info.items.append(InfoItem("LCEVC NAL unit"sv, "none for this frame"sv));
++    return info;
++  }
++  const auto &p = summary.pictures[std::size_t(frameIdx)];
++  const auto &g = summary.global;
++  static const char *scaling[]  = {"none", "1D (horizontal)", "2D"};
++  static const char *upsample[] = {"nearest", "linear", "cubic", "modified cubic", "adaptive cubic"};
++  const auto onOff = [](bool b) { return std::string(b ? "1" : "0"); };
++  info.items.append(InfoItem("nal_unit_type"sv,
++                             std::to_string(p.nalUnitType) + " (" +
++                                 bda::lcevc::nalUnitTypeName(p.nalUnitType) + ")"));
++  info.items.append(InfoItem("Resolution"sv,
++                             std::to_string(p.baseWidth) + "x" + std::to_string(p.baseHeight) +
++                                 " -> " + std::to_string(g.outputWidth()) + "x" +
++                                 std::to_string(g.outputHeight()),
++                             "Base picture -> enhanced picture (after the conformance window)."sv));
++  info.items.append(InfoItem("Transform"sv, g.transformBlockSize == 4 ? "DDS (4x4)"sv : "DD (2x2)"sv));
++  info.items.append(InfoItem(
++      "Scaling LoQ-1 / LoQ-0"sv,
++      std::string(scaling[std::min(g.scalingModeLevel1, 2u)]) + " / " + scaling[std::min(g.scalingModeLevel2, 2u)],
++      "scaling_mode_level1 / scaling_mode_level2: base -> sub-layer 1 -> sub-layer 2 resolution."sv));
++  info.items.append(InfoItem("Upsampler"sv, upsample[std::min(g.upsampleType, 4u)]));
++  info.items.append(InfoItem("Enhancement"sv,
++                             p.enhancementEnabled ? "on"sv : "off (no_enhancement_bit)"sv));
++  info.items.append(InfoItem("step_width LoQ-1 / LoQ-0"sv,
++                             std::to_string(p.stepWidthLevel1) + " / " + std::to_string(p.stepWidthLevel2),
++                             "Quantisation step width of sub-layer 1 / sub-layer 2 (32767 = not coded)."sv));
++  info.items.append(InfoItem("quant_matrix_mode"sv, std::to_string(p.quantMatrixMode)));
++  info.items.append(InfoItem("Temporal"sv,
++                             std::string(g.temporalEnabled ? "enabled" : "disabled") +
++                                 ", temporal_refresh " + onOff(p.temporalRefresh) +
++                                 ", temporal_signalling_present " + onOff(p.temporalSignallingPresent)));
++  info.items.append(InfoItem(
++      "Dithering"sv,
++      p.ditheringControl ? "type " + std::to_string(p.ditheringType) + ", strength " +
++                               std::to_string(p.ditheringStrength) + " (not applied here)"
++                         : std::string("off"),
++      "bd-analyzer decodes with dithering off, so the picture is deterministic."sv));
++  const auto bytes = [&p](int loq) {
++    return std::to_string(p.surfaceBytes[0][loq]) + " / " + std::to_string(p.surfaceBytes[1][loq]) + " / " +
++           std::to_string(p.surfaceBytes[2][loq]);
++  };
++  info.items.append(InfoItem("Residual bytes LoQ-1 (Y/U/V)"sv, bytes(0)));
++  info.items.append(InfoItem("Residual bytes LoQ-0 (Y/U/V)"sv, bytes(1)));
++  return info;
++}
++
+ void playlistItemCompressedVideo::infoListButtonPressed(int buttonID)
+ {
+   auto mainWindow = MainWindow::getMainWindow();
+@@ -747,6 +868,27 @@
+         seek = true;
+     }
+ 
++    /* LCEVC keeps state from picture to picture: start where the enhancement can start too, going back
++     * until a base seek point and an LCEVC entry picture coincide. Decoding on from the current
++     * position is cheaper whenever that lies ahead of the entry.
++     */
++    if (isLcevcEngine(this->decoderEngine) && this->lcevcStream)
++    {
++      auto entry = this->lcevcStream->entryFrameFor(int(seekToFrame));
++      while (entry < int(seekToFrame))
++      {
++        if (isInputFormatTypeAnnexB(this->inputFormat))
++          seekToFrame = this->inputFileAnnexBParser->getClosestSeekPoint(unsigned(entry), 0).frameIndex;
++        else
++          std::tie(seekToDTS, seekToFrame) =
++            (caching ? this->inputFileFFmpegCaching : this->inputFileFFmpegLoading)
++              ->getClosestSeekableFrameBefore(entry);
++        entry = this->lcevcStream->entryFrameFor(int(seekToFrame));
++      }
++      if (curFrameIdx >= 0 && frameIdx > curFrameIdx && int(seekToFrame) <= curFrameIdx)
++        seek = false;
++    }
++
+     if (seek)
+     {
+       // Seek and update the frame counters. The seekToPosition function will update the
+@@ -771,7 +913,7 @@
+     {
+       DEBUG_COMPRESSED("playlistItemCompressedVideo::loadRawData decoder needs more data");
+       if (isInputFormatTypeFFmpeg(this->inputFormat) &&
+-          this->decoderEngine == DecoderEngine::FFMpeg)
++          this->dataPathEngine() == DecoderEngine::FFMpeg)
+       {
+         // In this scenario, we can read and push AVPackets
+         // from the FFmpeg file and pass them to the FFmpeg decoder directly.
+@@ -799,7 +941,7 @@
+         }
+       }
+       else if (isInputFormatTypeAnnexB(this->inputFormat) &&
+-               this->decoderEngine == DecoderEngine::FFMpeg)
++               this->dataPathEngine() == DecoderEngine::FFMpeg)
+       {
+         // We are reading from a raw annexB file and use ffmpeg for decoding
+         QByteArray data;
+@@ -846,7 +988,7 @@
+           this->readAnnexBFrameCounterCodingOrder++;
+       }
+       else if (isInputFormatTypeAnnexB(this->inputFormat) &&
+-               this->decoderEngine != DecoderEngine::FFMpeg)
++               this->dataPathEngine() != DecoderEngine::FFMpeg)
+       {
+         auto data = caching ? this->inputFileAnnexBCaching->getNextNALUnit(repushData)
+                             : this->inputFileAnnexBLoading->getNextNALUnit(repushData);
+@@ -870,7 +1012,7 @@
+         }
+       }
+       else if (isInputFormatTypeFFmpeg(this->inputFormat) &&
+-               this->decoderEngine != DecoderEngine::FFMpeg)
++               this->dataPathEngine() != DecoderEngine::FFMpeg)
+       {
+         // Get the next unit (NAL or OBU) form ffmepg and push it to the decoder
+         auto &reader = caching ? *this->inputFileFFmpegCaching : *this->inputFileFFmpegLoading;
+@@ -966,8 +1108,10 @@
+ 
+   // Retrieval of the raw metadata is only required if the the reader or the decoder is not ffmpeg
+   const bool bothFFmpeg =
+-    (!isInputFormatTypeAnnexB(this->inputFormat) && this->decoderEngine == DecoderEngine::FFMpeg);
+-  const bool decFFmpeg = (this->decoderEngine == DecoderEngine::FFMpeg);
++    (!isInputFormatTypeAnnexB(this->inputFormat) && this->dataPathEngine() == DecoderEngine::FFMpeg);
++  const bool decFFmpeg = (this->dataPathEngine() == DecoderEngine::FFMpeg);
++  if (auto lcevc = dynamic_cast<bda::integration::DecoderLcevc *>(dec))
++    lcevc->setNextFrameIndex(seekToFrame);
+ 
+   QByteArrayList parametersets;
+   if (isInputFormatTypeAnnexB(this->inputFormat))
+@@ -1102,6 +1246,18 @@
+   this->loadingDecoder.reset();
+   this->cachingDecoder.reset();
+ 
++  // An LCEVC engine: allocate its base decoder below, then wrap it.
++  const auto requestedEngine = this->decoderEngine;
++  const bool lcevc           = isLcevcEngine(requestedEngine) && this->lcevcStream;
++  if (isLcevcEngine(requestedEngine) && !this->lcevcStream)
++  {
++    this->infoText        = "This stream carries no LCEVC data.";
++    this->decodingEnabled = false;
++    return false;
++  }
++  if (lcevc)
++    this->decoderEngine = this->dataPathEngine();
++
+   if (this->decoderEngine == DecoderEngine::Libde265)
+   {
+     DEBUG_COMPRESSED(
+@@ -1206,11 +1362,43 @@
+   }
+   else
+   {
++    this->decoderEngine   = requestedEngine;
+     this->infoText        = "No valid decoder was selected.";
+     this->decodingEnabled = false;
+     return false;
+   }
+ 
++  this->decoderEngine = requestedEngine;
++  if (lcevc)
++  {
++    using bda::integration::DecoderLcevc;
++    using bda::integration::LcevcBackend;
++    const auto kind = requestedEngine == DecoderEngine::LcevcLtm ? LcevcBackend::Kind::Ltm
++                                                                 : LcevcBackend::Kind::LcevcDec;
++    this->loadingDecoder = std::make_unique<DecoderLcevc>(
++      std::move(this->loadingDecoder), kind, this->lcevcStream, displayComponent);
++    if (this->cachingDecoder)
++      this->cachingDecoder = std::make_unique<DecoderLcevc>(
++        std::move(this->cachingDecoder), kind, this->lcevcStream, displayComponent, true);
++  }
++  // The picture is the enhanced one under an LCEVC engine, the base one otherwise.
++  if (this->lcevcStream && this->video && this->rawFormat == video::RawFormat::YUV)
++  {
++    auto yuvVideo = this->getYUVVideo();
++    if (lcevc)
++    {
++      yuvVideo->setFrameSize(this->loadingDecoder->getFrameSize());
++      yuvVideo->setPixelFormatYUV(this->loadingDecoder->getPixelFormatYUV());
++    }
++    else
++    {
++      yuvVideo->setFrameSize(this->baseFrameSize);
++      yuvVideo->setPixelFormatYUV(this->baseFormatYuv);
++    }
++    this->statisticsData.setFrameSize(this->video->getFrameSize());
++    this->meStatisticsData.setFrameSize(this->video->getFrameSize());
++  }
++
+   this->decodingEnabled = this->loadingDecoder->state() != decoder::DecoderState::Error;
+   if (!decodingEnabled)
+   {
+@@ -1223,6 +1411,18 @@
+   return true;
+ }
+ 
++DecoderEngine playlistItemCompressedVideo::dataPathEngine() const
++{
++  if (!isLcevcEngine(this->decoderEngine))
++    return this->decoderEngine;
++  // The base decoder under the LCEVC one: FFmpeg for H.264/HEVC, VVDec for VVC, dav1d for AV1.
++  if (this->inputFormat == InputFormat::AnnexBVVC)
++    return DecoderEngine::VVDec;
++  if (isInputFormatTypeAnnexB(this->inputFormat) || !this->ffmpegCodec.isAV1())
++    return DecoderEngine::FFMpeg;
++  return DecoderEngine::Dav1d;
++}
++
+ void playlistItemCompressedVideo::fillStatisticList()
+ {
+   if (!this->loadingDecoder || !this->loadingDecoder->statisticsSupported())
+@@ -1627,6 +1827,7 @@
+ {
+   QStringList ext;
+   ext << "hevc"
++      << "lvc" // Annex-B with LCEVC NAL units (bd-analyzer): the base codec is read from the data
+       << "h265"
+       << "265"
+       << "avc"
+--- a/YUViewLib/src/ui/widgets/FileInfoWidget.h
++++ b/YUViewLib/src/ui/widgets/FileInfoWidget.h
+@@ -44,6 +44,7 @@
+ #include "integration/FrameObuSummary.h"
+ 
+ class QFormLayout;
++class QGroupBox;
+ class QGridLayout;
+ class QLabel;
+ class QModelIndex;
+@@ -65,6 +66,8 @@
+   Q_SLOT void setObuModel(QAbstractItemModel *model);
+   // The frame on screen; the Frame tab shows that frame's temporal unit from the OBU model.
+   Q_SLOT void setCurrentFrame(int frameIdx);
++  // The item's own information on the frame on screen (playlistItem::getFrameInfo), below the summary.
++  Q_SLOT void setFrameInfo(const InfoData &info);
+ 
+   // One at a given row of a given infoIndex (0 or 1) was clicked.
+   // infoIndex 0 refers to info1 above, infoIndex 1 refers to info2 above
+@@ -92,5 +95,8 @@
+   QPointer<QAbstractItemModel>      obuModel;
+   bda::integration::FrameObuIndex   frameIndex;
+   int                               currentFrame{-1};
++  QGroupBox                        *frameItemBox{};
++  QFormLayout                      *frameItemForm{};
++  bool                              hasFrameItemInfo{};
+   QPixmap      warningIcon;
+ };
+--- a/YUViewLib/src/ui/widgets/FileInfoWidget.cpp
++++ b/YUViewLib/src/ui/widgets/FileInfoWidget.cpp
+@@ -34,6 +34,7 @@
+ 
+ #include <QFormLayout>
+ #include <QGridLayout>
++#include <QGroupBox>
+ #include <QHeaderView>
+ #include <QLabel>
+ #include <QPointer>
+@@ -99,6 +100,11 @@
+     this->frameValues[key] = value;
+   }
+   frameLayout->addLayout(this->frameForm);
++  this->frameItemBox = new QGroupBox(this->framePage);
++  this->frameItemBox->setObjectName("frameItemInfo");
++  this->frameItemForm = new QFormLayout(this->frameItemBox);
++  this->frameItemBox->setVisible(false);
++  frameLayout->addWidget(this->frameItemBox);
+   this->frameObuView = new QTreeView(this->framePage);
+   this->frameObuView->setObjectName("frameObuView");
+   this->frameObuView->setUniformRowHeights(true);
+@@ -191,7 +197,7 @@
+   this->obuModel = model;
+   this->frameIndex.reset();
+   this->frameObuView->setModel(model);
+-  this->tabs->setTabEnabled(this->frameTabIndex, model != nullptr);
++  this->tabs->setTabEnabled(this->frameTabIndex, model != nullptr || this->hasFrameItemInfo);
+   if (model)
+   {
+     // The parser fills the model in the background and reveals new packets every second or so.
+@@ -258,6 +264,25 @@
+   this->refreshFrameTab();
+ }
+ 
++void FileInfoWidget::setFrameInfo(const InfoData &info)
++{
++  while (this->frameItemForm->rowCount() > 0)
++    this->frameItemForm->removeRow(0);
++  for (const auto &item : info.items)
++  {
++    auto *value = new QLabel(QString::fromStdString(item.text), this->frameItemBox);
++    value->setObjectName(QString("frameItemInfo:%1").arg(QString::fromStdString(item.name)));
++    value->setTextInteractionFlags(Qt::TextSelectableByMouse);
++    value->setWordWrap(true);
++    value->setToolTip(QString::fromStdString(item.description));
++    this->frameItemForm->addRow(QString::fromStdString(item.name), value);
++  }
++  this->frameItemBox->setTitle(info.title);
++  this->hasFrameItemInfo = !info.items.isEmpty();
++  this->frameItemBox->setVisible(this->hasFrameItemInfo);
++  this->tabs->setTabEnabled(this->frameTabIndex, this->obuModel != nullptr || this->hasFrameItemInfo);
++}
++
+ void FileInfoWidget::refreshFrameTab()
+ {
+   const auto set = [this](const char *key, const QString &text) {
+--- a/YUViewLib/src/ui/Mainwindow.cpp
++++ b/YUViewLib/src/ui/Mainwindow.cpp
+@@ -153,6 +153,8 @@
+     auto items = ui.playlistTreeWidget->getSelectedItems();
+     ui.fileInfoWidget->setInfo(items[0] ? items[0]->getInfo() : InfoData(),
+                                items[1] ? items[1]->getInfo() : InfoData());
++    ui.fileInfoWidget->setFrameInfo(
++        items[0] ? items[0]->getFrameInfo(ui.playbackController->getCurrentFrame()) : InfoData());
+   };
+   connect(ui.playlistTreeWidget,
+           &PlaylistTreeWidget::selectionRangeChanged,
+@@ -188,7 +190,10 @@
+           [this](playlistItem *item, int frameIdx)
+           {
+             if (item && item == ui.playlistTreeWidget->getSelectedItems()[0])
++            {
+               ui.fileInfoWidget->setCurrentFrame(frameIdx);
++              ui.fileInfoWidget->setFrameInfo(item->getFrameInfo(frameIdx));
++            }
+           });
+   connect(ui.bitstreamAnalysis,
+           &BitstreamAnalysisWidget::packetItemModelChanged,

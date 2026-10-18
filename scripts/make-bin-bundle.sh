@@ -109,6 +109,27 @@ done
 
 echo "== 6. dav1d analyzer 디코더 (dlopen 대상) =="
 cp "$APPDIR/decoder/libdav1d-internals.so" "$OUT/decoder/"
+# LCEVC backends (optional: the bundle still works without them, LCEVC decoding is then unavailable).
+#   libbda-lcevc-ltm.so      LTM analysis backend      <- scripts/setup-lcevc-ltm.sh
+#   liblcevc_dec_*.so*       LCEVCdec playback backend <- scripts/setup-lcevcdec.sh
+#                            (api + pipeline_cpu; the api lib finds the pipeline through RUNPATH $ORIGIN)
+# Both licences require the notice to travel with binaries; LCEVCdec grants no patent licence.
+mkdir -p "$OUT/decoder/licenses"
+if [[ -f "$APPDIR/decoder/libbda-lcevc-ltm.so" ]]; then
+    cp "$APPDIR/decoder/libbda-lcevc-ltm.so" "$OUT/decoder/"
+    cp "$ROOT/third_party/ltm/COPYING" "$OUT/decoder/licenses/LTM-COPYING.txt"
+else
+    echo "   (skip) decoder/libbda-lcevc-ltm.so 가 없습니다 - LCEVC (LTM) 디코딩 비활성. scripts/setup-lcevc-ltm.sh 참조."
+fi
+if compgen -G "$APPDIR/decoder/liblcevc_dec_*.so*" >/dev/null; then
+    cp -L "$APPDIR"/decoder/liblcevc_dec_*.so* "$OUT/decoder/"
+    LCEVCDEC_PREFIX="${LCEVCDEC_PREFIX:-$HOME/opt/lcevcdec}"
+    [[ -f "$LCEVCDEC_PREFIX/licenses/LCEVCdec/LICENSE.md" ]] \
+        && cp "$LCEVCDEC_PREFIX/licenses/LCEVCdec/LICENSE.md" "$OUT/decoder/licenses/LCEVCdec-LICENSE.md" \
+        || echo "   경고: LCEVCdec 라이선스 파일이 없습니다 ($LCEVCDEC_PREFIX/licenses/LCEVCdec/LICENSE.md)."
+else
+    echo "   (skip) decoder/liblcevc_dec_*.so 가 없습니다 - LCEVC (LCEVCdec) 디코딩 비활성. scripts/setup-lcevcdec.sh 참조."
+fi
 
 echo "== 6b. AI 어시스턴트 자산 (런처 + 격리 정책 + 주입 프롬프트) =="
 # AssistPanelWidget 은 applicationDirPath()/assist/launch-claude.sh 를 찾는다. 이것이 없으면
@@ -195,6 +216,10 @@ for f in "$HERE"/ffmpeg/lib*.so.*[0-9]; do
     [[ -L "$f" ]] || check "$f" "ffmpeg/$(basename "$f")"
 done
 check "$HERE/decoder/libdav1d-internals.so"     "dav1d analyzer 디코더"
+# LCEVC backends are optional in the bundle; check them only when present.
+[[ -e "$HERE/decoder/libbda-lcevc-ltm.so" ]] && check "$HERE/decoder/libbda-lcevc-ltm.so" "LCEVC LTM 디코더"
+[[ -e "$HERE/decoder/liblcevc_dec_api.so" ]] && check "$HERE/decoder/liblcevc_dec_api.so" "LCEVCdec API"
+[[ -e "$HERE/decoder/liblcevc_dec_pipeline_cpu.so" ]] && check "$HERE/decoder/liblcevc_dec_pipeline_cpu.so" "LCEVCdec CPU pipeline"
 check "$HERE/assist/launch-claude.sh"           "AI 어시스턴트 런처"
 check "$HERE/assist/system-prompt.md"           "AI 어시스턴트 앱 레퍼런스"
 check "$HERE/yt-transcode/yt-transcode.sh"      "YouTube transcode 스크립트"

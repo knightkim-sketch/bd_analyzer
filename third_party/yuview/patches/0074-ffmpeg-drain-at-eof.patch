@@ -1,0 +1,26 @@
+--- a/YUViewLib/src/decoder/decoderFFmpeg.cpp
++++ b/YUViewLib/src/decoder/decoderFFmpeg.cpp
+@@ -332,6 +332,10 @@
+   if (!pkt)
+   {
+     DEBUG_FFMPEG("decoderFFmpeg::pushAVPacket: Received empty packet. Swithing to flushing.");
++    // The NULL packet puts the decoder in draining mode (bd-analyzer). Without it the pictures it
++    // still holds for reordering never come out: the last frames of a stream with B-frames were lost
++    // and the previous picture shown in their place.
++    this->ff.pushPacketToDecoder(this->decCtx, pkt);
+     this->flushing     = true;
+     this->decoderState = DecoderState::RetrieveFrames;
+     return false;
+@@ -405,6 +409,12 @@
+     this->currentOutputBuffer.clear();
+     return true;
+   }
++  else if (retRecieve == AVERROR_EOF && this->flushing)
++  {
++    // Drained: every picture is out.
++    this->decoderState = DecoderState::EndOfBitstream;
++    DEBUG_FFMPEG("decoderFFmpeg::decodeFrame End of bitstream (drained).");
++  }
+   else if (retRecieve < 0 && retRecieve != AVERROR(EAGAIN) && retRecieve != -35)
+   {
+     // An error occurred

@@ -1,3 +1,6 @@
 [submodule "third_party/yuview/upstream"]
 	path = third_party/yuview/upstream
 	url = https://github.com/IENT/YUView.git
+[submodule "third_party/ltm"]
+	path = third_party/ltm
+	url = https://github.com/Jamaika1/LTM-master
