@@ -1,23 +1,32 @@
 #include "GlobalMotionWindow.h"
 
 #include <QCloseEvent>
+#include <QCoreApplication>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QGroupBox>
+#include <QMessageBox>
+#include <QProgressDialog>
+#include <QSignalBlocker>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <atomic>
+#include <cmath>
 #include <optional>
 #include <fstream>
 #include <vector>
 
 #include "integration/GmStatisticsAdapter.h"
+#include "integration/StabilizedY4mExport.h"
 #include "me/GmCsv.h"
 #include "me/IMotionEstimator.h"
 #include "me/YuvLumaReader.h"
 #include "playlistitem/playlistItem.h"
+#include "playlistitem/playlistItemWithVideo.h"
 #include "statistics/StatisticUIHandler.h"
 
 namespace bda::integration
@@ -132,6 +141,81 @@ GlobalMotionWindow::GlobalMotionWindow(QWidget *parent) : QDialog(parent)
                             "downsampled resolution; the refinement only moves the value.");
   layout->addWidget(this->windows, 3);
 
+  // ---- Stabilization (DIS): the models above -> camera trajectory -> smoothing -> correction warps.
+  auto *stabBox    = new QGroupBox("Stabilization (DIS)", this);
+  auto *stabLayout = new QHBoxLayout(stabBox);
+  auto *stabLeft   = new QWidget(stabBox);
+  this->stabForm   = new QFormLayout(stabLeft);
+  this->stabMethod = new QComboBox(stabBox);
+  this->stabMethod->setObjectName("stabMethod");
+  for (const auto m : {filter::SmoothingMethod::MovingAverage, filter::SmoothingMethod::Gaussian,
+                       filter::SmoothingMethod::KalmanCausal, filter::SmoothingMethod::KalmanRts})
+    this->stabMethod->addItem(filter::smoothingMethodName(m), int(m));
+  const filter::StabilizerParams stabDefaults;
+  this->stabMethod->setCurrentIndex(this->stabMethod->findData(int(stabDefaults.method)));
+  this->stabMethod->setToolTip("Moving average and Gaussian look at frames on both sides; Kalman causal "
+                               "only at past frames, as a real-time stabiliser would; Kalman RTS is its "
+                               "offline (forward + backward) smoother.");
+  this->stabForm->addRow("Method", this->stabMethod);
+  this->stabRadius = new QSpinBox(stabBox);
+  this->stabRadius->setRange(1, 200);
+  this->stabRadius->setValue(stabDefaults.radius);
+  this->stabForm->addRow("Radius (frames)", this->stabRadius);
+  const auto dspin = [stabBox](double lo, double hi, double v, double step, int dec) {
+    auto *d = new QDoubleSpinBox(stabBox);
+    d->setRange(lo, hi), d->setDecimals(dec), d->setSingleStep(step), d->setValue(v);
+    return d;
+  };
+  this->stabSigma = dspin(0.5, 100, stabDefaults.sigma, 0.5, 1);
+  this->stabForm->addRow("Sigma (frames)", this->stabSigma);
+  this->stabQ = dspin(0.0001, 100, stabDefaults.kalmanQ, 0.01, 4);
+  this->stabQ->setToolTip("Process noise: how fast the intended camera path may change. Smaller is smoother.");
+  this->stabForm->addRow("Kalman Q", this->stabQ);
+  this->stabR = dspin(0.001, 1000, stabDefaults.kalmanR, 0.5, 3);
+  this->stabR->setToolTip("Measurement noise: how much shake to expect on the path. Larger is smoother.");
+  this->stabForm->addRow("Kalman R", this->stabR);
+  this->applyToView = new QCheckBox("Apply to view", stabBox);
+  this->applyToView->setToolTip("Show the stabilised picture in the main window: view, cache, pixel values "
+                                "and statistics. Motion estimation keeps reading the source, and its "
+                                "overlays stay in source coordinates.");
+  this->stabForm->addRow(this->applyToView);
+  this->exportStabilizedButton = new QPushButton("Export stabilized…", stabBox);
+  this->stabForm->addRow(this->exportStabilizedButton);
+  this->stabStatus = new QLabel(stabBox);
+  this->stabStatus->setWordWrap(true);
+  this->stabForm->addRow(this->stabStatus);
+  stabLayout->addWidget(stabLeft);
+  this->trajectoryPlot = new TrajectoryPlot(stabBox);
+  stabLayout->addWidget(this->trajectoryPlot, 1);
+  layout->addWidget(stabBox, 3);
+
+  connect(this->stabMethod, &QComboBox::currentIndexChanged, this, [this] {
+    this->updateStabilizationControls();
+    this->updateStabilization();
+  });
+  connect(this->stabRadius, &QSpinBox::valueChanged, this, [this] { this->updateStabilization(); });
+  for (auto *d : {this->stabSigma, this->stabQ, this->stabR})
+    connect(d, &QDoubleSpinBox::valueChanged, this, [this] { this->updateStabilization(); });
+  connect(this->applyToView, &QCheckBox::toggled, this, [this](bool on) {
+    QString why;
+    if (!this->setApplyToView(on, &why))
+    {
+      const QSignalBlocker block(this->applyToView);
+      this->applyToView->setChecked(false);
+      this->stabStatus->setText(why);
+    }
+  });
+  connect(this->exportStabilizedButton, &QPushButton::clicked, this, [this] {
+    const auto out = QFileDialog::getSaveFileName(this, "Export stabilized Y4M",
+                                                  QFileInfo(this->path).baseName() + "_stabilized.y4m",
+                                                  "Y4M (*.y4m)");
+    QString error;
+    if (!out.isEmpty() && !this->exportStabilized(out, &error))
+      this->stabStatus->setText(error);
+  });
+  this->updateStabilizationControls();
+  this->updateStabilization();
+
   connect(this->runButton, &QPushButton::clicked, this, [this] { this->run(); });
   connect(this->stopButton, &QPushButton::clicked, this, &GlobalMotionWindow::stop);
   connect(this->exportButton, &QPushButton::clicked, this, [this] {
@@ -218,6 +302,12 @@ StreamDiffResult GlobalMotionWindow::setTarget(const QList<playlistItem *> &sele
   if (reader.frameCount() < 2)
     return {false, "The clip has a single frame; there is no reference to search."};
 
+  // A new clip: the old item stops showing a trajectory that is not its own.
+  {
+    const QSignalBlocker block(this->applyToView);
+    this->applyToView->setChecked(false);
+  }
+  this->setApplyToView(false);
   this->item       = target;
   this->path       = file;
   this->isY4m      = y4m;
@@ -284,6 +374,7 @@ bool GlobalMotionWindow::run()
   this->workerError.clear();
   this->cancel  = false;
   this->running = true;
+  this->updateStabilization(); // no models during a run: controls off until it finishes
   this->runButton->setEnabled(false);
   this->stopButton->setEnabled(true);
   this->exportButton->setEnabled(false);
@@ -439,6 +530,7 @@ void GlobalMotionWindow::finishRun()
 {
   this->addFinishedFrames();
   this->running = false;
+  this->updateStabilization();
   this->runButton->setEnabled(true);
   this->stopButton->setEnabled(false);
   this->exportButton->setEnabled(this->shownRows > 0);
@@ -591,6 +683,151 @@ void GlobalMotionWindow::setCurrentFrame(playlistItem *shown, int frameIdx)
     return;
   this->drawOverlay(frameIdx);
   this->showWindows(frameIdx);
+  this->trajectoryPlot->setCurrentFrame(frameIdx);
+}
+
+filter::StabilizerParams GlobalMotionWindow::stabilizerParams() const
+{
+  filter::StabilizerParams p;
+  p.method  = filter::SmoothingMethod(this->stabMethod->currentData().toInt());
+  p.radius  = this->stabRadius->value();
+  p.sigma   = this->stabSigma->value();
+  p.kalmanQ = this->stabQ->value();
+  p.kalmanR = this->stabR->value();
+  return p;
+}
+
+void GlobalMotionWindow::updateStabilizationControls()
+{
+  const auto method = filter::SmoothingMethod(this->stabMethod->currentData().toInt());
+  const bool kalman = method == filter::SmoothingMethod::KalmanCausal || method == filter::SmoothingMethod::KalmanRts;
+  this->stabForm->setRowVisible(this->stabRadius, method == filter::SmoothingMethod::MovingAverage);
+  this->stabForm->setRowVisible(this->stabSigma, method == filter::SmoothingMethod::Gaussian);
+  this->stabForm->setRowVisible(this->stabQ, kalman);
+  this->stabForm->setRowVisible(this->stabR, kalman);
+}
+
+std::map<int, filter::AffineParams> GlobalMotionWindow::modelsByFrame() const
+{
+  // A frame whose fit failed is left out: the stabiliser takes it as no motion.
+  std::map<int, filter::AffineParams> out;
+  for (const auto &[poc, m] : this->modelResults())
+    if (m.ok())
+      out[poc] = m.p;
+  return out;
+}
+
+void GlobalMotionWindow::updateStabilization()
+{
+  const auto models = this->modelResults();
+  const bool have   = !models.empty() && !this->running;
+  this->applyToView->setEnabled(have);
+  this->exportStabilizedButton->setEnabled(have);
+  if (!have)
+  {
+    this->trajectory.clear();
+    this->trajectoryPlot->setTrajectory(0, {});
+    this->stabStatus->setText(this->running ? "Estimating …"
+                                            : "Run with a Model (not off) to get the camera trajectory.");
+    return;
+  }
+  // The run's frames and the reference of its first one.
+  this->trajectoryFirst = models.begin()->first - 1;
+  const int last        = models.rbegin()->first;
+  this->trajectory = filter::stabilizeByFrame(this->modelsByFrame(), this->trajectoryFirst, last, this->width,
+                                              this->height, this->stabilizerParams());
+  this->trajectoryPlot->setTrajectory(this->trajectoryFirst, this->trajectory);
+
+  double maxCorrection = 0;
+  for (const auto &f : this->trajectory)
+    maxCorrection = std::max(maxCorrection, std::hypot(f.correction.dx, f.correction.dy));
+  int failed = 0;
+  for (const auto &[poc, m] : models)
+    failed += !m.ok();
+  this->stabStatus->setText(QString("Frames %1-%2, %3. Largest correction %4 px%5.")
+                                .arg(this->trajectoryFirst)
+                                .arg(last)
+                                .arg(filter::smoothingMethodName(this->stabilizerParams().method))
+                                .arg(maxCorrection, 0, 'f', 1)
+                                .arg(failed ? QString(", %1 frames without a model taken as still").arg(failed)
+                                            : QString()));
+  if (this->applyToView->isChecked())
+  {
+    QString why;
+    if (!this->setApplyToView(true, &why))
+      this->stabStatus->setText(why);
+  }
+}
+
+bool GlobalMotionWindow::setApplyToView(bool on, QString *why)
+{
+  // Switching off, or moving to another item: the item that shows the warp gets it taken away.
+  if (this->stabilisedItem && (!on || this->stabilisedItem.data() != this->item.data()))
+  {
+    if (auto *video = dynamic_cast<playlistItemWithVideo *>(this->stabilisedItem.data()))
+      video->setStabilization(nullptr);
+    this->stabilisedItem = nullptr;
+  }
+  if (on && this->applyToView->isChecked() != on)
+  {
+    const QSignalBlocker block(this->applyToView);
+    this->applyToView->setChecked(true);
+  }
+  if (!on)
+  {
+    emit this->overlayChanged();
+    return true;
+  }
+  auto *video = dynamic_cast<playlistItemWithVideo *>(this->item.data());
+  if (video == nullptr || this->trajectory.empty())
+  {
+    if (why)
+      *why = video == nullptr ? "The item cannot show a stabilised picture." : "There is no trajectory yet.";
+    return false;
+  }
+  // A new generation for every table, from one counter shared by all windows, so a cache never
+  // mistakes one trajectory for another.
+  static std::atomic<std::uint64_t> generations{0};
+  auto table        = std::make_shared<StabilizationTable>();
+  table->generation = ++generations;
+  for (std::size_t i = 0; i < this->trajectory.size(); ++i)
+    table->warps[this->trajectoryFirst + int(i)] = this->trajectory[i].warp;
+  if (!video->setStabilization(table, why))
+    return false;
+  this->stabilisedItem = this->item;
+  emit this->overlayChanged();
+  return true;
+}
+
+bool GlobalMotionWindow::exportStabilized(const QString &out, QString *error)
+{
+  if (!this->item || this->modelResults().empty())
+  {
+    if (error)
+      *error = "Run with a Model first.";
+    return false;
+  }
+  QProgressDialog progress("Writing the stabilized Y4M …", "Cancel", 0, 0, this);
+  progress.setWindowModality(Qt::WindowModal);
+  progress.setMinimumDuration(500);
+  const auto result = exportStabilizedY4m(this->item, out, this->modelsByFrame(), this->stabilizerParams(),
+                                          [&progress](int done, int total) {
+                                            progress.setMaximum(total);
+                                            progress.setValue(done);
+                                            QCoreApplication::processEvents();
+                                            return !progress.wasCanceled();
+                                          });
+  if (!result.ok())
+  {
+    if (error)
+      *error = result.cancelled ? QString("Cancelled - %1 is incomplete.").arg(out) : result.error;
+    return false;
+  }
+  this->stabStatus->setText(QString("Wrote %1 frames to %2 (trajectory in %3).")
+                                .arg(result.framesWritten)
+                                .arg(out)
+                                .arg(result.csvPath));
+  return true;
 }
 
 } // namespace bda::integration

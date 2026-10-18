@@ -12,7 +12,10 @@
 // main window to another frame redraws them for that frame.
 #pragma once
 
+#include <QCheckBox>
 #include <QComboBox>
+#include <QDoubleSpinBox>
+#include <QFormLayout>
 #include <QDialog>
 #include <QLabel>
 #include <QPointer>
@@ -27,6 +30,9 @@
 #include <string>
 
 #include "integration/StreamDiffWindow.h" // StreamDiffResult - the same refusal shape
+#include "filter/Stabilizer.h"
+#include "integration/StabilizationWarp.h"
+#include "integration/TrajectoryPlot.h"
 #include "me/GlobalModel.h"
 #include "me/GlobalMotion.h"
 
@@ -70,6 +76,17 @@ public:
   //!< Select the frame's row, as clicking it would.
   void selectFrame(int frameIdx);
 
+  /* Stabilization (DIS) from the per-frame models: the trajectory of frames first-1 .. last of the
+   * last run, recomputed whenever the method or its parameters change.
+   */
+  const std::vector<filter::StabilizerFrame> &stabilizationFrames() const { return this->trajectory; }
+  int                                         stabilizationFirstFrame() const { return this->trajectoryFirst; }
+  filter::StabilizerParams                    stabilizerParams() const;
+  //!< Show the stabilised picture in the main window (or stop). False with the reason when it cannot.
+  bool setApplyToView(bool on, QString *why = nullptr);
+  //!< Export the item stabilised with this window's models and smoothing (no new estimate).
+  bool exportStabilized(const QString &path, QString *error = nullptr);
+
 public slots:
   //!< The main window shows this item at this frame; redraw the windows over it.
   void setCurrentFrame(playlistItem *item, int frameIdx);
@@ -96,6 +113,9 @@ private:
   me::GmParams params() const;
   void         showWindows(int frameIdx);
   void         drawOverlay(int frameIdx);
+  void         updateStabilization();
+  void         updateStabilizationControls();
+  std::map<int, filter::AffineParams> modelsByFrame() const;
 
   QLabel *      summary{};
   QLabel *      progress{};
@@ -103,6 +123,20 @@ private:
   QComboBox *   smoothing{}, *brightness{}, *model{};
   QPushButton * runButton{}, *stopButton{}, *exportButton{}, *exportModelButton{};
   QTableWidget *frames{}, *windows{};
+
+  // Stabilization (DIS)
+  QComboBox *          stabMethod{};
+  QSpinBox *           stabRadius{};
+  QDoubleSpinBox *     stabSigma{}, *stabQ{}, *stabR{};
+  QFormLayout *        stabForm{};
+  QCheckBox *          applyToView{};
+  QPushButton *        exportStabilizedButton{};
+  QLabel *             stabStatus{};
+  TrajectoryPlot *     trajectoryPlot{};
+  std::vector<filter::StabilizerFrame> trajectory;
+  int                                  trajectoryFirst{};
+  std::uint64_t                        stabGeneration{};
+  QPointer<playlistItem>               stabilisedItem; //!< The item the view warp was pushed to
 
   QPointer<playlistItem> item;
   QString                path;    //!< The file the luma is read from.

@@ -635,6 +635,9 @@ run_test_bda "$ROOT/tests/regression/49-me-openloop-adv-panel.cpp"
 run_test_bda "$ROOT/tests/regression/51-me-closedloop-panel.cpp"
 # File > Export Stabilized Y4M: generator camera shake 클립 -> 안정화. 흔들림 std 80% 이상 감소, 보정이 카메라 CSV 와 1 px 이내.
 run_test_bda "$ROOT/tests/regression/52-stabilized-y4m-export.cpp"
+# GM 창 Stabilization (DIS): 프레임별 RANSAC 모델 -> 궤적·평활(Gaussian 기본), Apply to view 의 화면 raw ==
+# 같은 설정 export 의 프레임, ME 는 원본, 방법 변경 시 다시 그림, 끄면 원본.
+run_test_bda "$ROOT/tests/regression/53-gm-stabilization-view.cpp"
 else
     echo "  SKIP  15-raw-av1-extension (raw AV1 생성 실패)"
     ((skip_count++))

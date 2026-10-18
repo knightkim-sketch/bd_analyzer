@@ -1,0 +1,220 @@
+--- a/YUViewLib/src/video/yuv/videoHandlerYUV.h
++++ b/YUViewLib/src/video/yuv/videoHandlerYUV.h
+@@ -45,6 +45,7 @@
+ #include <QTableWidget>
+ 
+ #include <video/yuv/ConvolutionFilter.h>
++#include "integration/StabilizationWarp.h"
+ #include <video/yuv/PixelFormatYUV.h>
+ 
+ #include "ui_videoHandlerYUV.h"
+@@ -240,6 +241,20 @@
+   }
+   void setFilterIsMeInput(bool on);
+ 
++  /* Digital image stabilisation, from the Global motion window's "Apply to view": a per-frame warp
++   * applied to Y/U/V right after the samples are read and before the convolution filter, so the
++   * view, the cache, the pixel values and the statistics all show the stabilised picture. Null is
++   * off. Motion estimation keeps reading the source (playlistItem::readMeFrame).
++   */
++  void setStabilization(bda::integration::StabilizationPtr table);
++  bda::integration::StabilizationPtr getStabilization() const
++  {
++    QMutexLocker lock(&this->convolutionFilterMutex);
++    return this->stabilization;
++  }
++  //!< For the statistics cache key: empty when off, the table's generation otherwise.
++  QByteArray stabilizationKey() const;
++
+   void invalidateAllBuffers() override;
+ 
+   QByteArray getCurrentRawYUVData(int &frameIndex) const
+@@ -300,6 +315,8 @@
+   ConvolutionFilter convolutionFilter;
+   mutable QMutex    convolutionFilterMutex;
+   bool              filterMeInput{false};
++  //!< Guarded by convolutionFilterMutex like the filter; the table itself is immutable.
++  bda::integration::StabilizationPtr stabilization;
+   // Owned by the properties widget, so plain pointers. Null until createVideoHandlerControls() ran.
+   QCheckBox        *convEnableCheckBox{};
+   QComboBox        *convStageCombo{};
+--- a/YUViewLib/src/video/yuv/videoHandlerYUV.cpp
++++ b/YUViewLib/src/video/yuv/videoHandlerYUV.cpp
+@@ -32,6 +32,8 @@
+ 
+ #include "videoHandlerYUV.h"
+ 
++#include <optional>
++
+ #include <algorithm>
+ #include <cmath>
+ #include <cstdio>
+@@ -3229,6 +3231,7 @@
+   const auto curFrameSize       = this->frameSize;
+   const auto conversionSettings = this->conversionSettings;
+   const auto filter             = this->getConvolutionFilter();
++  const auto stabilization      = this->getStabilization();
+ 
+   requestDataMutex.lock();
+   emit       signalRequestRawData(frameIndex, true);
+@@ -3251,6 +3254,15 @@
+     return;
+   }
+ 
++  // Stabilisation first, so the filter (and a GM compensation stage) works on the stabilised frames.
++  if (stabilization)
++  {
++    bda::integration::applyStabilizationWarp(
++        tmpBufferRawYUVDataCaching, yuvFormat, curFrameSize, *stabilization, frameIndex);
++    if (!previousRaw.isEmpty())
++      bda::integration::applyStabilizationWarp(
++          previousRaw, yuvFormat, curFrameSize, *stabilization, frameIndex - 1);
++  }
+   filter.applyToLuma(
+       tmpBufferRawYUVDataCaching, yuvFormat, curFrameSize, [&previousRaw]() { return previousRaw; });
+ 
+@@ -3285,7 +3297,8 @@
+   currentFrameRawData_frameIndex = frameIndex;
+   // Filter here, where the samples enter the buffer, so it happens exactly once per loaded frame -
+   // the early return above means this function does not run again for a frame already in the buffer.
+-  const auto filter = this->getConvolutionFilter();
++  const auto filter        = this->getConvolutionFilter();
++  const auto stabilization = this->getStabilization();
+   QByteArray previousRaw;
+   if (filter.needsPreviousFrame())
+   {
+@@ -3293,6 +3306,15 @@
+     if (frameIndex > 0)
+       previousRaw = this->rawForGm(frameIndex - 1, false);
+   }
++  // Stabilisation first, as in loadFrameForCaching().
++  if (stabilization)
++  {
++    bda::integration::applyStabilizationWarp(
++        this->currentFrameRawData, this->srcPixelFormat, this->frameSize, *stabilization, frameIndex);
++    if (!previousRaw.isEmpty())
++      bda::integration::applyStabilizationWarp(
++          previousRaw, this->srcPixelFormat, this->frameSize, *stabilization, frameIndex - 1);
++  }
+   filter.applyToLuma(this->currentFrameRawData,
+                                       this->srcPixelFormat,
+                                       this->frameSize,
+@@ -4318,4 +4340,29 @@
+   emit signalHandlerChanged(true, RECACHE_CLEAR);
+ }
+ 
++void videoHandlerYUV::setStabilization(bda::integration::StabilizationPtr table)
++{
++  {
++    QMutexLocker lock(&this->convolutionFilterMutex);
++    const auto   generation = [](const bda::integration::StabilizationPtr &t) {
++      return t ? std::optional<std::uint64_t>(t->generation) : std::nullopt;
++    };
++    if (generation(table) == generation(this->stabilization))
++      return;
++    this->stabilization = std::move(table);
++  }
++  // The warp runs while the raw samples are read: the same invalidation as setConvolutionFilter().
++  this->currentImageIndex              = -1;
++  this->currentImage_frameIndex        = -1;
++  this->currentFrameRawData_frameIndex = -1;
++  this->setCacheInvalid();
++  emit signalHandlerChanged(true, RECACHE_CLEAR);
++}
++
++QByteArray videoHandlerYUV::stabilizationKey() const
++{
++  const auto table = this->getStabilization();
++  return table ? QByteArrayLiteral(";dis=") + QByteArray::number(qulonglong(table->generation)) : QByteArray();
++}
++
+ } // namespace video::yuv
+--- a/YUViewLib/src/playlistitem/playlistItemWithVideo.h
++++ b/YUViewLib/src/playlistitem/playlistItemWithVideo.h
+@@ -96,6 +96,15 @@
+   }
+   QByteArray readFilteredRawFrame(int frameIdx) override;
+   QByteArray readMeFrame(int frameIdx) override;
++  /* readFilteredRawFrame with or without the stabilisation warp: ME takes the filter (when it is the
++   * ME input) but never the stabilisation.
++   */
++  QByteArray readProcessedRawFrame(int frameIdx, bool stabilize);
++  /* Show the stabilised picture (Global motion window, "Apply to view"); null switches it off. False
++   * with the reason when this item's frames cannot be warped (not raw YUV, or a format the warp does
++   * not take) - nothing changes then.
++   */
++  bool setStabilization(bda::integration::StabilizationPtr table, QString *why = nullptr);
+   bool          setDisplaySource(DisplaySource source) override;
+   DisplaySource getDisplaySource() const override { return this->displaySource; }
+   DataDump getItemDataDump(const QPoint &pixelPos, int frameIdx, const stats::BlockInfo &) override;
+--- a/YUViewLib/src/playlistitem/playlistItemWithVideo.cpp
++++ b/YUViewLib/src/playlistitem/playlistItemWithVideo.cpp
+@@ -360,6 +360,7 @@
+   QByteArray key;
+   key += QByteArray::fromStdString(handler->getPixelFormatYUV().getName());
+   key += handler->convolutionFilterKey();
++  key += handler->stabilizationKey();
+   key += QByteArrayLiteral(";blk=") + QByteArray::number(this->getPixelStatisticsBlockSize());
+   if (!this->originalYUVPath.isEmpty())
+   {
+@@ -582,24 +583,56 @@
+ 
+ QByteArray playlistItemWithVideo::readFilteredRawFrame(int frameIdx)
+ {
++  return this->readProcessedRawFrame(frameIdx, true);
++}
++
++QByteArray playlistItemWithVideo::readProcessedRawFrame(int frameIdx, bool stabilize)
++{
+   auto raw = this->readRawFrame(frameIdx);
+   if (raw.isEmpty() || this->rawFormat != video::RawFormat::YUV)
+     return raw;
+-  const auto filter = this->getYUVVideo()->getConvolutionFilter();
++  const auto filter        = this->getYUVVideo()->getConvolutionFilter();
++  const auto stabilization = stabilize ? this->getYUVVideo()->getStabilization() : nullptr;
++  const auto format        = this->getRawPixelFormat();
++  const auto size          = this->getRawFrameSize();
++  // Stabilisation first, as the view does it (videoHandlerYUV::loadRawYUVData).
++  if (stabilization)
++    bda::integration::applyStabilizationWarp(raw, format, size, *stabilization, frameIdx);
+   if (filter.isNoOp())
+     return raw;
+   // The previous frame comes from the same source as this one, unfiltered; the chain runs it
+   // through the stages in front of a GM compensation stage itself.
+-  filter.applyToLuma(raw, this->getRawPixelFormat(), this->getRawFrameSize(), [this, frameIdx]() {
+-    return frameIdx > 0 ? this->readRawFrame(frameIdx - 1) : QByteArray();
++  filter.applyToLuma(raw, format, size, [this, frameIdx, &stabilization, &format, &size]() {
++    if (frameIdx <= 0)
++      return QByteArray();
++    auto previous = this->readRawFrame(frameIdx - 1);
++    if (stabilization)
++      bda::integration::applyStabilizationWarp(previous, format, size, *stabilization, frameIdx - 1);
++    return previous;
+   });
+   return raw;
+ }
+ 
++bool playlistItemWithVideo::setStabilization(bda::integration::StabilizationPtr table, QString *why)
++{
++  auto *handler = this->getYUVVideo();
++  if (this->rawFormat != video::RawFormat::YUV || handler == nullptr)
++  {
++    if (why)
++      *why = "Stabilisation needs a YUV item.";
++    return false;
++  }
++  if (table && !bda::integration::stabilizationSupported(this->getRawPixelFormat(), this->getRawFrameSize(), why))
++    return false;
++  handler->setStabilization(std::move(table));
++  return true;
++}
++
+ QByteArray playlistItemWithVideo::readMeFrame(int frameIdx)
+ {
++  // The filter when it is the ME input, but never the stabilisation: the estimate describes the source.
+   if (this->rawFormat == video::RawFormat::YUV && this->getYUVVideo()->filterIsMeInput())
+-    return this->readFilteredRawFrame(frameIdx);
++    return this->readProcessedRawFrame(frameIdx, false);
+   return this->readRawFrame(frameIdx);
+ }
+ 
