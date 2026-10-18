@@ -11,11 +11,18 @@
 //   * stabilizer: identity models give zero trajectory and identity warps; a known jitter on a
 //     pan yields the raw trajectory, the clamped moving average and correction = smoothed - raw;
 //     a model's rotation and zoom come back as angle and log scale; the correction warp moves
-//     content by the correction.
+//     content by the correction;
+//   * smoothing methods: Gaussian = the weighted average computed here from exp(-d^2/2 sigma^2),
+//     |d| <= ceil(3 sigma), clamped and renormalised; identity models give a zero trajectory for
+//     every method; a steady pan needs no interior correction (MovingAverage, Gaussian exactly,
+//     Kalman RTS within 1e-6 px - the diffuse velocity prior); Kalman causal frame k does not
+//     change when later frames do; on pan + jitter RTS leaves less jitter than causal;
+//     stabilizeByFrame fills frames without a model with the identity.
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -162,7 +169,7 @@ int main()
       models[std::size_t(k)][1] = -(j[k] - j[k - 1]);
     }
     const int  R  = 2;
-    const auto st = stabilize(models, 320, 192, {R});
+    const auto st = stabilize(models, 320, 192, {SmoothingMethod::MovingAverage, R});
     bool raw = true, smooth = true, corr = true;
     for (int k = 0; k < n; ++k)
     {
@@ -215,6 +222,161 @@ int main()
     // inv maps an output (cur) position to the input (ref) position: inv(q) must equal model(q).
     check(near(inv[0] + inv[2] * qx + inv[3] * qy, rx, 1e-9) && near(inv[1] + inv[4] * qx + inv[5] * qy, ry, 1e-9),
           "warpParams(motionFromModel(m)) == m for a similarity about the centre");
+  }
+
+  // Smoothing methods. A pan of 2 px/frame in x plus pseudo-random jitter in y, as models.
+  {
+    const SmoothingMethod all[] = {SmoothingMethod::MovingAverage, SmoothingMethod::Gaussian,
+                                   SmoothingMethod::KalmanCausal, SmoothingMethod::KalmanRts};
+    const auto panJitter = [](int n, double vx, double vy, double amp, std::uint32_t seed) {
+      std::vector<double> jy(std::size_t(n), 0.0);
+      for (int k = 1; k < n; ++k)
+      {
+        seed                = seed * 1103515245u + 12345u;
+        jy[std::size_t(k)] = amp * (double((seed >> 16) & 0x7fff) / 32767.0 * 2 - 1);
+      }
+      std::vector<AffineParams> models(std::size_t(n), kAffineIdentity);
+      for (int k = 1; k < n; ++k)
+      {
+        // Content at frame k is at (vx k, vy k + jy_k); the model maps cur -> ref = cur - motion.
+        models[std::size_t(k)][0] = -vx;
+        models[std::size_t(k)][1] = -(vy + jy[std::size_t(k)] - jy[std::size_t(k - 1)]);
+      }
+      return std::make_pair(models, jy);
+    };
+
+    // Gaussian against the definition, computed here.
+    {
+      const int    n  = 30;
+      const auto   pj = panJitter(n, 2, 0, 3, 7);
+      StabilizerParams gp;
+      gp.method = SmoothingMethod::Gaussian, gp.sigma = 2.5;
+      const auto st   = stabilize(pj.first, 320, 192, gp);
+      const int  half = int(std::ceil(3 * gp.sigma)); // 8
+      bool       ok   = half == 8 && int(st.size()) == n;
+      for (int k = 0; k < n && ok; ++k)
+      {
+        double sx = 0, sy = 0, sw = 0;
+        for (int j = std::max(0, k - half); j <= std::min(n - 1, k + half); ++j)
+        {
+          const double w = std::exp(-double(j - k) * (j - k) / (2 * gp.sigma * gp.sigma));
+          sx += w * 2.0 * j, sy += w * pj.second[std::size_t(j)], sw += w;
+        }
+        ok = near(st[std::size_t(k)].smoothed.dx, sx / sw, 1e-9) && near(st[std::size_t(k)].smoothed.dy, sy / sw, 1e-9) &&
+             near(st[std::size_t(k)].correction.dy, sy / sw - pj.second[std::size_t(k)], 1e-9);
+      }
+      check(ok, "Gaussian (sigma 2.5): smoothed = clamped, renormalised exp(-d^2/2s^2) average over |d| <= 8");
+    }
+
+    // Identity models: zero trajectory and identity warps for every method.
+    for (const auto m : all)
+    {
+      StabilizerParams p;
+      p.method      = m;
+      const auto st = stabilize(std::vector<AffineParams>(25, kAffineIdentity), 320, 192, p);
+      bool       ok = st.size() == 25;
+      for (const auto &f : st)
+      {
+        ok = ok && f.raw.dx == 0 && f.raw.dy == 0 && f.smoothed.dx == 0 && f.smoothed.dy == 0 && f.smoothed.angle == 0 &&
+             f.smoothed.logScale == 0 && f.correction.dx == 0 && f.correction.dy == 0;
+        for (int i = 0; i < 6; ++i)
+          ok = ok && near(f.warp[std::size_t(i)], kAffineIdentity[std::size_t(i)]);
+      }
+      check(ok, std::string("identity models -> zero trajectory, identity warps: ") + smoothingMethodName(m));
+    }
+
+    // Steady pan (2, -0.5) px/frame: no correction away from the ends.
+    {
+      const int n    = 60;
+      const auto pan = panJitter(n, 2, -0.5, 0, 1).first;
+      struct Case
+      {
+        SmoothingMethod m;
+        int             margin; // frames whose window reaches an end
+        double          tol;
+      };
+      for (const auto c : {Case{SmoothingMethod::MovingAverage, 15, 1e-9}, Case{SmoothingMethod::Gaussian, 18, 1e-9},
+                           Case{SmoothingMethod::KalmanRts, 0, 1e-6}})
+      {
+        StabilizerParams p;
+        p.method      = c.m;
+        const auto st = stabilize(pan, 320, 192, p);
+        double     worst = 0;
+        for (int k = c.margin; k < n - c.margin; ++k)
+          worst = std::max({worst, std::abs(st[std::size_t(k)].correction.dx), std::abs(st[std::size_t(k)].correction.dy)});
+        std::cout << "  info  steady pan, " << smoothingMethodName(c.m) << ": worst interior |correction| " << worst
+                  << " px" << std::endl;
+        check(worst <= c.tol, std::string("steady pan needs no interior correction: ") + smoothingMethodName(c.m));
+      }
+    }
+
+    // Kalman causal: frame k ignores frames after k; RTS does not (the check has teeth).
+    {
+      const int  n = 50, k0 = 20;
+      auto       a = panJitter(n, 1, 0.5, 2, 11).first, b = a;
+      for (int k = k0 + 1; k < n; ++k)
+        b[std::size_t(k)][0] += 3, b[std::size_t(k)][1] -= 1.5 * (k % 3);
+      StabilizerParams p;
+      p.method       = SmoothingMethod::KalmanCausal;
+      const auto ca  = stabilize(a, 320, 192, p), cb = stabilize(b, 320, 192, p);
+      p.method       = SmoothingMethod::KalmanRts;
+      const auto ra  = stabilize(a, 320, 192, p), rb = stabilize(b, 320, 192, p);
+      bool same = true, rtsMoved = false;
+      for (int k = 0; k <= k0; ++k)
+      {
+        same     = same && ca[std::size_t(k)].smoothed.dx == cb[std::size_t(k)].smoothed.dx &&
+               ca[std::size_t(k)].smoothed.dy == cb[std::size_t(k)].smoothed.dy;
+        rtsMoved = rtsMoved || std::abs(ra[std::size_t(k)].smoothed.dx - rb[std::size_t(k)].smoothed.dx) > 1e-3;
+      }
+      check(same && !(ca[std::size_t(k0 + 1)].smoothed.dx == cb[std::size_t(k0 + 1)].smoothed.dx),
+            "Kalman causal: smoothed[k] for k <= 20 is bit-identical when frames > 20 change");
+      check(rtsMoved, "Kalman RTS: the same change does move frames <= 20 (backward pass)");
+    }
+
+    // Pan + jitter: RTS leaves less jitter than causal (rms of smoothed - true pan, all frames).
+    {
+      const int  n  = 120;
+      const auto pj = panJitter(n, 2, 0.25, 3, 5);
+      double     res[2]{};
+      for (int i = 0; i < 2; ++i)
+      {
+        StabilizerParams p;
+        p.method      = i ? SmoothingMethod::KalmanRts : SmoothingMethod::KalmanCausal;
+        const auto st = stabilize(pj.first, 320, 192, p);
+        double     v  = 0;
+        for (int k = 0; k < n; ++k)
+          v += std::pow(st[std::size_t(k)].smoothed.dx - 2.0 * k, 2) + std::pow(st[std::size_t(k)].smoothed.dy - 0.25 * k, 2);
+        res[i] = std::sqrt(v / n);
+      }
+      std::cout << "  info  pan + jitter (+-3 px): rms residual causal " << res[0] << " px, RTS " << res[1] << " px"
+                << std::endl;
+      check(res[1] < res[0], "Kalman RTS residual jitter < Kalman causal");
+    }
+
+    // stabilizeByFrame: absolute frame keys, gaps and out-of-range keys are the identity.
+    {
+      const AffineParams m12{-3, 1, 1, 0, 0, 1}, m14{2, -4, 1, 0, 0, 1};
+      const std::map<int, AffineParams> byFrame{{10, {-50, -50, 1, 0, 0, 1}}, {12, m12}, {14, m14}, {20, {9, 9, 1, 0, 0, 1}}};
+      std::vector<AffineParams>         vec(6, kAffineIdentity);
+      vec[2] = m12, vec[4] = m14;
+      bool ok = true;
+      for (const auto m : all)
+      {
+        StabilizerParams p;
+        p.method       = m;
+        const auto got = stabilizeByFrame(byFrame, 10, 15, 320, 192, p);
+        const auto exp = stabilize(vec, 320, 192, p);
+        ok             = ok && got.size() == 6;
+        for (std::size_t k = 0; ok && k < 6; ++k)
+          ok = got[k].raw.dx == exp[k].raw.dx && got[k].raw.dy == exp[k].raw.dy &&
+               got[k].smoothed.dx == exp[k].smoothed.dx && got[k].correction.dy == exp[k].correction.dy;
+      }
+      const auto g = stabilizeByFrame(byFrame, 10, 15, 320, 192);
+      ok = ok && g[0].raw.dx == 0 && g[1].raw.dx == 0 && near(g[2].raw.dx, 3) && near(g[2].raw.dy, -1) &&
+           near(g[3].raw.dx, 3) && near(g[4].raw.dx, 1) && near(g[4].raw.dy, 3) && near(g[5].raw.dx, 1);
+      check(ok, "stabilizeByFrame(10..15): frames 11, 13, 15 without a model are still, keys 10 and 20 ignored");
+      check(stabilizeByFrame(byFrame, 5, 4, 320, 192).empty(), "stabilizeByFrame: empty range -> no frames");
+    }
   }
 
   std::cout << (g_failures == 0 ? "PASS" : "FAIL") << std::endl;

@@ -3,6 +3,7 @@
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -73,6 +74,80 @@ std::vector<std::uint8_t> planeBytes(const std::vector<std::uint16_t> &plane, in
   return bytes;
 }
 
+/* Pass 2: warps every frame of the item's range with result.trajectory[k].warp, writes `path` and
+ * `path`.trajectory.csv, and fills framesWritten, csvPath, error / cancelled. `step(done)` is called
+ * after each frame written (done = 1..count) and cancels by returning false.
+ */
+void writeStabilized(playlistItem                    *item,
+                     const QString                   &path,
+                     const me::YuvFrameLayout        &layout,
+                     StabilizedExportResult          &result,
+                     const std::function<bool(int)> &step)
+{
+  const auto range = item->properties().startEndRange;
+  const int  count = range.second - range.first + 1;
+  const bool mono  = layout.subX == 0;
+  const int  w = layout.width, h = layout.height, bd = layout.bitDepth;
+
+  filter::Y4mFormat y4m;
+  y4m.width    = w;
+  y4m.height   = h;
+  y4m.bitDepth = bd;
+  y4m.mono     = mono;
+  const auto fps     = item->properties().frameRate;
+  y4m.fpsNumerator   = fps > 0 ? int(std::lround(fps * 1000)) : 30000;
+  y4m.fpsDenominator = 1000;
+  const auto lumaEnd   = layout.offset[0] + y4m.lumaBytes();
+  const auto chromaEnd = std::max(layout.offset[1], layout.offset[2]) + y4m.chromaBytes();
+  const auto needed    = mono ? lumaEnd : std::max(lumaEnd, chromaEnd);
+
+  // Pass 2: warp and write.
+  filter::Y4mWriter writer;
+  std::string       error;
+  if (!writer.open(path.toStdString(), y4m, error))
+  {
+    result.error = QString::fromStdString(error);
+    return;
+  }
+  for (int k = 0; k < count; ++k)
+  {
+    const auto frame = item->readRawFrame(range.first + k);
+    if (frame.size() < needed)
+    {
+      result.error = QObject::tr("Could not read frame %1").arg(range.first + k);
+      break;
+    }
+    filter::Frame420u16 in;
+    in.width  = w;
+    in.height = h;
+    in.y      = readPlane(frame, layout.offset[0], w, h, bd);
+    if (!mono)
+    {
+      in.u = readPlane(frame, layout.offset[1], w / 2, h / 2, bd);
+      in.v = readPlane(frame, layout.offset[2], w / 2, h / 2, bd);
+    }
+    const auto out = filter::warpFrame420(in, result.trajectory[std::size_t(k)].warp, bd, filter::ChromaSiting::Centre);
+    const auto y = planeBytes(out.y, bd), u = planeBytes(out.u, bd), v = planeBytes(out.v, bd);
+    if (!writer.writeFrame(y.data(), mono ? nullptr : u.data(), mono ? nullptr : v.data(), error))
+    {
+      result.error = QString::fromStdString(error);
+      break;
+    }
+    result.framesWritten = writer.framesWritten();
+    if (!step(k + 1))
+    {
+      result.cancelled = true;
+      break;
+    }
+  }
+
+  result.csvPath = path + ".trajectory.csv";
+  std::ofstream csv(result.csvPath.toStdString(), std::ios::binary | std::ios::trunc);
+  csv << filter::trajectoryCsv(result.trajectory);
+  if (!csv && result.error.isEmpty())
+    result.error = QObject::tr("Could not write %1").arg(result.csvPath);
+}
+
 } // namespace
 
 StabilizedExportResult exportStabilizedY4m(playlistItem                        *item,
@@ -88,23 +163,10 @@ StabilizedExportResult exportStabilizedY4m(playlistItem                        *
 
   const auto range  = item->properties().startEndRange;
   const int  count  = range.second - range.first + 1;
-  const bool mono   = layout.subX == 0;
-  const int  w = layout.width, h = layout.height, bd = layout.bitDepth;
+  const int  w = layout.width, h = layout.height;
   const auto format = item->getRawPixelFormat();
   const auto size   = item->getRawFrameSize();
   result.framesTotal = count;
-
-  filter::Y4mFormat y4m;
-  y4m.width    = w;
-  y4m.height   = h;
-  y4m.bitDepth = bd;
-  y4m.mono     = mono;
-  const auto fps     = item->properties().frameRate;
-  y4m.fpsNumerator   = fps > 0 ? int(std::lround(fps * 1000)) : 30000;
-  y4m.fpsDenominator = 1000;
-  const auto lumaEnd   = layout.offset[0] + y4m.lumaBytes();
-  const auto chromaEnd = std::max(layout.offset[1], layout.offset[2]) + y4m.chromaBytes();
-  const auto needed    = mono ? lumaEnd : std::max(lumaEnd, chromaEnd);
 
   const int  steps = 2 * count;
   const auto step  = [&](int done) { return !progress || progress(done, steps); };
@@ -120,8 +182,9 @@ StabilizedExportResult exportStabilizedY4m(playlistItem                        *
   meParams.algorithm  = me::Algorithm::SvtIntegerMe;
   meParams.blockSizes = me::BlockSizeSet();
   meParams.blockSizes.add(me::BlockSize::Blk16);
-  /* No static-block early exit: fitGlobalModel leaves bypassed blocks out, so a still frame pair
-   * would have no points at all, while for stabilisation "nothing moved" is a real measurement.
+  /* No static-block early exit. fitGlobalModel does count bypassed blocks as (0, 0), so a still
+   * pair would fit either way; the search is kept on so that every point is a measured vector and
+   * the result does not depend on SVT's bypass threshold (and matches the GM window's points).
    */
   meParams.staticBypass = false;
   me::GmModelParams fit;
@@ -166,55 +229,28 @@ StabilizedExportResult exportStabilizedY4m(playlistItem                        *
     }
   }
 
-  filter::StabilizerParams sp;
-  sp.radius         = options.radius;
-  result.trajectory = filter::stabilize(models, w, h, sp);
+  result.trajectory = filter::stabilize(models, w, h, options.smoothing);
+  writeStabilized(item, path, layout, result, [&](int done) { return step(count + done); });
+  return result;
+}
 
-  // Pass 2: warp and write.
-  filter::Y4mWriter writer;
-  std::string       error;
-  if (!writer.open(path.toStdString(), y4m, error))
-  {
-    result.error = QString::fromStdString(error);
+StabilizedExportResult exportStabilizedY4m(playlistItem                              *item,
+                                           const QString                             &path,
+                                           const std::map<int, filter::AffineParams> &modelsByFrame,
+                                           const filter::StabilizerParams            &smoothing,
+                                           const std::function<bool(int, int)>       &progress)
+{
+  StabilizedExportResult result;
+  me::YuvFrameLayout     layout;
+  result.error = checkItem(item, layout);
+  if (!result.error.isEmpty())
     return result;
-  }
-  for (int k = 0; k < count; ++k)
-  {
-    const auto frame = item->readRawFrame(range.first + k);
-    if (frame.size() < needed)
-    {
-      result.error = QObject::tr("Could not read frame %1").arg(range.first + k);
-      break;
-    }
-    filter::Frame420u16 in;
-    in.width  = w;
-    in.height = h;
-    in.y      = readPlane(frame, layout.offset[0], w, h, bd);
-    if (!mono)
-    {
-      in.u = readPlane(frame, layout.offset[1], w / 2, h / 2, bd);
-      in.v = readPlane(frame, layout.offset[2], w / 2, h / 2, bd);
-    }
-    const auto out = filter::warpFrame420(in, result.trajectory[std::size_t(k)].warp, bd, filter::ChromaSiting::Centre);
-    const auto y = planeBytes(out.y, bd), u = planeBytes(out.u, bd), v = planeBytes(out.v, bd);
-    if (!writer.writeFrame(y.data(), mono ? nullptr : u.data(), mono ? nullptr : v.data(), error))
-    {
-      result.error = QString::fromStdString(error);
-      break;
-    }
-    result.framesWritten = writer.framesWritten();
-    if (!step(count + k + 1))
-    {
-      result.cancelled = true;
-      break;
-    }
-  }
-
-  result.csvPath = path + ".trajectory.csv";
-  std::ofstream csv(result.csvPath.toStdString(), std::ios::binary | std::ios::trunc);
-  csv << filter::trajectoryCsv(result.trajectory);
-  if (!csv && result.error.isEmpty())
-    result.error = QObject::tr("Could not write %1").arg(result.csvPath);
+  const auto range   = item->properties().startEndRange;
+  const int  count   = range.second - range.first + 1;
+  result.framesTotal = count;
+  result.trajectory  = filter::stabilizeByFrame(modelsByFrame, range.first, range.second, layout.width,
+                                                layout.height, smoothing);
+  writeStabilized(item, path, layout, result, [&](int done) { return !progress || progress(done, count); });
   return result;
 }
 
@@ -240,15 +276,62 @@ void exportStabilizedY4m(playlistItem *item, QWidget *parent)
     model->addItem(QObject::tr("Translation"), int(me::GmModelType::Translation));
     model->addItem(QObject::tr("Rotation + zoom"), int(me::GmModelType::RotZoom));
     model->setCurrentIndex(1);
+    auto *method = new QComboBox(&dialog);
+    method->setObjectName("stabilizeMethod");
+    for (const auto m : {filter::SmoothingMethod::MovingAverage, filter::SmoothingMethod::Gaussian,
+                         filter::SmoothingMethod::KalmanCausal, filter::SmoothingMethod::KalmanRts})
+      method->addItem(QObject::tr(filter::smoothingMethodName(m)), int(m));
+    method->setCurrentIndex(method->findData(int(options.smoothing.method)));
+    method->setToolTip(QObject::tr("How the camera trajectory is smoothed. Moving average and Gaussian "
+                                   "look ahead and behind; Kalman causal uses past frames only (as a "
+                                   "real-time stabiliser would); Kalman RTS adds a backward pass."));
     auto *radius = new QSpinBox(&dialog);
     radius->setObjectName("stabilizeRadius");
     radius->setRange(0, 300);
-    radius->setValue(options.radius);
+    radius->setValue(options.smoothing.radius);
     radius->setSuffix(QObject::tr(" frames"));
     radius->setToolTip(QObject::tr("Moving-average radius of the camera trajectory: the window is "
                                    "2R + 1 frames. Larger keeps less of the camera motion."));
+    auto *sigma = new QDoubleSpinBox(&dialog);
+    sigma->setObjectName("stabilizeSigma");
+    sigma->setRange(0.5, 100);
+    sigma->setDecimals(1);
+    sigma->setSingleStep(0.5);
+    sigma->setValue(options.smoothing.sigma);
+    sigma->setSuffix(QObject::tr(" frames"));
+    sigma->setToolTip(QObject::tr("Standard deviation of the Gaussian window (it spans +-3 sigma). "
+                                  "Larger keeps less of the camera motion."));
+    auto *kalmanQ = new QDoubleSpinBox(&dialog);
+    kalmanQ->setObjectName("stabilizeKalmanQ");
+    kalmanQ->setRange(0.0001, 1000);
+    kalmanQ->setDecimals(4);
+    kalmanQ->setSingleStep(0.01);
+    kalmanQ->setValue(options.smoothing.kalmanQ);
+    kalmanQ->setToolTip(QObject::tr("Process noise: variance of the camera acceleration per frame. "
+                                    "Smaller follows the camera less closely (smoother)."));
+    auto *kalmanR = new QDoubleSpinBox(&dialog);
+    kalmanR->setObjectName("stabilizeKalmanR");
+    kalmanR->setRange(0.0001, 10000);
+    kalmanR->setDecimals(4);
+    kalmanR->setValue(options.smoothing.kalmanR);
+    kalmanR->setToolTip(QObject::tr("Measurement noise: variance of the measured trajectory (px^2, "
+                                    "deg^2 for the angle). Larger is smoother; only Q / R matters."));
     form->addRow(QObject::tr("Motion model"), model);
+    form->addRow(QObject::tr("Smoothing"), method);
     form->addRow(QObject::tr("Smoothing radius"), radius);
+    form->addRow(QObject::tr("Gaussian sigma"), sigma);
+    form->addRow(QObject::tr("Kalman Q"), kalmanQ);
+    form->addRow(QObject::tr("Kalman R"), kalmanR);
+    const auto showRows = [=] {
+      const auto m      = filter::SmoothingMethod(method->currentData().toInt());
+      const bool kalman = m == filter::SmoothingMethod::KalmanCausal || m == filter::SmoothingMethod::KalmanRts;
+      form->setRowVisible(radius, m == filter::SmoothingMethod::MovingAverage);
+      form->setRowVisible(sigma, m == filter::SmoothingMethod::Gaussian);
+      form->setRowVisible(kalmanQ, kalman);
+      form->setRowVisible(kalmanR, kalman);
+    };
+    showRows();
+    QObject::connect(method, &QComboBox::currentIndexChanged, &dialog, showRows);
     form->addRow(new QLabel(QObject::tr("SVT integer ME 16x16 + RANSAC global model per frame pair. "
                                         "Same size as the input, edges replicated, no crop."),
                             &dialog));
@@ -258,8 +341,12 @@ void exportStabilizedY4m(playlistItem *item, QWidget *parent)
     form->addRow(buttons);
     if (dialog.exec() != QDialog::Accepted)
       return;
-    options.model  = me::GmModelType(model->currentData().toInt());
-    options.radius = radius->value();
+    options.model             = me::GmModelType(model->currentData().toInt());
+    options.smoothing.method  = filter::SmoothingMethod(method->currentData().toInt());
+    options.smoothing.radius  = radius->value();
+    options.smoothing.sigma   = sigma->value();
+    options.smoothing.kalmanQ = kalmanQ->value();
+    options.smoothing.kalmanR = kalmanR->value();
   }
 
   const auto suggested = QFileInfo(item->properties().name).completeBaseName() + "_stabilized.y4m";
