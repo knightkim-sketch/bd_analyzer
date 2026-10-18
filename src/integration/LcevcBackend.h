@@ -84,6 +84,10 @@ public:
 
   //!< The bit depth of the enhanced picture when it is not the base's (enhancement_depth_type).
   virtual void setOutputDepth(int) {}
+  /* LCEVCdec only: the bitstream version to read the stream as, from the next reset(); -1 leaves it
+   * to the stream (a V-Nova SDK stream signals it). LTM-written streams signal none and need 1.
+   */
+  virtual void setForcedBitstreamVersion(int) {}
 
   //!< Drop all decoder state; the next picture must start a stream (an IDR / global_config).
   virtual bool reset() = 0;

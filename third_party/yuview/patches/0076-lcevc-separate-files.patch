@@ -1,0 +1,186 @@
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
+@@ -82,6 +82,16 @@
+   //!< The LCEVC picture configuration of the frame, when the stream carries LCEVC data.
+   InfoData getFrameInfo(int frameIdx) const override;
+ 
++  /* "Base + enhancement" input (bd-analyzer): the LCEVC NAL units of this base stream from a file of
++   * their own (enh.nal, one per picture in output order, with enh.nal.sizes next to it when there is
++   * one). Switches to an LCEVC engine - `engine` when it is one, LTM otherwise. Call before the
++   * properties widget exists. False when nothing could be attached; `error` also carries warnings
++   * (a picture count that differs from the base) when it returns true.
++   */
++  bool attachLcevcEnhancement(const QString         &path,
++                              QString               &error,
++                              decoder::DecoderEngine engine = decoder::DecoderEngine::Invalid);
++
+   // Draw the compressed item using the given painter and zoom factor.
+   virtual void
+   drawItem(QPainter *painter, int frameIdx, double zoomFactor, bool drawRawData) override;
+@@ -182,6 +192,7 @@
+    * them is selected - the base size and format are kept to switch back.
+    */
+   std::shared_ptr<bda::integration::LcevcStream> lcevcStream;
++  QString                                        lcevcEnhancementPath; //!< Separate-file input only
+   Size                                           baseFrameSize;
+   video::yuv::PixelFormatYUV                     baseFormatYuv;
+   decoder::DecoderEngine                         dataPathEngine() const;
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+@@ -531,6 +531,8 @@
+                          QString::number(loadingDecoder ? loadingDecoder->getDecodeSignal() : -1));
+ 
+   d.appendProperiteChild("inputFormat", InputFormatMapper.getName(this->inputFormat));
++  if (!this->lcevcEnhancementPath.isEmpty())
++    d.appendProperiteChild("lcevcEnhancement", this->lcevcEnhancementPath);
+   d.appendProperiteChild("decoder", DecoderEngineMapper.getName(this->decoderEngine));
+ 
+   if (this->video)
+@@ -570,6 +572,12 @@
+ 
+   // We can still not be sure that the file really exists, but we gave our best to try to find it.
+   auto newFile = new playlistItemCompressedVideo(filePath, displaySignal, input, decoder);
++  // The enhancement of a "base + enhancement" pair; a missing file leaves the base on its own.
++  if (const auto enhancement = root.findChildValue("lcevcEnhancement"); !enhancement.isEmpty() && newFile->video)
++  {
++    QString error;
++    newFile->attachLcevcEnhancement(enhancement, error, decoder);
++  }
+ 
+   /* The constructor gives up on a file it cannot open - libavcodec refusing it, an unknown raw
+    * format, no frame size, no usable pixel format - and returns before it creates the video
+@@ -925,16 +933,16 @@
+                            << pkt.getPTS());
+         else
+           DEBUG_COMPRESSED("playlistItemCompressedVideo::loadRawData retrieved empty packet");
+-        auto ffmpegDec =
+-          (caching ? dynamic_cast<decoder::decoderFFmpeg *>(this->cachingDecoder.get())
+-                   : dynamic_cast<decoder::decoderFFmpeg *>(this->loadingDecoder.get()));
+-        if (!ffmpegDec)
++        auto ffmpegDec = dynamic_cast<decoder::decoderFFmpeg *>(dec);
++        // An LCEVC decoder over FFmpeg takes the packets for its base decoder (bd-analyzer).
++        auto lcevcDec = dynamic_cast<bda::integration::DecoderLcevc *>(dec);
++        if (!ffmpegDec && !lcevcDec)
+           // decoderEngine says FFmpeg but the allocated decoder is of a different type. Nothing
+           // sensible to push into.
+           return;
+-        if (!ffmpegDec->pushAVPacket(pkt))
++        if (!(lcevcDec ? lcevcDec->pushAVPacket(pkt) : ffmpegDec->pushAVPacket(pkt)))
+         {
+-          if (ffmpegDec->state() != decoder::DecoderState::RetrieveFrames)
++          if (dec->state() != decoder::DecoderState::RetrieveFrames)
+             // The decoder did not switch to decoding frame mode. Error.
+             return;
+           this->repushData = true;
+@@ -1411,6 +1419,78 @@
+   return true;
+ }
+ 
++bool playlistItemCompressedVideo::attachLcevcEnhancement(const QString &path,
++                                                         QString       &error,
++                                                         DecoderEngine  engine)
++{
++  if (!this->video || this->rawFormat != video::RawFormat::YUV || this->propertiesWidget)
++  {
++    error = "LCEVC enhancement can only be attached to a freshly opened YUV item.";
++    return false;
++  }
++  QFile file(path);
++  if (!file.open(QIODevice::ReadOnly))
++  {
++    error = "Cannot read " + path;
++    return false;
++  }
++  const auto bytes = file.readAll();
++  // enh.nal.sizes next to enh.nal: one byte count per picture, so pictures without data keep their place.
++  std::optional<std::vector<std::size_t>> sizes;
++  if (QFile sizesFile(path + ".sizes"); sizesFile.open(QIODevice::ReadOnly))
++  {
++    sizes = bda::lcevc::parseSizesFile(sizesFile.readAll().toStdString());
++    if (!sizes)
++    {
++      error = path + ".sizes is not a list of byte counts";
++      return false;
++    }
++  }
++  auto perFrame = bda::lcevc::lcevcPerPictureFromNalFile(
++    reinterpret_cast<const std::uint8_t *>(bytes.constData()), std::size_t(bytes.size()), sizes ? &*sizes : nullptr);
++  const auto frames = std::size_t(this->properties().startEndRange.second + 1);
++  if (perFrame.size() != frames)
++    error = QString("%1 has %2 pictures, the base %3: frames past the shorter one show the base.")
++              .arg(path)
++              .arg(perFrame.size())
++              .arg(frames);
++  perFrame.resize(frames);
++  auto stream = bda::integration::makeLcevcStream(std::move(perFrame));
++  if (!stream->valid())
++  {
++    error = path + " has no LCEVC global_config";
++    return false;
++  }
++
++  QMutexLocker<QRecursiveMutex> decoderLock(&this->decoderAccessMutex);
++  const auto previousEngine = this->decoderEngine;
++  this->lcevcStream          = std::move(stream);
++  this->lcevcEnhancementPath = path;
++  for (const auto e : {DecoderEngine::LcevcLtm, DecoderEngine::LcevcDec})
++    if (!vectorContains(this->possibleDecoders, e))
++      this->possibleDecoders.push_back(e);
++  this->decoderEngine = isLcevcEngine(engine) ? engine : DecoderEngine::LcevcLtm;
++  bool allocated      = this->allocateDecoder();
++  if (!allocated && this->decoderEngine == DecoderEngine::LcevcLtm)
++  {
++    this->decoderEngine = DecoderEngine::LcevcDec;
++    allocated           = this->allocateDecoder();
++  }
++  if (!allocated)
++  {
++    error += (error.isEmpty() ? "" : "\n") + this->infoText;
++    this->decoderEngine = previousEngine;
++    this->allocateDecoder();
++  }
++  this->currentFrameIdx[0]       = -1;
++  this->currentFrameIdx[1]       = -1;
++  this->decodingNotPossibleAfter = -1;
++  this->video->invalidateAllBuffers();
++  this->statisticsUIHandler.clearStatTypes();
++  this->fillStatisticList();
++  return allocated;
++}
++
+ DecoderEngine playlistItemCompressedVideo::dataPathEngine() const
+ {
+   if (!isLcevcEngine(this->decoderEngine))
+--- a/YUViewLib/src/ui/Mainwindow.cpp
++++ b/YUViewLib/src/ui/Mainwindow.cpp
+@@ -38,6 +38,7 @@
+ #include <integration/MeFrameSource.h>
+ #include <integration/MeStatisticsAdapter.h>
+ #include <integration/MotionEstimationWidget.h>
++#include <integration/LcevcSeparateOpen.h>
+ #include <integration/StabilizedY4mExport.h>
+ #include <playlistitem/playlistItemCompressedVideo.h>
+ #include <playlistitem/playlistItemRawFile.h>
+@@ -697,6 +698,11 @@
+   auto fileMenu = menuBar()->addMenu(tr("&File"));
+   addActionToMenu(
+       fileMenu, "&Open File...", this, &MainWindow::showFileOpenDialog, Qt::CTRL | Qt::Key_O);
++  // A base stream and its LCEVC enhancement in separate files, as one enhanced item (bd-analyzer).
++  connect(fileMenu->addAction(tr("Open &LCEVC (base + enhancement)...")), &QAction::triggered, this, [this]() {
++    if (auto *item = bda::integration::openLcevcSeparate(this))
++      ui.playlistTreeWidget->addItem(item);
++  });
+ 
+   auto recentFileMenu = fileMenu->addMenu("Recent Files");
+   for (int i = 0; i < MAX_RECENT_FILES; i++)
+--- a/YUViewLib/src/ui/widgets/PlaylistTreeWidget.h
++++ b/YUViewLib/src/ui/widgets/PlaylistTreeWidget.h
+@@ -72,6 +72,8 @@
+   std::array<playlistItem *, 2> getSelectedItems() const;
+   // Set (up to two) selected items
+   void setSelectedItems(playlistItem *item1, playlistItem *item2);
++  // Add an item built elsewhere at the end of the playlist (bd-analyzer: File > Open LCEVC).
++  void addItem(playlistItem *item) { this->appendNewItem(item); }
+ 
+   // Is there a next item? Is the currently selected item the last one in the playlist?
+   bool hasNextItem();

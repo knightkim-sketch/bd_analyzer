@@ -654,9 +654,24 @@ if [[ -e "$APPDIR/decoder/libbda-lcevc-ltm.so" && -e "$APPDIR/decoder/liblcevc_d
     run_test "$ROOT/tests/regression/55-lcevc-decode.cpp" \
         "$ROOT/tests/data/lcevc/old_town_cross_ltm_hevc.lvc" "$ROOT/tests/data/lcevc/old_town_cross_ltm_hevc.ltm-md5.txt" \
         "$ROOT/tests/data/lcevc/hw_encoder_h264.lvc" "$ROOT/tests/data/lcevc/hw_encoder_h264.ltm-md5.txt"
+    # base + enhancement 분리 입력 (패치 0076): base_clean.h264 + enh.nal(.sizes) == muxed .lvc 와 같은 MD5.
+    # ffmpeg 이 있으면 같은 base 를 MP4 로 감싸 FFmpeg 패킷 경로도 본다.
+    LCEVC_MP4="-"
+    lcevc_ff="$(command -v ffmpeg || echo /usr/local/bin/ffmpeg)"
+    if [[ -x "$lcevc_ff" ]] && "$lcevc_ff" -hide_banner -loglevel error -y -fflags +genpts -r 25 -f h264 \
+        -i "$ROOT/tests/data/lcevc/separate/hw_encoder_base.h264" -c copy "$OUT/lcevc_base.mp4"; then
+        LCEVC_MP4="$OUT/lcevc_base.mp4"
+    fi
+    run_test "$ROOT/tests/regression/56-lcevc-separate-files.cpp" \
+        "$ROOT/tests/data/lcevc/separate/hw_encoder_base.h264" "$ROOT/tests/data/lcevc/separate/hw_encoder_enh.nal" \
+        "$ROOT/tests/data/lcevc/hw_encoder_h264.ltm-md5.txt" "$LCEVC_MP4"
+    # AV1 base + LCEVC metadata OBU (lcevc-av1-mux 산출물): 분석 트리, LTM over dav1d == ModelDecoder,
+    # LCEVCdec 은 전 프레임 + luma 일치 (chroma 는 LCEVCdec 업스케일 clamp 로 다름, 설계 문서 참조).
+    run_test "$ROOT/tests/regression/57-lcevc-av1.cpp" \
+        "$ROOT/tests/data/lcevc/testsrc2_av1_lcevc.ivf" "$ROOT/tests/data/lcevc/testsrc2_av1_lcevc.ltm-md5.txt"
 else
-    echo "  SKIP  55-lcevc-decode (LCEVC 디코더 라이브러리 없음: scripts/setup-lcevc-ltm.sh, setup-lcevcdec.sh)"
-    ((skip_count++))
+    echo "  SKIP  55-lcevc-decode, 56-lcevc-separate-files, 57-lcevc-av1 (LCEVC 디코더 라이브러리 없음: scripts/setup-lcevc-ltm.sh, setup-lcevcdec.sh)"
+    ((skip_count+=3))
 fi
 else
     echo "  SKIP  15-raw-av1-extension (raw AV1 생성 실패)"

@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace bda::lcevc
@@ -63,6 +64,13 @@ std::vector<std::uint8_t> toAnnexB(const LcevcNal &nal);
  */
 std::optional<LcevcNal> lcevcNalFromUnit(const std::uint8_t *data, std::size_t size);
 
+/* The bitstream version a V-Nova SDK encoder signals in front of the global_config: an additional_info
+ * block, SEI payload, user data registered B4 00 50 00, then the version byte (LCEVCdec
+ * config_parser.c parseSEIPayload). Nothing when the NAL unit's payload has none - LTM and the
+ * in-house encoder write none, and they follow what LCEVCdec calls version 1.
+ */
+std::optional<int> signalledBitstreamVersion(const LcevcNal &nal);
+
 //!< The codec of the base NAL units in an Annex-B stream, judged by its first non-LCEVC NAL unit.
 enum class AnnexBCodec
 {
@@ -77,5 +85,30 @@ AnnexBCodec detectAnnexBBaseCodec(const std::uint8_t *data, std::size_t size);
  * as toAnnexB() gives it; empty for a frame without one. Empty when the data is not IVF.
  */
 std::vector<std::vector<std::uint8_t>> lcevcPerIvfFrame(const std::uint8_t *data, std::size_t size);
+
+/* An enhancement-only file (bd-analyzer "separate files" input): LCEVC NAL units in Annex-B, one per
+ * picture in output order, as the LCEVC encoders write enh.nal. `sizes` - the companion
+ * enh.nal.sizes, one byte count per picture - splits it per picture, so a picture without
+ * enhancement (size 0) keeps its place; without it every LCEVC NAL unit is one picture. Each entry as
+ * toAnnexB() gives it, empty where a picture has none.
+ */
+std::vector<std::vector<std::uint8_t>> lcevcPerPictureFromNalFile(const std::uint8_t                *data,
+                                                                   std::size_t                        size,
+                                                                   const std::vector<std::size_t>    *sizes);
+
+/* An IVF file of AV1 temporal units with LCEVC added the way lcevcPerIvfFrame() reads it: temporal
+ * unit k gets one metadata OBU - metadata_type 4 (ITU-T T.35), B4 00 50 00, then perFrame[k] (an
+ * LCEVC NAL unit as Annex-B bytes) and trailing bits - after its temporal delimiter and sequence
+ * header OBUs. Units with no entry, or an empty one, are copied as they are. Empty when `ivf` is not
+ * an IVF file or an OBU in front of the insertion point has no size field.
+ * The layout follows the T.35 carriage of LCEVC; no reference AV1 + LCEVC stream was available to
+ * compare it with.
+ */
+std::vector<std::uint8_t> muxLcevcIntoIvf(const std::uint8_t                           *ivf,
+                                          std::size_t                                   size,
+                                          const std::vector<std::vector<std::uint8_t>> &perFrame);
+
+//!< The byte counts of a .sizes file (whitespace separated decimal numbers); nothing on a bad token.
+std::optional<std::vector<std::size_t>> parseSizesFile(const std::string &text);
 
 } // namespace bda::lcevc

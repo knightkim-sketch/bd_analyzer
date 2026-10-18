@@ -541,6 +541,8 @@ StreamSummary summarizeStream(const std::vector<std::vector<std::uint8_t>> &perP
       summary.pictures.emplace_back();
       continue;
     }
+    if (!summary.bitstreamVersion)
+      summary.bitstreamVersion = signalledBitstreamVersion(*nal);
     parser.parse(*nal);
     parser.clearTrace();
     summary.pictures.push_back(parser.lastPicture());

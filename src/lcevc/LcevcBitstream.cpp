@@ -1,5 +1,6 @@
 #include "LcevcBitstream.h"
 
+#include <cctype>
 #include <cstring>
 
 namespace bda::lcevc
@@ -174,6 +175,45 @@ std::optional<LcevcNal> lcevcNalFromUnit(const std::uint8_t *data, std::size_t s
   return nal;
 }
 
+std::optional<int> signalledBitstreamVersion(const LcevcNal &nal)
+{
+  const auto &d   = nal.payload;
+  std::size_t pos = 0;
+  while (pos < d.size())
+  {
+    const int   sizeType = d[pos] >> 5, type = d[pos] & 0x1f;
+    std::size_t size     = 0;
+    ++pos;
+    if (sizeType <= 5)
+      size = std::size_t(sizeType);
+    else if (sizeType == 7)
+    {
+      // multibyte: 7 bits per byte, most significant group first, 0x80 = more to come
+      for (;;)
+      {
+        if (pos >= d.size())
+          return std::nullopt;
+        const auto b = d[pos++];
+        size         = (size << 7) | (b & 0x7f);
+        if (!(b & 0x80))
+          break;
+      }
+    }
+    else
+      return std::nullopt;
+    if (size > d.size() - pos)
+      return std::nullopt;
+    if (type == 1) // global_config: a version must come before it
+      return std::nullopt;
+    static const std::uint8_t kVersionSei[] = {0x00, 0x04, 0xb4, 0x00, 0x50, 0x00};
+    if (type == 5 && size >= sizeof(kVersionSei) + 1 &&
+        std::memcmp(d.data() + pos, kVersionSei, sizeof(kVersionSei)) == 0)
+      return int(d[pos + sizeof(kVersionSei)]);
+    pos += size;
+  }
+  return std::nullopt;
+}
+
 AnnexBCodec detectAnnexBBaseCodec(const std::uint8_t *data, std::size_t size)
 {
   for (std::size_t i = 0; i + 5 <= size; ++i)
@@ -215,6 +255,118 @@ std::vector<std::vector<std::uint8_t>> lcevcPerIvfFrame(const std::uint8_t *data
     const auto nals = findLcevcInAv1TemporalUnit(data + pos, frameSize);
     out.push_back(nals.empty() ? std::vector<std::uint8_t>{} : toAnnexB(nals.front()));
     pos += frameSize;
+  }
+  return out;
+}
+
+std::vector<std::vector<std::uint8_t>> lcevcPerPictureFromNalFile(const std::uint8_t             *data,
+                                                                   std::size_t                     size,
+                                                                   const std::vector<std::size_t> *sizes)
+{
+  std::vector<std::vector<std::uint8_t>> out;
+  if (!sizes)
+  {
+    for (const auto &nal : findLcevcNals(data, size))
+      out.push_back(toAnnexB(nal));
+    return out;
+  }
+  std::size_t pos = 0;
+  for (const auto n : *sizes)
+  {
+    if (n > size - pos)
+      break;
+    const auto nals = findLcevcNals(data + pos, n);
+    out.push_back(nals.empty() ? std::vector<std::uint8_t>{} : toAnnexB(nals.front()));
+    pos += n;
+  }
+  return out;
+}
+
+std::optional<std::vector<std::size_t>> parseSizesFile(const std::string &text)
+{
+  std::vector<std::size_t> sizes;
+  std::size_t              i = 0;
+  while (i < text.size())
+  {
+    if (std::isspace(static_cast<unsigned char>(text[i])))
+    {
+      ++i;
+      continue;
+    }
+    std::size_t value = 0;
+    if (!std::isdigit(static_cast<unsigned char>(text[i])))
+      return std::nullopt;
+    while (i < text.size() && std::isdigit(static_cast<unsigned char>(text[i])))
+      value = value * 10 + std::size_t(text[i++] - '0');
+    sizes.push_back(value);
+  }
+  return sizes;
+}
+
+std::vector<std::uint8_t> muxLcevcIntoIvf(const std::uint8_t                           *ivf,
+                                          std::size_t                                   size,
+                                          const std::vector<std::vector<std::uint8_t>> &perFrame)
+{
+  constexpr int kObuSequenceHeader    = 1;
+  constexpr int kObuTemporalDelimiter = 2;
+  if (size < 32 || std::memcmp(ivf, "DKIF", 4) != 0)
+    return {};
+  const std::size_t         headerSize = std::size_t(ivf[6]) | std::size_t(ivf[7]) << 8;
+  std::vector<std::uint8_t> out(ivf, ivf + std::min(headerSize, size));
+  auto putLeb128 = [](std::vector<std::uint8_t> &v, std::size_t value) {
+    do
+    {
+      v.push_back(std::uint8_t((value & 0x7f) | (value > 0x7f ? 0x80 : 0)));
+      value >>= 7;
+    } while (value);
+  };
+
+  std::size_t pos = headerSize;
+  for (std::size_t frame = 0; pos + 12 <= size; ++frame)
+  {
+    const std::size_t frameSize = std::size_t(ivf[pos]) | std::size_t(ivf[pos + 1]) << 8 |
+                                  std::size_t(ivf[pos + 2]) << 16 | std::size_t(ivf[pos + 3]) << 24;
+    const std::uint8_t *frameHeader = ivf + pos;
+    pos += 12;
+    if (frameSize > size - pos)
+      return {};
+    const std::uint8_t *tu = ivf + pos;
+    pos += frameSize;
+
+    std::vector<std::uint8_t> unit;
+    if (frame < perFrame.size() && !perFrame[frame].empty())
+    {
+      // Past the temporal delimiter and the sequence headers.
+      const std::uint8_t *p = tu, *end = tu + frameSize;
+      while (p < end)
+      {
+        const int type = (*p >> 3) & 0x0f;
+        if (type != kObuTemporalDelimiter && type != kObuSequenceHeader)
+          break;
+        if (!(*p & 0x02))
+          return {};
+        const std::uint8_t *q = p + 1 + ((*p & 0x04) ? 1 : 0);
+        std::uint64_t       obuSize = 0;
+        if (q > end || !readLeb128(q, end, obuSize) || obuSize > std::uint64_t(end - q))
+          return {};
+        p = q + obuSize;
+      }
+      std::vector<std::uint8_t> body = {0x04, 0xb4, 0x00, 0x50, 0x00};
+      body.insert(body.end(), perFrame[frame].begin(), perFrame[frame].end());
+      body.push_back(0x80);
+      unit.assign(tu, p);
+      unit.push_back(0x2a); // obu_type 5 (OBU_METADATA), obu_has_size_field
+      putLeb128(unit, body.size());
+      unit.insert(unit.end(), body.begin(), body.end());
+      unit.insert(unit.end(), p, end);
+    }
+    else
+      unit.assign(tu, tu + frameSize);
+
+    const auto n = unit.size();
+    out.insert(out.end(), {std::uint8_t(n), std::uint8_t(n >> 8), std::uint8_t(n >> 16), std::uint8_t(n >> 24)});
+    out.insert(out.end(), frameHeader + 4, frameHeader + 12);
+    out.insert(out.end(), unit.begin(), unit.end());
   }
   return out;
 }

@@ -1,5 +1,6 @@
 #include "DecoderLcevc.h"
 
+#include <decoder/decoderFFmpeg.h>
 #include <statistics/StatisticsData.h>
 #include <statistics/StatisticsType.h>
 
@@ -122,6 +123,8 @@ DecoderLcevc::DecoderLcevc(std::unique_ptr<decoder::decoderBase> baseDecoder,
     return;
   }
   this->backend->setOutputDepth(this->stream->bitDepth());
+  this->backend->setForcedBitstreamVersion(this->stream->summary.bitstreamVersion ? -1 : 1);
+  this->backend->reset();
   this->frameSize = Size(unsigned(this->stream->outputWidth()), unsigned(this->stream->outputHeight()));
   this->rawFormat = video::RawFormat::YUV;
   static const video::yuv::Subsampling kSubsampling[] = {
@@ -198,6 +201,16 @@ bool DecoderLcevc::pushData(QByteArray &data)
   if (this->decoderState == decoder::DecoderState::Error)
     return false;
   const auto ok = this->base->pushData(data);
+  this->syncState();
+  return ok;
+}
+
+bool DecoderLcevc::pushAVPacket(FFmpeg::AVPacketWrapper &packet)
+{
+  auto *ffmpeg = dynamic_cast<decoder::decoderFFmpeg *>(this->base.get());
+  if (this->decoderState == decoder::DecoderState::Error || !ffmpeg)
+    return false;
+  const auto ok = ffmpeg->pushAVPacket(packet);
   this->syncState();
   return ok;
 }

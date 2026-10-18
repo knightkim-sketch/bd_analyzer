@@ -267,6 +267,13 @@ public:
     this->live    = true;
     this->configureInt(dec, "log_level", 1);
     this->configureBool(dec, "allow_dithering", false);
+    /* A stream that does not signal its version is read as LTM writes it. LCEVCdec's default (version
+     * 2) sizes a Huffman code length field of 0 as 0 bits where LTM uses 1; on an LTM stream whose
+     * temporal chunk has such a table, LCEVCdec decodes past the chunk and never returns. A V-Nova
+     * SDK stream signals its version, and forcing one would override it.
+     */
+    if (this->forcedVersion >= 0)
+      this->configureInt(dec, "force_bitstream_version", this->forcedVersion);
     if (this->initializeDecoder(dec) != LCEVC_Success)
       return this->fail("LCEVC_InitializeDecoder failed");
     this->timestamp = 0;
@@ -343,6 +350,19 @@ public:
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     this->takeBackBases();
+    if (rc == LCEVC_Again)
+    {
+      /* No picture: a worker is stuck (seen with a misread temporal chunk), and LCEVC_DestroyDecoder
+       * would then wait for it forever. Abandon the decoder instead - its thread spins until exit -
+       * so that reset() starts a new one and the caller is not blocked.
+       */
+      this->live    = false;
+      this->decoder = {};
+      // Its threads may still hold the base picture: leave that memory to them (deliberately leaked).
+      new std::vector<std::uint8_t>(std::move(this->baseStorage));
+      this->baseStorage = {};
+      return this->fail("LCEVCdec did not deliver the picture within 5 s; the decoder was abandoned");
+    }
     if (rc != LCEVC_Success)
       return this->fail(QString("LCEVC_ReceiveDecoderPicture failed (%1)").arg(int(rc)));
 
@@ -380,6 +400,7 @@ public:
 
   //!< The output bit depth (the enhancement depth), when it differs from the base's.
   void setOutputDepth(int depth) override { this->enhancementDepth = depth; }
+  void setForcedBitstreamVersion(int version) override { this->forcedVersion = version; }
 
 private:
   int outputDepth(const LcevcPlanes &base) const
@@ -408,6 +429,7 @@ private:
   bool                live{};
   std::uint64_t       timestamp{};
   int                 enhancementDepth{};
+  int                 forcedVersion{1};
   std::vector<std::uint8_t> baseStorage; //!< The base picture the decoder reads (see decode())
 
   decltype(&LCEVC_CreateDecoder)              createDecoder{};

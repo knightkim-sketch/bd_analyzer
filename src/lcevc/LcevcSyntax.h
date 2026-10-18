@@ -15,6 +15,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -108,6 +109,7 @@ struct StreamSummary
   std::vector<bool> idr;         //!< Per picture: nal_unit_type 29
   std::vector<bool> present;     //!< Per picture: carries an LCEVC NAL unit at all
   std::vector<PictureSummary> pictures; //!< Per picture (default-constructed where none)
+  std::optional<int> bitstreamVersion;  //!< V-Nova SDK streams signal one (signalledBitstreamVersion)
 };
 
 /* Parse the LCEVC NAL units of a stream, one per picture in output order, each as Annex-B bytes

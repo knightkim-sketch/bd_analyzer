@@ -12,6 +12,7 @@
 #pragma once
 
 #include <decoder/decoderBase.h>
+#include <ffmpeg/AVPacketWrapper.h>
 
 #include <QByteArray>
 #include <QStringList>
@@ -76,6 +77,8 @@ public:
   bool       decodeNextFrame() override;
   QByteArray getRawFrameData() override { return this->output; }
   bool       pushData(QByteArray &data) override;
+  //!< Container input decoded by FFmpeg: the packets go to the FFmpeg base decoder as they are.
+  bool       pushAVPacket(FFmpeg::AVPacketWrapper &packet);
   void       setNextDataOffsetInPacket(int offset) override;
 
   void fillStatisticList(stats::StatisticsData &statisticsData) const override;

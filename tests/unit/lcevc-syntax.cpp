@@ -227,6 +227,74 @@ int main()
     check(perFrame.size() == 3 && perFrame[0] == toAnnexB(found[0]) && perFrame[1].empty() &&
               perFrame[2] == toAnnexB(found[2]),
           "IVF: the LCEVC NAL unit of each frame, none for a frame without metadata");
+
+    // The muxer: a plain IVF (TD + sequence header + frame OBU per unit) gets the units back.
+    std::vector<std::uint8_t> plain(ivf.begin(), ivf.begin() + 32);
+    const std::vector<std::uint8_t> sequenceHeader = {0x0a, 0x03, 0x00, 0x00, 0x00};
+    const std::vector<std::uint8_t> frameObu       = {0x32, 0x02, 0xaa, 0xbb};
+    for (int k = 0; k < 3; ++k)
+    {
+      std::vector<std::uint8_t> tu = {0x12, 0x00};
+      if (k == 0)
+        tu.insert(tu.end(), sequenceHeader.begin(), sequenceHeader.end());
+      tu.insert(tu.end(), frameObu.begin(), frameObu.end());
+      const auto n = tu.size();
+      plain.insert(plain.end(), {std::uint8_t(n), 0, 0, 0});
+      plain.insert(plain.end(), 8, 0);
+      plain.insert(plain.end(), tu.begin(), tu.end());
+    }
+    const std::vector<std::vector<std::uint8_t>> enhancement = {toAnnexB(found[0]), {}, toAnnexB(found[2])};
+    const auto muxed = muxLcevcIntoIvf(plain.data(), plain.size(), enhancement);
+    check(lcevcPerIvfFrame(muxed.data(), muxed.size()) == enhancement,
+          "lcevc-av1-mux: the metadata OBUs read back as the enhancement put in");
+    // The metadata OBU goes after the temporal delimiter and the sequence header, before the frame.
+    const std::size_t first = 32 + 12;
+    check(muxed.size() > first + 8 && muxed[first] == 0x12 && muxed[first + 2] == 0x0a && muxed[first + 7] == 0x2a,
+          "and sits after the temporal delimiter and the sequence header");
+    check(muxLcevcIntoIvf(sequenceHeader.data(), sequenceHeader.size(), enhancement).empty(), "not IVF: nothing");
+  }
+
+  // ---- separate files: enh.nal + enh.nal.sizes (the same enhancement as hw_encoder_h264.lvc) --------
+  {
+    const auto muxed  = readFile(dataDir() + "hw_encoder_h264.lvc");
+    const auto found  = findLcevcNals(muxed.data(), muxed.size());
+    const auto enh    = readFile(dataDir() + "separate/hw_encoder_enh.nal");
+    const auto text   = readFile(dataDir() + "separate/hw_encoder_enh.nal.sizes");
+    const auto sizes  = parseSizesFile(std::string(text.begin(), text.end()));
+    const auto split  = lcevcPerPictureFromNalFile(enh.data(), enh.size(), sizes ? &*sizes : nullptr);
+    const auto noSize = lcevcPerPictureFromNalFile(enh.data(), enh.size(), nullptr);
+    bool       same   = sizes && sizes->size() == 4 && split.size() == 4 && noSize == split;
+    for (std::size_t i = 0; same && i < 4; ++i)
+      same = split[i] == toAnnexB(found[i]);
+    check(same, "enh.nal split by its .sizes (or by NAL units) = the NAL units of the muxed stream");
+
+    // A picture without enhancement (size 0) keeps its place.
+    std::vector<std::size_t> withGap = {(*sizes)[0], 0, (*sizes)[1]};
+    const auto               gapped  = lcevcPerPictureFromNalFile(enh.data(), enh.size(), &withGap);
+    check(gapped.size() == 3 && gapped[0] == split[0] && gapped[1].empty() && gapped[2] == split[1],
+          "a size of 0 is a picture without enhancement");
+    check(!parseSizesFile("12 x 3") && parseSizesFile(" 1\n2 \n") == std::vector<std::size_t>({1, 2}),
+          ".sizes: numbers only");
+  }
+
+  // ---- the V-Nova SDK bitstream version (decides how LCEVCdec reads the stream) ---------------------
+  {
+    LcevcNal sdk;
+    sdk.nalUnitType = kNalIdr;
+    // additional_info (size by multibyte: 7), SEI, user data registered, B4 00 50 00, version 2; then a
+    // global_config block, whose content does not matter here.
+    sdk.payload = {0xe5, 0x07, 0x00, 0x04, 0xb4, 0x00, 0x50, 0x00, 0x02, 0x21, 0x00};
+    check(signalledBitstreamVersion(sdk) == 2, "an SDK stream's additional_info gives its bitstream version");
+    sdk.payload = {0x21, 0x00, 0xe5, 0x07, 0x00, 0x04, 0xb4, 0x00, 0x50, 0x00, 0x02};
+    check(!signalledBitstreamVersion(sdk), "only in front of the global_config");
+    bool none = true;
+    for (const char *stream : {"old_town_cross_ltm_hevc.lvc", "hw_encoder_h264.lvc"})
+    {
+      const auto data = readFile(dataDir() + stream);
+      for (const auto &nal : findLcevcNals(data.data(), data.size()))
+        none = none && !signalledBitstreamVersion(nal);
+    }
+    check(none, "LTM and the in-house encoder signal none");
   }
 
   // ---- emulation prevention ------------------------------------------------------------------------
