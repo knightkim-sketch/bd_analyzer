@@ -119,7 +119,7 @@ lcevc-av1-mux base_av1.ivf enc.lvc lcevc_av1.ivf
 ## 7. LCEVCdec 과 LTM 의 차이 (Progy 조사)
 
 - **bitstream 버전**: LCEVCdec 4.3 기본(버전 2)은 Huffman 코드 길이 필드 폭 `bit_width(0)` 을 0 bit 로 읽고, LTM 은 1 bit 로 쓴다. 이런 테이블이 있는 temporal chunk 에서 LCEVCdec 은 chunk 를 지나쳐 무한 루프를 돈다 (`decode.c:260-265`, 탈출 조건 없음). AV1 테스트 스트림 picture 6 에서 재현. 해결: V-Nova SDK 인코더 스트림은 global_config 앞 additional_info(SEI, user data registered `B4 00 50 00`)에 버전을 싣고, LTM·사내 인코더 스트림은 싣지 않는다. 그래서 열 때 `signalledBitstreamVersion` 으로 확인해, 신호가 있으면 LCEVCdec 이 스트림을 따르게 두고 없으면 `force_bitstream_version=1` 을 준다 (SDK 스트림 실물로는 미검증). 멈춘 디코더는 `LCEVC_DestroyDecoder` 가 영원히 기다리므로, 5초 안에 그림이 안 나오면 디코더를 버리고 새로 만든다 (스레드 하나와 base 버퍼는 프로세스 끝까지 남는다).
-- **업스케일 clamp**: LCEVCdec 은 업스케일 1D pass 결과를 S15 `[-16384, 16383]` 로 포화시킨다 (`upscale_scalar.c:34-37`, SIMD 도 같음). LTM 과 DIS 8.7.3 은 clamp 하지 않는다. 범위를 넘는 overshoot (testsrc2 색 막대 경계, 주로 chroma) 에서 출력이 다르다. LCEVCdec 은 재생 전용이라 맞추지 않고 문서로 남긴다 (맞추려면 LCEVCdec 패치 + `disable_simd`). 최종 IS 본문 대조는 미검증.
+- **업스케일 clamp**: LCEVCdec 은 업스케일 1D pass 결과를 S15 `[-16384, 16383]` 로 포화시킨다 (`upscale_scalar.c:34-37`, SIMD 도 같음). LTM 과 DIS 8.7.3 은 clamp 하지 않는다. 범위를 넘는 overshoot 에서 출력이 다르다: testsrc2 색 막대 경계(chroma), 자연 영상의 어두운 경계(luma 포함, predicted average 로 2x2 전체에 퍼짐; ducks 512x288 에서 프레임당 평균 9~21 샘플). clamp 를 끈 LCEVCdec 사본은 LTM 과 bit-exact. LCEVCdec 은 재생 전용이라 맞추지 않고 문서로 남긴다 (맞추려면 LCEVCdec 패치 + `disable_simd`). 최종 IS 본문 대조는 미검증.
 
 ## 8. 남은 것·한계
 

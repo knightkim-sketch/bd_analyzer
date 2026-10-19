@@ -266,14 +266,17 @@ public:
     this->decoder = dec;
     this->live    = true;
     this->configureInt(dec, "log_level", 1);
-    this->configureBool(dec, "allow_dithering", false);
+    // Determinism depends on these two, so a rejected setting is an error rather than a silent default.
+    if (this->configureBool(dec, "allow_dithering", false) != LCEVC_Success)
+      return this->fail("LCEVCdec rejected allow_dithering = false");
     /* A stream that does not signal its version is read as LTM writes it. LCEVCdec's default (version
      * 2) sizes a Huffman code length field of 0 as 0 bits where LTM uses 1; on an LTM stream whose
      * temporal chunk has such a table, LCEVCdec decodes past the chunk and never returns. A V-Nova
      * SDK stream signals its version, and forcing one would override it.
      */
-    if (this->forcedVersion >= 0)
-      this->configureInt(dec, "force_bitstream_version", this->forcedVersion);
+    if (this->forcedVersion >= 0 &&
+        this->configureInt(dec, "force_bitstream_version", this->forcedVersion) != LCEVC_Success)
+      return this->fail(QString("LCEVCdec rejected force_bitstream_version = %1").arg(this->forcedVersion));
     if (this->initializeDecoder(dec) != LCEVC_Success)
       return this->fail("LCEVC_InitializeDecoder failed");
     this->timestamp = 0;
