@@ -8,6 +8,33 @@
 
 ---
 
+## 0.5.0 (2026-10-19)
+
+### LCEVC 디코딩 (신규)
+
+- LCEVC (MPEG-5 Part 2) enhancement 를 base 디코더(FFmpeg, dav1d 등) 위에 적용해 향상 해상도로 봅니다.
+  - **.lvc**: LCEVC NAL 이 섞인 H.264 / HEVC / VVC Annex-B 스트림 (base 코덱은 자동 판별).
+  - **AV1**: metadata OBU (ITU-T T.35) 에 LCEVC 가 실린 IVF.
+  - **File → Open LCEVC (base + enhancement)...**: base 스트림 + `enh.nal` (+ `enh.nal.sizes`).
+- 디코더 엔진 **LCEVC (LTM, analysis)**: MPEG 레퍼런스(LTM)와 bit-exact. Display signal 로 Base / LoQ-1·LoQ-0
+  prediction / residual / temporal buffer·mask, overlay 로 잔차 크기·temporal refresh·tile, Frame 탭에 picture
+  config (step width, IDR, 해상도 등).
+- 디코더 엔진 **LCEVC (LCEVCdec)**: 재생용. 업스케일 S15 clamp 때문에 LTM 과 경계에서 일부 샘플이 다를 수 있습니다.
+- 비트스트림 분석에 LCEVC 구문 트리 (NAL, AV1 metadata OBU).
+- `tools/cli/lcevc-av1-mux`: AV1 IVF 에 LCEVC metadata OBU 를 넣는 도구.
+
+### Stabilization (DIS)
+
+- 궤적 평활에 Gaussian, Kalman (실시간 / RTS) 추가. Global motion 창의 **Stabilization** 절에서 **Apply to view** 로
+  화면에 바로 적용합니다.
+
+### 수정
+
+- FFmpeg 엔진으로 B-frame 스트림을 디코딩하면 마지막 몇 프레임이 직전 프레임으로 반복되던 문제를 고쳤습니다
+  (스트림 끝에서 디코더를 drain).
+
+---
+
 ## 0.4.3 (2026-10-17)
 
 ### Odyssey closed-loop ME (신규)
