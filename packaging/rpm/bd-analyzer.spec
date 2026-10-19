@@ -19,7 +19,7 @@
 # glib2, fontconfig, openssl-libs, ...) is a genuine target dependency and is kept -
 # that auto-generated list is the whole point of shipping an RPM instead of a folder.
 # [.] instead of \. avoids a second round of backslash escaping through rpm macros.
-%global __requires_exclude_bundled libQt6[A-Za-z]+[.]so.*|libicu(data|i18n|uc)[.]so.*|libav(codec|format|util)[.]so.*|libswresample[.]so.*|libdav1d-internals[.]so.*|libX11(-xcb)?[.]so.*|libxcb[A-Za-z0-9_-]*[.]so.*|libXau[.]so.*|libXdmcp[.]so.*|libXext[.]so.*|libXrender[.]so.*|libxkbcommon(-x11)?[.]so.*
+%global __requires_exclude_bundled libQt6[A-Za-z]+[.]so.*|libicu(data|i18n|uc)[.]so.*|libav(codec|format|util)[.]so.*|libswresample[.]so.*|libdav1d-internals[.]so.*|liblcevc_dec_[a-z_]+[.]so.*|libbda-lcevc-ltm[.]so.*|libX11(-xcb)?[.]so.*|libxcb[A-Za-z0-9_-]*[.]so.*|libXau[.]so.*|libXdmcp[.]so.*|libXext[.]so.*|libXrender[.]so.*|libxkbcommon(-x11)?[.]so.*
 
 # The optional Qt plugins we ship must not become hard dependencies. Qt probes them at
 # startup and silently skips any whose libraries are missing, so requiring these would
