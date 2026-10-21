@@ -1,0 +1,46 @@
+--- a/YUViewLib/src/ffmpeg/AVMotionVectorWrapper.cpp
++++ b/YUViewLib/src/ffmpeg/AVMotionVectorWrapper.cpp
+@@ -78,9 +78,9 @@
+     this->motion_y     = -1;
+     this->motion_scale = -1;
+   }
+-  else if (libVer.avutil.major == 55 || //
+-           libVer.avutil.major == 56 || //
+-           libVer.avutil.major == 57)
++  // The layout is unchanged since avutil 55 (FFmpeg 7.1 ships 59). Missing majors left the
++  // side data unread, so the motion vector overlay was always empty (bd-analyzer).
++  else if (libVer.avutil.major >= 55 && libVer.avutil.major <= 60)
+   {
+     auto p             = reinterpret_cast<AVMotionVector_55_56_57 *>(data) + idx;
+     this->source       = p->source;
+@@ -103,7 +103,7 @@
+ {
+   if (libVer.avutil.major == 54)
+     return dataSize / sizeof(AVMotionVector_54);
+-  else if (libVer.avutil.major == 55 || libVer.avutil.major == 56 || libVer.avutil.major == 57)
++  else if (libVer.avutil.major >= 55 && libVer.avutil.major <= 60)
+     return dataSize / sizeof(AVMotionVector_55_56_57);
+   else
+     return 0;
+--- a/YUViewLib/src/decoder/decoderFFmpeg.cpp
++++ b/YUViewLib/src/decoder/decoderFFmpeg.cpp
+@@ -287,8 +287,17 @@
+       // dst marks the center of the current block so the block position is:
+       const int     blockX = mvs.dst_x - mvs.w / 2;
+       const int     blockY = mvs.dst_y - mvs.h / 2;
+-      const int16_t mvX    = mvs.dst_x - mvs.src_x;
+-      const int16_t mvY    = mvs.dst_y - mvs.src_y;
++      // The codec's motion vector (reference position minus block position, as the other decoders
++      // report it) in quarter samples, the unit the vector types are registered with (scaling 4).
++      // motion_x/y over motion_scale is exact (src = dst + motion / scale); the whole-sample
++      // src/dst difference is only the fallback for old libraries (bd-analyzer).
++      int mvX = (mvs.src_x - mvs.dst_x) * 4;
++      int mvY = (mvs.src_y - mvs.dst_y) * 4;
++      if (mvs.motion_scale > 0 && mvs.motion_scale != uint16_t(-1))
++      {
++        mvX = mvs.motion_x * 4 / int(mvs.motion_scale);
++        mvY = mvs.motion_y * 4 / int(mvs.motion_scale);
++      }
+ 
+       this->statisticsData->at(mvs.source < 0 ? 0 : 1)
+         .addBlockValue(blockX, blockY, mvs.w, mvs.h, (int)mvs.source);

@@ -4,7 +4,7 @@
 // The pairing is fixed before decoding starts. The item lists, per picture in output order, the
 // LCEVC NAL unit as Annex-B bytes (LcevcStream): from an Annex-B stream by the base picture each unit
 // precedes, from IVF by the temporal unit that carries it. The wrapper then only has to know which
-// output picture comes next - setNextFrameIndex() after every seek - because the base decoder
+// output picture comes next - setNextOutputFrameIndex() after every seek - because the base decoder
 // already delivers pictures in output order, which is the order both enhancement decoders want.
 //
 // The enhancement keeps state from picture to picture (the temporal buffer, the last
@@ -67,7 +67,7 @@ public:
 
   void resetDecoder() override;
   //!< The output picture the next decoded frame is (call after every seek).
-  void setNextFrameIndex(int frameIdx) { this->nextFrame = frameIdx; }
+  void setNextOutputFrameIndex(int frameIdx) override { this->nextFrame = frameIdx; }
 
   int         nrSignalsSupported() const override;
   QStringList getSignalNames() const override;

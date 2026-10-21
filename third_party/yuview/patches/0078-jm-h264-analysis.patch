@@ -1,0 +1,250 @@
+--- a/YUViewLib/src/decoder/decoderBase.h
++++ b/YUViewLib/src/decoder/decoderBase.h
+@@ -40,6 +40,8 @@
+ 
+ #include <QLibrary>
+ 
++#include <optional>
++
+ namespace decoder
+ {
+ 
+@@ -65,10 +67,11 @@
+   // LCEVC enhancement over a base decoder (bd-analyzer, src/integration/DecoderLcevc): offered only
+   // for streams that carry LCEVC data.
+   LcevcLtm, // MPEG LTM - analysis: intermediate surfaces and per picture configuration
+-  LcevcDec  // V-Nova LCEVCdec - playback
++  LcevcDec, // V-Nova LCEVCdec - playback
++  JM        // H.264 JM reference decoder with macroblock data (bd-analyzer, src/integration/DecoderJm)
+ };
+ 
+-constexpr EnumMapper<DecoderEngine, 9> DecoderEngineMapper = {
++constexpr EnumMapper<DecoderEngine, 10> DecoderEngineMapper = {
+     std::make_pair(DecoderEngine::Invalid, "Invalid"),
+     std::make_pair(DecoderEngine::Libde265, "Libde265"),
+     std::make_pair(DecoderEngine::HM, "HM"),
+@@ -77,7 +80,8 @@
+     std::make_pair(DecoderEngine::Dav1d, "Dav1d"),
+     std::make_pair(DecoderEngine::FFMpeg, "FFMpeg"),
+     std::make_pair(DecoderEngine::LcevcLtm, "LCEVC (LTM, analysis)"),
+-    std::make_pair(DecoderEngine::LcevcDec, "LCEVC (LCEVCdec)")};
++    std::make_pair(DecoderEngine::LcevcDec, "LCEVC (LCEVCdec)"),
++    std::make_pair(DecoderEngine::JM, "JM (analysis)")};
+ 
+ inline bool isLcevcEngine(DecoderEngine e)
+ {
+@@ -135,6 +139,11 @@
+   // sequence header. 0 means the decoder does not report it or it is not known yet. Used by the view
+   // to pick a default grid size that lines up with the block partitioning.
+   unsigned                   getMaxBlockSize() const { return this->maxBlockSize; }
++  /* The statistic type that carries the coded bits of each block of the getMaxBlockSize() grid
++   * (AV1 superblock, H.264 macroblock), for the rate-distortion plot and BD-rate. Nothing when the
++   * decoder does not report bits (bd-analyzer).
++   */
++  virtual std::optional<int> blockBitsTypeId() const { return std::nullopt; }
+   // Push data to the decoder (until no more data is needed)
+   // In order to make the interface generic, the pushData function accepts data only without start
+   // codes
+@@ -145,6 +154,14 @@
+    * which is what the frame bitstream view shows. Decoders that do not care ignore it.
+    */
+   virtual void setNextDataOffsetInPacket(int) {}
++  //!< The same for a raw Annex-B file: the file position of the next pushed NAL unit (bd-analyzer).
++  virtual void setNextDataFilePosition(std::int64_t) {}
++  //!< After a seek: the display frame index of the next picture the decoder outputs (bd-analyzer).
++  virtual void setNextOutputFrameIndex(int) {}
++  /* The coding (decoding) order index of a display frame the decoder has output, when it knows it -
++   * which packet of a container holds that frame once B-frames reorder them (bd-analyzer).
++   */
++  virtual std::optional<int> codingIndexOfFrame(int) const { return std::nullopt; }
+ 
+   DecoderState state() const { return this->decoderState; }
+ 
+--- a/YUViewLib/src/decoder/decoderDav1d.h
++++ b/YUViewLib/src/decoder/decoderDav1d.h
+@@ -128,6 +128,7 @@
+    */
+   static constexpr int SB_QINDEX_TYPE_ID   = 12;
+   static constexpr int SB_BITCOUNT_TYPE_ID = 13;
++  std::optional<int>   blockBitsTypeId() const override { return SB_BITCOUNT_TYPE_ID; }
+ 
+   void resetDecoder() override;
+ 
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+@@ -61,6 +61,7 @@
+ #include <video/rgb/videoHandlerRGB.h>
+ #include <video/yuv/videoHandlerYUV.h>
+ 
++#include "integration/DecoderJm.h"
+ #include "integration/DecoderLcevc.h"
+ #include "lcevc/LcevcBitstream.h"
+ 
+@@ -379,6 +380,9 @@
+     this->possibleDecoders = DecodersAV1;
+   else
+     this->possibleDecoders = {DecoderEngine::FFMpeg};
++  // H.264: the JM reference decoder for macroblock analysis (bd-analyzer); FFmpeg stays the default.
++  if (this->inputFormat == InputFormat::AnnexBAVC || this->ffmpegCodec.isAVC())
++    this->possibleDecoders.push_back(DecoderEngine::JM);
+   if (this->lcevcStream && this->rawFormat == video::RawFormat::YUV)
+   {
+     this->possibleDecoders.push_back(DecoderEngine::LcevcLtm);
+@@ -998,8 +1002,13 @@
+       else if (isInputFormatTypeAnnexB(this->inputFormat) &&
+                this->dataPathEngine() != DecoderEngine::FFMpeg)
+       {
+-        auto data = caching ? this->inputFileAnnexBCaching->getNextNALUnit(repushData)
+-                            : this->inputFileAnnexBLoading->getNextNALUnit(repushData);
++        pairUint64 nalStartEndPos{};
++        auto       data = caching ? this->inputFileAnnexBCaching->getNextNALUnit(repushData, &nalStartEndPos)
++                                  : this->inputFileAnnexBLoading->getNextNALUnit(repushData, &nalStartEndPos);
++        // Where the unit is in the file, for decoders that report per block bit positions.
++        // (A repeated unit keeps the position it was announced with.)
++        if (!data.isEmpty() && !repushData)
++          dec->setNextDataFilePosition(std::int64_t(nalStartEndPos.first));
+         DEBUG_COMPRESSED(
+           "playlistItemCompressedVideo::loadRawData retrieved nal unit from file - size "
+           << data.size());
+@@ -1118,8 +1127,7 @@
+   const bool bothFFmpeg =
+     (!isInputFormatTypeAnnexB(this->inputFormat) && this->dataPathEngine() == DecoderEngine::FFMpeg);
+   const bool decFFmpeg = (this->dataPathEngine() == DecoderEngine::FFMpeg);
+-  if (auto lcevc = dynamic_cast<bda::integration::DecoderLcevc *>(dec))
+-    lcevc->setNextFrameIndex(seekToFrame);
++  dec->setNextOutputFrameIndex(seekToFrame);
+ 
+   QByteArrayList parametersets;
+   if (isInputFormatTypeAnnexB(this->inputFormat))
+@@ -1326,6 +1334,12 @@
+       this->cachingDecoder = std::make_unique<decoder::decoderDav1d>(displayComponent, true);
+     }
+   }
++  else if (this->decoderEngine == DecoderEngine::JM)
++  {
++    this->loadingDecoder = std::make_unique<bda::integration::DecoderJm>();
++    if (this->cachingEnabled)
++      this->cachingDecoder = std::make_unique<bda::integration::DecoderJm>(true);
++  }
+   else if (this->decoderEngine == DecoderEngine::FFMpeg)
+   {
+     if (isInputFormatTypeAnnexB(this->inputFormat))
+@@ -1605,8 +1619,11 @@
+   /* The type list is filled when the decoder is allocated, so this answers before any frame has
+    * been decoded - which is when the BD-rate button needs to know.
+    */
++  const auto bitsType = this->loadingDecoder->blockBitsTypeId();
++  if (!bitsType)
++    return false;
+   for (const auto &type : this->statisticsData.getStatisticsTypes())
+-    if (type.typeID == decoder::decoderDav1d::SB_BITCOUNT_TYPE_ID)
++    if (type.typeID == *bitsType)
+       return true;
+   return false;
+ }
+@@ -1665,10 +1682,10 @@
+     // frame would be plotted against this frame's SSE.
+     if (this->statisticsData.getFrameIndex() != frameIdx)
+       return {};
+-    if (!this->statisticsData.hasDataForTypeID(decoder::decoderDav1d::SB_BITCOUNT_TYPE_ID))
++    const auto bitsType = this->loadingDecoder->blockBitsTypeId();
++    if (!bitsType || !this->statisticsData.hasDataForTypeID(*bitsType))
+       return {};
+-    for (const auto &block :
+-         this->statisticsData.getFrameTypeData(decoder::decoderDav1d::SB_BITCOUNT_TYPE_ID).valueData)
++    for (const auto &block : this->statisticsData.getFrameTypeData(*bitsType).valueData)
+     {
+       const auto cellX = block.pos[0] / superblockSize;
+       const auto cellY = block.pos[1] / superblockSize;
+@@ -1696,6 +1713,8 @@
+ 
+   QByteArray frameData;
+   QString    frameDescription;
++  // Annex-B: where the shown bytes start in the file - block ranges in file bits are rebased on it.
++  std::optional<uint64_t> frameStartInFile;
+ 
+   if (isInputFormatTypeAnnexB(this->inputFormat))
+   {
+@@ -1722,7 +1741,8 @@
+     if (!this->inputFileAnnexBDump)
+       this->inputFileAnnexBDump = std::make_unique<FileSourceAnnexBFile>(
+           std::filesystem::path(this->properties().name.toStdString()));
+-    frameData = this->inputFileAnnexBDump->getFrameData(*frameStartEndFilePos);
++    frameData        = this->inputFileAnnexBDump->getFrameData(*frameStartEndFilePos);
++    frameStartInFile = frameStartEndFilePos->first;
+     frameDescription =
+         QString("Frame %1 · source bytes %2-%3 · %4 bytes")
+             .arg(frameIdx)
+@@ -1747,6 +1767,16 @@
+       this->dumpReaderPacketIdx = -1;
+     }
+ 
++    /* With B-frames a display frame is not the packet of the same index. A decoder that knows the
++     * coding order (the H.264 JM decoder, bd-analyzer) says which packet holds it.
++     */
++    const int displayFrame = frameIdx;
++    {
++      QMutexLocker<QRecursiveMutex> decoderLock(&this->decoderAccessMutex);
++      if (this->loadingDecoder)
++        if (const auto coding = this->loadingDecoder->codingIndexOfFrame(frameIdx))
++          frameIdx = *coding;
++    }
+     if (this->dumpReaderPacketCount && frameIdx >= *this->dumpReaderPacketCount)
+     {
+       dump.description =
+@@ -1802,9 +1832,12 @@
+ 
+     frameData =
+         QByteArray(reinterpret_cast<const char *>(packet.getData()), packet.getDataSize());
+-    frameDescription = QString("Frame %1 · demuxed packet payload · %2 bytes")
+-                           .arg(frameIdx)
+-                           .arg(frameData.size());
++    frameDescription = displayFrame == frameIdx
++                           ? QString("Frame %1 · demuxed packet payload · %2 bytes").arg(frameIdx).arg(frameData.size())
++                           : QString("Frame %1 · packet %2 (coding order) · demuxed packet payload · %3 bytes")
++                                 .arg(displayFrame)
++                                 .arg(frameIdx)
++                                 .arg(frameData.size());
+   }
+   else
+   {
+@@ -1839,7 +1872,12 @@
+ 
+   if (blockInfo.bitstreamRange && blockInfo.bitstreamRange->isValid())
+   {
+-    const auto &range     = *blockInfo.bitstreamRange;
++    auto range = *blockInfo.bitstreamRange;
++    if (range.origin == "source file" && frameStartInFile && range.startBit >= *frameStartInFile * 8)
++    {
++      range.startBit -= *frameStartInFile * 8;
++      range.endBit -= *frameStartInFile * 8;
++    }
+     const auto  blockData = sliceBitRange(frameData, range);
+     if (!blockData.isEmpty())
+     {
+--- a/YUViewLib/src/filesource/FileSourceFFmpegFile.cpp
++++ b/YUViewLib/src/filesource/FileSourceFFmpegFile.cpp
+@@ -139,12 +139,14 @@
+     {
+       // Return the remainder of the buffer and clear it so that the next packet is loaded on the
+       // next call
++      this->posOfLastReturnArrayInPacket = int(this->posInData + offset); // first byte after the start code (bd-analyzer)
+       this->lastReturnArray = currentPacketData.mid(this->posInData + offset);
+       this->currentPacketData.clear();
+     }
+     else
+     {
+       auto size       = nextStartCodePos - this->posInData - offset;
++      this->posOfLastReturnArrayInPacket = int(this->posInData + offset); // (bd-analyzer)
+       lastReturnArray = this->currentPacketData.mid(this->posInData + offset, size);
+       this->posInData += 3 + size;
+     }
+@@ -171,6 +173,8 @@
+       return {};
+     }
+ 
++    // The unit's first byte (after its 4-byte length) in the packet (bd-analyzer).
++    this->posOfLastReturnArrayInPacket = int(this->posInData + 4);
+     this->lastReturnArray = this->currentPacketData.mid(posInData + 4, size);
+     this->posInData += 4 + size;
+     if (this->posInData >= this->currentPacketData.size())

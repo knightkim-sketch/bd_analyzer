@@ -130,6 +130,17 @@ if compgen -G "$APPDIR/decoder/liblcevc_dec_*.so*" >/dev/null; then
 else
     echo "   (skip) decoder/liblcevc_dec_*.so 가 없습니다 - LCEVC (LCEVCdec) 디코딩 비활성. scripts/setup-lcevcdec.sh 참조."
 fi
+# H.264 analysis backend (optional): libbda-jm-analyzer.so <- scripts/setup-jm-analyzer.sh (JM 19.0).
+# JM's licence (ITU-T / ISO/IEC copyright notices and disclaimer) must travel with the binary.
+if [[ -f "$APPDIR/decoder/libbda-jm-analyzer.so" ]]; then
+    cp "$APPDIR/decoder/libbda-jm-analyzer.so" "$OUT/decoder/"
+    for f in COPYRIGHT_ITU.txt COPYRIGHT_ISO_IEC.txt disclaimer.txt; do
+        [[ -f "$ROOT/third_party/jm/$f" ]] && cp "$ROOT/third_party/jm/$f" "$OUT/decoder/licenses/JM-$f" \
+            || echo "   경고: JM 라이선스 파일이 없습니다 (third_party/jm/$f)."
+    done
+else
+    echo "   (skip) decoder/libbda-jm-analyzer.so 가 없습니다 - H.264 (JM) 분석 디코딩 비활성. scripts/setup-jm-analyzer.sh 참조."
+fi
 
 echo "== 6b. AI 어시스턴트 자산 (런처 + 격리 정책 + 주입 프롬프트) =="
 # AssistPanelWidget 은 applicationDirPath()/assist/launch-claude.sh 를 찾는다. 이것이 없으면
@@ -220,6 +231,8 @@ check "$HERE/decoder/libdav1d-internals.so"     "dav1d analyzer 디코더"
 [[ -e "$HERE/decoder/libbda-lcevc-ltm.so" ]] && check "$HERE/decoder/libbda-lcevc-ltm.so" "LCEVC LTM 디코더"
 [[ -e "$HERE/decoder/liblcevc_dec_api.so" ]] && check "$HERE/decoder/liblcevc_dec_api.so" "LCEVCdec API"
 [[ -e "$HERE/decoder/liblcevc_dec_pipeline_cpu.so" ]] && check "$HERE/decoder/liblcevc_dec_pipeline_cpu.so" "LCEVCdec CPU pipeline"
+# The JM (H.264) analysis backend is optional too.
+[[ -e "$HERE/decoder/libbda-jm-analyzer.so" ]] && check "$HERE/decoder/libbda-jm-analyzer.so" "H.264 JM 분석 디코더"
 check "$HERE/assist/launch-claude.sh"           "AI 어시스턴트 런처"
 check "$HERE/assist/system-prompt.md"           "AI 어시스턴트 앱 레퍼런스"
 check "$HERE/yt-transcode/yt-transcode.sh"      "YouTube transcode 스크립트"

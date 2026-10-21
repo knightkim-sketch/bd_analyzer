@@ -46,6 +46,8 @@ check "$HERE/decoder/libdav1d-internals.so"     "dav1d analyzer 디코더"
 [[ -e "$HERE/decoder/libbda-lcevc-ltm.so" ]] && check "$HERE/decoder/libbda-lcevc-ltm.so" "LCEVC LTM 디코더"
 [[ -e "$HERE/decoder/liblcevc_dec_api.so" ]] && check "$HERE/decoder/liblcevc_dec_api.so" "LCEVCdec API"
 [[ -e "$HERE/decoder/liblcevc_dec_pipeline_cpu.so" ]] && check "$HERE/decoder/liblcevc_dec_pipeline_cpu.so" "LCEVCdec CPU pipeline"
+# The JM (H.264) analysis backend is optional too.
+[[ -e "$HERE/decoder/libbda-jm-analyzer.so" ]] && check "$HERE/decoder/libbda-jm-analyzer.so" "H.264 JM 분석 디코더"
 check "$HERE/assist/launch-claude.sh"           "AI 어시스턴트 런처"
 check "$HERE/assist/system-prompt.md"           "AI 어시스턴트 앱 레퍼런스"
 check "$HERE/yt-transcode/yt-transcode.sh"      "YouTube transcode 스크립트"

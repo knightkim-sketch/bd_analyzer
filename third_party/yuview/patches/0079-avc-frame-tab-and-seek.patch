@@ -1,0 +1,148 @@
+--- a/YUViewLib/src/ui/widgets/FileInfoWidget.h
++++ b/YUViewLib/src/ui/widgets/FileInfoWidget.h
+@@ -41,6 +41,7 @@
+ #include <string>
+ 
+ #include "common/InfoItemAndData.h"
++#include "integration/FrameAvcSummary.h"
+ #include "integration/FrameObuSummary.h"
+ 
+ class QFormLayout;
+@@ -78,6 +79,7 @@
+ private:
+   int  addInfoDataItemsAndGetNextRowIndex(const InfoData &data, int row);
+   void refreshFrameTab();
++  void showCodecRows(bool avc);
+ 
+   QVBoxLayout *rootLayout{};
+   QTabWidget  *tabs{};
+@@ -94,6 +96,7 @@
+   int                               frameTabIndex{-1};
+   QPointer<QAbstractItemModel>      obuModel;
+   bda::integration::FrameObuIndex   frameIndex;
++  bda::integration::FrameAvcIndex   avcIndex; //!< The same for H.264 (bd-analyzer)
+   int                               currentFrame{-1};
+   QGroupBox                        *frameItemBox{};
+   QFormLayout                      *frameItemForm{};
+--- a/YUViewLib/src/ui/widgets/FileInfoWidget.cpp
++++ b/YUViewLib/src/ui/widgets/FileInfoWidget.cpp
+@@ -86,6 +86,11 @@
+   this->frameForm   = new QFormLayout;
+   for (const auto *key : {"YUView frame index",
+                           "coding_order",
++                          "POC",
++                          "frame_num",
++                          "slice_type",
++                          "nal_ref_idc",
++                          "IDR",
+                           "order_hint",
+                           "frame_type",
+                           "show_existing_frame",
+@@ -100,6 +105,7 @@
+     this->frameValues[key] = value;
+   }
+   frameLayout->addLayout(this->frameForm);
++  this->showCodecRows(false);
+   this->frameItemBox = new QGroupBox(this->framePage);
+   this->frameItemBox->setObjectName("frameItemInfo");
+   this->frameItemForm = new QFormLayout(this->frameItemBox);
+@@ -196,6 +202,7 @@
+     disconnect(this->obuModel, nullptr, this, nullptr);
+   this->obuModel = model;
+   this->frameIndex.reset();
++  this->avcIndex.reset();
+   this->frameObuView->setModel(model);
+   this->tabs->setTabEnabled(this->frameTabIndex, model != nullptr || this->hasFrameItemInfo);
+   if (model)
+@@ -283,6 +290,15 @@
+   this->tabs->setTabEnabled(this->frameTabIndex, this->obuModel != nullptr || this->hasFrameItemInfo);
+ }
+ 
++void FileInfoWidget::showCodecRows(bool avc)
++{
++  // H.264 and AV1 share the frame index, coding order and packet rows; the rest is per codec.
++  for (const auto *key : {"POC", "frame_num", "slice_type", "nal_ref_idc", "IDR"})
++    this->frameForm->setRowVisible(this->frameValues[key], avc);
++  for (const auto *key : {"order_hint", "frame_type", "show_existing_frame", "Hidden frames in this TU"})
++    this->frameForm->setRowVisible(this->frameValues[key], !avc);
++}
++
+ void FileInfoWidget::refreshFrameTab()
+ {
+   const auto set = [this](const char *key, const QString &text) {
+@@ -301,6 +317,41 @@
+     clear("-");
+     return;
+   }
++  // H.264: pictures from the slice NAL units, in POC order (bd-analyzer).
++  this->avcIndex.update(*this->obuModel);
++  this->showCodecRows(this->avcIndex.isAvc());
++  if (this->avcIndex.isAvc())
++  {
++    const auto *picture = this->avcIndex.frame(this->currentFrame);
++    if (!picture)
++    {
++      clear(this->currentFrame < 0 ? QString("-")
++                                   : QString("%1 (not parsed yet)").arg(this->currentFrame));
++      return;
++    }
++    QStringList sliceTypes;
++    for (const auto &t : picture->sliceTypes)
++      sliceTypes << QString::fromStdString(t);
++    set("YUView frame index", QString::number(this->currentFrame));
++    set("coding_order", QString::number(picture->codingOrder));
++    set("POC", QString::number(picture->poc));
++    set("frame_num", QString::number(picture->frameNum));
++    set("slice_type", sliceTypes.join(", ") + QString(" (%1 slice%2)").arg(sliceTypes.size()).arg(sliceTypes.size() == 1 ? "" : "s"));
++    set("nal_ref_idc", QString::number(picture->nalRefIdc));
++    set("IDR", picture->idr ? "1" : "0");
++    set("AVPacket", picture->packetName.empty() ? QString("- (Annex-B file)") : QString::fromStdString(picture->packetName));
++    // The picture's packet, or in an Annex-B file its first slice NAL unit.
++    const auto root = picture->packetRow >= 0 ? this->obuModel->index(picture->packetRow, 0)
++                                              : this->obuModel->index(picture->nalRows.front(), 0);
++    if (this->frameObuView->rootIndex() != root)
++    {
++      this->frameObuView->setRootIndex(root);
++      this->frameObuView->expandToDepth(0);
++    }
++    this->frameObuView->setVisible(true);
++    return;
++  }
++
+   this->frameIndex.update(*this->obuModel);
+   const auto *frame = this->frameIndex.frame(this->currentFrame);
+   if (!frame)
+--- a/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.cpp
++++ b/YUViewLib/src/ui/widgets/BitstreamAnalysisWidget.cpp
+@@ -38,6 +38,7 @@
+ #include "parser/Mpeg2/ParserAnnexBMpeg2.h"
+ #include "parser/VVC/ParserAnnexBVVC.h"
+ #include "ui/PlaybackController.h"
++#include "integration/FrameAvcSummary.h"
+ 
+ #include <QSortFilterProxyModel>
+ 
+@@ -247,7 +248,22 @@
+   if (!item)
+     return {};
+ 
+-  return getFrameIndexForObuTreeItem(item);
++  if (const auto av1 = getFrameIndexForObuTreeItem(item))
++    return av1;
++
++  /* H.264 (bd-analyzer): the picture the clicked NAL unit belongs to, in display (POC) order. The
++   * container's "YUView frame index" row is a decode-order packet index, wrong once there are
++   * B-frames, so it is not used.
++   */
++  QModelIndex top = index, below;
++  while (top.parent().isValid())
++  {
++    below = top;
++    top   = top.parent();
++  }
++  bda::integration::FrameAvcIndex avc;
++  avc.update(*index.model());
++  return avc.displayIndexOf(top.row(), below.isValid() ? below.row() : -1);
+ }
+ 
+ QModelIndex BitstreamAnalysisWidget::mapToSourceModel(const QModelIndex &index) const

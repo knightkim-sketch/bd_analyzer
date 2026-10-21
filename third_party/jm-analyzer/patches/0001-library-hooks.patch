@@ -1,0 +1,300 @@
+# Applied by scripts/setup-jm-analyzer.sh to a copy of the JM 19.0 decoder sources in the build
+# directory (never to third_party/jm). Every change is guarded by BDA_JM_LIBRARY, so the patched
+# files behave exactly like upstream when that macro is not defined. Hook prototypes:
+# third_party/jm-analyzer/bda_jm_lib.h (force-included).
+diff -ruN a/ldecod/inc/global.h b/ldecod/inc/global.h
+--- a/ldecod/inc/global.h
++++ b/ldecod/inc/global.h
+@@ -281,6 +281,11 @@
+ 
+   void (*read_comp_coeff_4x4_CAVLC)     (struct macroblock_dec *currMB, ColorPlane pl, int (*InvLevelScale4x4)[4], int qp_per, int cbp, byte **nzcoeff);
+   void (*read_comp_coeff_8x8_CAVLC)     (struct macroblock_dec *currMB, ColorPlane pl, int (*InvLevelScale8x8)[8], int qp_per, int cbp, byte **nzcoeff);
++#ifdef BDA_JM_LIBRARY
++  // bd-analyzer library build: mb_type code before interpret_mb_mode_*() and raw sub_mb_type values
++  short         bda_mb_code;
++  char          bda_sub_mb_type[4];
++#endif
+ } Macroblock;
+ 
+ //! Syntaxelement
+@@ -567,6 +572,10 @@
+   void (*update_direct_mv_info    )    (Macroblock *currMB);
+   void (*read_coeff_4x4_CAVLC     )    (Macroblock *currMB, int block_type, int i, int j, int levarr[16], int runarr[16], int *number_coefficients);
+ 
++#ifdef BDA_JM_LIBRARY
++  // bd-analyzer library build: NAL unit record of this slice (owned by the wrapper, see bda_jm_hooks.h)
++  void *bda_nal;
++#endif
+ } Slice;
+ 
+ typedef struct decodedpic_t
+diff -ruN a/ldecod/inc/mbuffer.h b/ldecod/inc/mbuffer.h
+--- a/ldecod/inc/mbuffer.h
++++ b/ldecod/inc/mbuffer.h
+@@ -131,6 +131,10 @@
+   char listXsize[MAX_NUM_SLICES][2];
+   struct storable_picture **listX[MAX_NUM_SLICES][2];
+   int         layer_id;
++#ifdef BDA_JM_LIBRARY
++  // bd-analyzer library build: macroblock data captured in exit_picture() (owned by the wrapper)
++  void       *bda_snapshot;
++#endif
+ } StorablePicture;
+ 
+ typedef StorablePicture *StorablePicturePtr;
+diff -ruN a/ldecod/src/annexb.c b/ldecod/src/annexb.c
+--- a/ldecod/src/annexb.c
++++ b/ldecod/src/annexb.c
+@@ -60,7 +60,13 @@
+ */
+ static inline int getChunk(ANNEXB_t *annex_b)
+ {
++#ifdef BDA_JM_LIBRARY
++  // bd-analyzer library build: bytes come from the caller's pushed buffers (the hook suspends the
++  // decoder until more data or end of stream arrives).
++  unsigned int readbytes = (unsigned int) bda_jm_hook_read(annex_b->iobuffer, annex_b->iIOBufferSize);
++#else
+   unsigned int readbytes = read (annex_b->BitStreamFile, annex_b->iobuffer, annex_b->iIOBufferSize); 
++#endif
+   if (0==readbytes)
+   {
+     annex_b->is_eof = TRUE;
+@@ -309,11 +315,16 @@
+   {
+     error ("open_annex_b: tried to open Annex B file twice",500);
+   }
++#ifdef BDA_JM_LIBRARY
++  // bd-analyzer library build: no file, see getChunk()
++  annex_b->BitStreamFile = -1;
++#else
+   if ((annex_b->BitStreamFile = open(fn, OPENFLAGS_READ)) == -1)
+   {
+     snprintf (errortext, ET_SIZE, "Cannot open Annex B ByteStream file '%s'", fn);
+     error(errortext,500);
+   }
++#endif
+ 
+   annex_b->iIOBufferSize = IOBUFFERSIZE * sizeof (byte);
+   annex_b->iobuffer = malloc (annex_b->iIOBufferSize);
+diff -ruN a/ldecod/src/image.c b/ldecod/src/image.c
+--- a/ldecod/src/image.c
++++ b/ldecod/src/image.c
+@@ -867,6 +867,12 @@
+     currSlice->is_reset_coeff_cr = FALSE;
+ 
+     current_header = read_new_slice(currSlice);
++#ifdef BDA_JM_LIBRARY
++    // bd-analyzer library build: end of stream without any slice of a new picture (a stream holding
++    // only parameter sets/SEI, or nothing): nothing to decode. Upstream dereferences ppSliceList[-1].
++    if (current_header == EOS && p_Vid->iSliceNumOfCurrPic == 0)
++      return EOS;
++#endif
+     //init;
+     currSlice->current_header = current_header;
+ 
+@@ -1350,7 +1356,12 @@
+   int BitsUsedByHeader;
+   Bitstream *currStream = NULL;
+ 
++#ifdef BDA_JM_LIBRARY
++  // bd-analyzer library build: per-decoder state, swapped by the wrapper together with p_Dec
++  #define pending_nalu bda_jm_pending_nalu
++#else
+   static NALU_t *pending_nalu = NULL;
++#endif
+ 
+   int slice_id_a, slice_id_b, slice_id_c;
+ 
+@@ -1498,6 +1509,9 @@
+      currSlice->layer_id = currSlice->view_id = GetVOIdx( p_Vid, currSlice->view_id );
+ #endif
+ 
++#ifdef BDA_JM_LIBRARY
++      bda_jm_hook_slice_nal(currSlice);
++#endif
+       // Some syntax of the Slice Header depends on the parameter set, which depends on
+       // the parameter set ID of the SLice header.  Hence, read the pic_parameter_set_id
+       // of the slice header first, then setup the active parameter sets, and then read
+@@ -1587,6 +1601,9 @@
+       currSlice->anchor_pic_flag = currSlice->idr_flag;
+ #endif
+ 
++#ifdef BDA_JM_LIBRARY
++      bda_jm_hook_slice_nal(currSlice); // partition A carries the slice header and the MB headers
++#endif
+       BitsUsedByHeader = FirstPartOfSliceHeader(currSlice);
+       UseParameterSet (currSlice);
+       currSlice->active_sps = p_Vid->active_sps;
+@@ -2002,6 +2019,11 @@
+   is_idr     = (*dec_picture)->idr_flag;
+ 
+   chroma_format_idc = (*dec_picture)->chroma_format_idc;
++#ifdef BDA_JM_LIBRARY
++  // bd-analyzer library build: capture macroblock data while mb_data/ipredmode/mv_info still belong
++  // to this picture (it may be output much later, after reordering).
++  bda_jm_hook_picture_done(p_Vid, *dec_picture);
++#endif
+ #if MVC_EXTENSION_ENABLE
+   store_picture_in_dpb(p_Vid->p_Dpb_layer[(*dec_picture)->view_id], *dec_picture);
+ #else
+@@ -2518,8 +2540,14 @@
+ 
+     // Initializes the current macroblock
+     start_macroblock(currSlice, &currMB);
++#ifdef BDA_JM_LIBRARY
++    bda_jm_hook_mb_begin(currSlice, currMB);
++#endif
+     // Get the syntax elements from the NAL
+     currSlice->read_one_macroblock(currMB);
++#ifdef BDA_JM_LIBRARY
++    bda_jm_hook_mb_read(currSlice, currMB);
++#endif
+     decode_one_macroblock(currMB, currSlice->dec_picture);
+ 
+     if(currSlice->mb_aff_frame_flag && currMB->mb_field)
+@@ -2533,6 +2561,9 @@
+ #endif
+ 
+     end_of_slice = exit_macroblock(currSlice, (!currSlice->mb_aff_frame_flag|| currSlice->current_mb_nr%2));
++#ifdef BDA_JM_LIBRARY
++    bda_jm_hook_mb_end(currSlice, currMB);
++#endif
+   }
+   //reset_ec_flags(p_Vid);
+ }
+diff -ruN a/ldecod/src/ldecod.c b/ldecod/src/ldecod.c
+--- a/ldecod/src/ldecod.c
++++ b/ldecod/src/ldecod.c
+@@ -99,6 +99,11 @@
+  */
+ void error(char *text, int code)
+ {
++#ifdef BDA_JM_LIBRARY
++  // bd-analyzer library build: no DPB flush (it would emit pictures from a broken state) and no
++  // exit(); the wrapper unwinds to its entry point and reports the message.
++  bda_jm_hook_fatal(text, code);
++#endif
+   fprintf(stderr, "%s\n", text);
+   if (p_Dec)
+   {
+@@ -500,6 +505,10 @@
+   char timebuf[128];
+ #endif
+ 
++#ifdef BDA_JM_LIBRARY
++  // bd-analyzer library build: no statistics files (log.dec, dataDec.txt) in the host's directory
++  return;
++#endif
+   // normalize time
+   p_Vid->tot_time  = timenorm(p_Vid->tot_time);
+ 
+@@ -800,6 +809,9 @@
+ {
+   int i;
+ 
++#ifdef BDA_JM_LIBRARY
++  bda_jm_hook_free_slice(currSlice);
++#endif
+   if (currSlice->slice_type != I_SLICE && currSlice->slice_type != SI_SLICE)
+   free_ref_pic_list_reordering_buffer(currSlice);
+   free_pred_mem(currSlice);
+diff -ruN a/ldecod/src/macroblock.c b/ldecod/src/macroblock.c
+--- a/ldecod/src/macroblock.c
++++ b/ldecod/src/macroblock.c
+@@ -694,6 +694,9 @@
+ {
+   static const short ICBPTAB[6] = {0,16,32,15,31,47};
+   short  mbmode = currMB->mb_type;
++#ifdef BDA_JM_LIBRARY
++  currMB->bda_mb_code = currMB->mb_type;
++#endif
+ 
+   if(mbmode < 4)
+   {
+@@ -744,6 +747,9 @@
+ {
+   static const short ICBPTAB[6] = {0,16,32,15,31,47};
+   short mbmode   = currMB->mb_type;
++#ifdef BDA_JM_LIBRARY
++  currMB->bda_mb_code = currMB->mb_type;
++#endif
+ 
+   if (mbmode == 0)
+   {
+@@ -791,6 +797,9 @@
+ 
+   short i, mbmode;
+   short mbtype  = currMB->mb_type;
++#ifdef BDA_JM_LIBRARY
++  currMB->bda_mb_code = currMB->mb_type;
++#endif
+ 
+   //--- set mbtype, b8type, and b8pdir ---
+   if (mbtype == 0)       // direct
+@@ -868,6 +877,9 @@
+   //VideoParameters *p_Vid = currMB->p_Vid;
+   const int ICBPTAB[6] = {0,16,32,15,31,47};
+   short mbmode   = currMB->mb_type;
++#ifdef BDA_JM_LIBRARY
++  currMB->bda_mb_code = currMB->mb_type;
++#endif
+ 
+   if (mbmode == 0)
+   {
+diff -ruN a/ldecod/src/mb_read.c b/ldecod/src/mb_read.c
+--- a/ldecod/src/mb_read.c
++++ b/ldecod/src/mb_read.c
+@@ -726,6 +726,9 @@
+   static const char b_v2b8 [14] = {0, 4, 4, 4, 5, 6, 5, 6, 5, 6, 7, 7, 7, IBLOCK};
+   static const char b_v2pd [14] = {2, 0, 1, 2, 0, 0, 1, 1, 2, 2, 0, 1, 2, -1};
+ 
++#ifdef BDA_JM_LIBRARY
++  currMB->bda_sub_mb_type[i] = (char) value;
++#endif
+   if (currSlice->slice_type==B_SLICE)
+   {
+     currMB->b8mode[i] = b_v2b8[value];
+diff -ruN a/ldecod/src/mbuffer.c b/ldecod/src/mbuffer.c
+--- a/ldecod/src/mbuffer.c
++++ b/ldecod/src/mbuffer.c
+@@ -692,6 +692,9 @@
+   int nplane;
+   if (p)
+   {
++#ifdef BDA_JM_LIBRARY
++    bda_jm_hook_free_picture(p);
++#endif
+     if (p->mv_info)
+     {
+       free_mem2Dmp(p->mv_info);
+diff -ruN a/ldecod/src/nalu.c b/ldecod/src/nalu.c
+--- a/ldecod/src/nalu.c
++++ b/ldecod/src/nalu.c
+@@ -80,6 +80,11 @@
+   //whether it is the first VCL NALU at this point, so only non-VCL NAL unit is checked here.
+   CheckZeroByteNonVCL(p_Vid, nalu);
+ 
++#ifdef BDA_JM_LIBRARY
++  // bd-analyzer library build: record the NAL unit's stream position and emulation prevention bytes
++  // while nalu->buf still holds the escaped bytes.
++  bda_jm_hook_nalu(p_Vid, nalu);
++#endif
+   ret = NALUtoRBSP(nalu);
+ 
+   if (ret < 0)
+diff -ruN a/ldecod/src/output.c b/ldecod/src/output.c
+--- a/ldecod/src/output.c
++++ b/ldecod/src/output.c
+@@ -483,6 +483,12 @@
+   if (p->non_existing)
+     return;
+ 
++#ifdef BDA_JM_LIBRARY
++  // bd-analyzer library build: hand the picture (output order) to the wrapper instead of a file
++  bda_jm_hook_output(p_Vid, p);
++  return;
++#endif
++
+ #if (ENABLE_OUTPUT_TONEMAPPING)
+   // note: this tone-mapping is working for RGB format only. Sharp
+   if (p->seiHasTone_mapping && rgb_output)

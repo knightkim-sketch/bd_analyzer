@@ -4,3 +4,6 @@
 [submodule "third_party/ltm"]
 	path = third_party/ltm
 	url = https://github.com/Jamaika1/LTM-master
+[submodule "third_party/jm"]
+	path = third_party/jm
+	url = https://vcgit.hhi.fraunhofer.de/jvet/JM.git

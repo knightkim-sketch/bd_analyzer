@@ -543,6 +543,63 @@ echo "== AI 어시스턴트 =="
 run_test_bda "$ROOT/tests/regression/32-assist-event-parsing.cpp"
 
 echo
+echo "== FFmpeg H.264 motion vector overlay (패치 0077) =="
+# 정지 영상 위를 프레임마다 2 화소씩 오른쪽으로 움직이는 창. 참조 1장, B 프레임 없음이라 P 블록의 MV 는 (+2, 0).
+PAN="$DATA/test_pan_2px.h264"
+if [[ ! -s "$PAN" ]]; then
+    ff="$(command -v ffmpeg || echo /usr/local/bin/ffmpeg)"
+    [[ -x "$ff" ]] && "$ff" -hide_banner -loglevel error -y -f lavfi -i "testsrc2=size=352x144:rate=25" \
+        -vf "loop=loop=-1:size=1:start=0,crop=176:144:'2*n':0" -frames:v 12 \
+        -c:v libx264 -bf 0 -refs 1 -g 100 -pix_fmt yuv420p -f h264 "$PAN" >/dev/null 2>&1
+fi
+if [[ -s "$PAN" ]]; then
+    run_test "$ROOT/tests/regression/58-ffmpeg-motion-vectors.cpp" "$PAN"
+else
+    echo "  SKIP  58-ffmpeg-motion-vectors (pan 스트림 생성 실패)"
+    ((skip_count++))
+fi
+
+echo
+echo "== H.264 Frame 탭·트리 seek (패치 0079) =="
+# B 프레임이 있는 libx264 MP4 와 그 안의 Annex-B. 기준은 ffprobe: 패킷 순서 = coding order, pts 순 frame = 표시 순서.
+AVCB_MP4="$DATA/test_avc_bframes.mp4"; AVCB_H264="$DATA/test_avc_bframes.h264"
+ff="$(command -v ffmpeg || echo /usr/local/bin/ffmpeg)"; fp="$(command -v ffprobe || echo /usr/local/bin/ffprobe)"
+if [[ ! -s "$AVCB_MP4" && -x "$ff" ]]; then
+    "$ff" -hide_banner -loglevel error -y -f lavfi -i "testsrc2=size=176x144:rate=25:duration=1" \
+        -c:v libx264 -bf 3 -g 10 -pix_fmt yuv420p "$AVCB_MP4" >/dev/null 2>&1
+    "$ff" -hide_banner -loglevel error -y -i "$AVCB_MP4" -c copy -bsf:v h264_mp4toannexb -f h264 "$AVCB_H264" >/dev/null 2>&1
+fi
+if [[ -s "$AVCB_MP4" && -s "$AVCB_H264" && -x "$fp" ]]; then
+    "$fp" -v error -select_streams v -show_entries packet=pts -of csv=p=0 "$AVCB_MP4" > "$OUT/avc_bframes.packets.csv"
+    "$fp" -v error -select_streams v -show_entries frame=pts,pict_type -of csv=p=0 "$AVCB_MP4" > "$OUT/avc_bframes.frames.csv"
+    run_test "$ROOT/tests/regression/59-avc-frame-tab.cpp" "$AVCB_H264" "$AVCB_MP4" \
+        "$OUT/avc_bframes.packets.csv" "$OUT/avc_bframes.frames.csv"
+else
+    echo "  SKIP  59-avc-frame-tab (스트림 또는 ffprobe 없음)"
+    ((skip_count++))
+fi
+
+echo
+echo "== H.264 MB 분석: JM 엔진 (패치 0078) =="
+# CABAC+B (위 59 의 스트림), pan(58), CAVLC baseline, 4-slice. JM 디코드 == FFmpeg, MB 값·비트 범위·hexdump·MB 비트.
+AVC_CAVLC="$DATA/test_avc_cavlc.h264"; AVC_SLICES="$DATA/test_avc_slices.h264"
+if [[ -x "$ff" ]]; then
+    [[ -s "$AVC_CAVLC" ]] || "$ff" -hide_banner -loglevel error -y -f lavfi -i "testsrc2=size=176x144:rate=25:duration=1" \
+        -c:v libx264 -profile:v baseline -coder 0 -pix_fmt yuv420p -f h264 "$AVC_CAVLC" >/dev/null 2>&1
+    [[ -s "$AVC_SLICES" ]] || "$ff" -hide_banner -loglevel error -y -f lavfi -i "testsrc2=size=352x288:rate=25:duration=1" \
+        -c:v libx264 -x264-params slices=4 -bf 2 -pix_fmt yuv420p -f h264 "$AVC_SLICES" >/dev/null 2>&1
+fi
+if [[ ! -e "$APPDIR/decoder/libbda-jm-analyzer.so" ]]; then
+    echo "  SKIP  60-jm-h264-analysis (libbda-jm-analyzer.so 없음: scripts/setup-jm-analyzer.sh)"
+    ((skip_count++))
+elif [[ -s "$AVCB_H264" && -s "$AVCB_MP4" && -s "$PAN" && -s "$AVC_CAVLC" && -s "$AVC_SLICES" ]]; then
+    run_test "$ROOT/tests/regression/60-jm-h264-analysis.cpp" "$AVCB_H264" "$AVCB_MP4" "$PAN" "$AVC_CAVLC" "$AVC_SLICES"
+else
+    echo "  SKIP  60-jm-h264-analysis (테스트 스트림 생성 실패)"
+    ((skip_count++))
+fi
+
+echo
 echo "== 프레임 비트스트림 덤프 (hexdump 패널) =="
 # annexB 쪽 검사는 B 프레임이 있는 스트림이 필요하다. display order 와 coding order 가
 # 갈리지 않으면 인덱스 순서 회귀를 잡을 수 없다.
