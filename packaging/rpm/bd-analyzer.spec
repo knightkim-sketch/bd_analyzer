@@ -33,7 +33,7 @@
 %global __requires_exclude ^(%{__requires_exclude_bundled}|%{__requires_exclude_optional})$
 
 Name:           bd-analyzer
-Version:        %{?bda_version}%{!?bda_version:0.5.1}
+Version:        %{?bda_version}%{!?bda_version:0.5.1.1}
 Release:        %{?bda_release}%{!?bda_release:1}%{?dist}
 Summary:        Video bitstream and YUV analysis toolset
 Summary(ko):    비디오 비트스트림·YUV 분석 도구
@@ -146,6 +146,12 @@ fi
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Wed Oct 21 2026 knight.kim <knight.kim@blue-dot.io> - 0.5.1.1-1
+- H.264 opens under the JM analyzer by default (falls back to FFmpeg without the library), so a click
+  shows the macroblock in Block Info and Block Syntax, as AV1 does with the dav1d analyzer.
+- Motion vectors are drawn 3 wide for every decoder, list 0 / past red and list 1 / future blue (the
+  JM, FFmpeg, libde265 and HM vectors were black and 0.25 wide); JM intra direction arrows shown.
+
 * Wed Oct 21 2026 knight.kim <knight.kim@blue-dot.io> - 0.5.1-1
 - H.264 macroblock analysis: decoder engine "JM (analysis)" (JM 19.0 reference decoder) with MB type,
   prediction, intra modes, reference indices, motion vectors, transform size, QP, CBP, slice, skip and
