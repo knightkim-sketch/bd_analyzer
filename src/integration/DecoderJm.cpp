@@ -450,6 +450,12 @@ void DecoderJm::fillStatisticList(stats::StatisticsData &statisticsData) const
   for (int i = 0; i < 4; ++i)
     lumaNames[std::size_t(20 + i)] = i16Names[i];
   intraLuma.setMappingValues(lumaNames);
+  // The direction arrows added with the mode; their length means nothing, so no values.
+  intraLuma.hasVectorData          = true;
+  intraLuma.renderVectorData       = true;
+  intraLuma.renderVectorDataValues = false;
+  intraLuma.vectorStyle            = stats::LineDrawStyle({Color(255, 255, 255), 1.5, stats::Pattern::Solid});
+  intraLuma.setInitialState();
   intraLuma.uiGroup = "Pred mode";
   statisticsData.addStatType(intraLuma);
 
@@ -469,6 +475,9 @@ void DecoderJm::fillStatisticList(stats::StatisticsData &statisticsData) const
   {
     StatisticsType mv(list ? kJmMvL1 : kJmMvL0, QString("Motion vector L%1").arg(list), 4);
     mv.description = "Motion vector in quarter samples (reference position minus block position).";
+    // List 0 red, list 1 blue, width 3: the default style (black, 0.25) hardly shows.
+    mv.vectorStyle = stats::LineDrawStyle({list ? Color(0, 0, 255) : Color(255, 0, 0), 3.0, stats::Pattern::Solid});
+    mv.setInitialState();
     mv.uiGroup     = "Motion vector";
     statisticsData.addStatType(mv);
   }

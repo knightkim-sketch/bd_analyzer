@@ -79,6 +79,7 @@ void compareWithFfmpeg(const char *path, const std::string &what)
 {
   playlistItemCompressedVideo ffmpeg(path);
   playlistItemCompressedVideo jm(path);
+  check(selectEngine(ffmpeg, "FFMpeg"), what + ": FFmpeg is offered as well");
   const bool offered = selectEngine(jm, "JM (analysis)");
   check(offered, what + ": the JM engine is offered and selected");
   if (!offered)
@@ -188,6 +189,26 @@ int main(int argc, char **argv)
   {
     std::cerr << "usage: 60-jm-h264-analysis <cabac-b.h264> <cabac-b.mp4> <pan.h264> <cavlc.h264> <slices.h264>\n";
     return 2;
+  }
+
+  std::cout << "== opening: JM by default, a click shows the macroblock ==" << std::endl;
+  for (const char *path : {argv[1], argv[2]})
+  {
+    playlistItemCompressedVideo item(path);
+    auto *combo = item.getPropertiesWidget()->findChild<QComboBox *>("comboBoxDecoder");
+    check(combo && combo->currentText() == "JM (analysis)",
+          std::string(path == argv[1] ? "Annex-B" : "MP4") + ": H.264 opens under JM, like AV1 under the dav1d analyzer");
+    loadWithStatistics(item, 0);
+    const auto info = item.getBlockInfoAt(QPoint(40, 40), 0);
+    bool       mbType = false, qp = false;
+    for (const auto &e : info.entries)
+    {
+      mbType = mbType || e.typeName == "MB type";
+      qp     = qp || e.typeName == "QP";
+    }
+    check(info.isValid && info.codingBlockRect.width() == 16 && mbType && qp,
+          "the clicked block of the IDR is its macroblock, with type and QP (" + std::to_string(info.entries.size()) +
+              " entries)");
   }
 
   std::cout << "== decoding ==" << std::endl;

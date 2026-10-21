@@ -1,0 +1,24 @@
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+@@ -429,6 +429,11 @@
+           // decode AV1 if it was built with libdav1d/libaom. Falls back to FFmpeg below if the
+           // dav1d library can not be loaded.
+           this->decoderEngine = DecoderEngine::Dav1d;
++        else if (vectorContains(possibleDecoders, DecoderEngine::JM))
++          // H.264 likewise prefers the JM analyzer: only it provides the macroblock statistics
++          // that a click on the picture shows (bd-analyzer). Falls back to FFmpeg below if the
++          // library can not be loaded.
++          this->decoderEngine = DecoderEngine::JM;
+         else if (vectorContains(possibleDecoders, DecoderEngine::FFMpeg))
+           this->decoderEngine = DecoderEngine::FFMpeg;
+         else
+@@ -467,7 +472,8 @@
+     // once. This has to happen here rather than later: returning leaves the item permanently
+     // unusable, because the signalRequestRawData connection at the end of this constructor is
+     // never made, so no reallocation from the decoder combo box can revive it.
+-    if (codec == Codec::AV1 && this->decoderEngine == DecoderEngine::Dav1d &&
++    if (((codec == Codec::AV1 && this->decoderEngine == DecoderEngine::Dav1d) ||
++         this->decoderEngine == DecoderEngine::JM) &&
+         vectorContains(this->possibleDecoders, DecoderEngine::FFMpeg))
+     {
+       this->decoderEngine = DecoderEngine::FFMpeg;

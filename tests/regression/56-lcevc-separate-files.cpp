@@ -150,8 +150,8 @@ int main(int argc, char **argv)
     QString                     error;
     const bool attached = item.attachLcevcEnhancement(base, error);
     check(!attached && !error.isEmpty(), "the base stream itself is refused as enhancement (" + error.toStdString() + ")");
-    check(item.getFrameHandler()->getFrameSize().width == 256 && engineOf(item) == "FFMpeg",
-          "and the item stays the base under FFmpeg");
+    check(item.getFrameHandler()->getFrameSize().width == 256 && engineOf(item) == "JM (analysis)",
+          "and the item stays the base, under its H.264 default (JM)");
   }
 
   std::cout << (failures == 0 ? "RESULT: PASS" : "RESULT: FAIL") << std::endl;

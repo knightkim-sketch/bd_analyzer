@@ -13,6 +13,7 @@
 //
 // args: <pan .h264>
 #include <QApplication>
+#include <QComboBox>
 #include <QSettings>
 #include <QThread>
 
@@ -61,6 +62,9 @@ int main(int argc, char **argv)
   }
 
   playlistItemCompressedVideo item(argv[1]);
+  // H.264 opens under the JM analyzer by default; this is about the FFmpeg decoder's overlay.
+  if (auto *combo = item.getPropertiesWidget()->findChild<QComboBox *>("comboBoxDecoder"))
+    combo->setCurrentIndex(combo->findText("FFMpeg"));
   item.setBlockInfoRequested(true);
   for (const int frame : {3, 6})
   {

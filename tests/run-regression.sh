@@ -600,6 +600,16 @@ else
 fi
 
 echo
+echo "== motion vector 표시: 모든 디코더 두께 3, 색 지정 (패치 0081) =="
+# JM·FFmpeg(H.264)·dav1d(AV1) MV 타입 스타일, JM MV 가 실제로 그려지는지(pan 프레임), JM intra 방향 화살표.
+if [[ -e "$APPDIR/decoder/libbda-jm-analyzer.so" && -s "$PAN" ]]; then
+    run_test "$ROOT/tests/regression/61-motion-vector-style.cpp" "$PAN" "$STREAM"
+else
+    echo "  SKIP  61-motion-vector-style (JM 라이브러리 또는 pan 스트림 없음)"
+    ((skip_count++))
+fi
+
+echo
 echo "== 프레임 비트스트림 덤프 (hexdump 패널) =="
 # annexB 쪽 검사는 B 프레임이 있는 스트림이 필요하다. display order 와 coding order 가
 # 갈리지 않으면 인덱스 순서 회귀를 잡을 수 없다.
