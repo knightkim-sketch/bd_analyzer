@@ -8,6 +8,24 @@
 
 ---
 
+## 0.5.1 (2026-10-21)
+
+### H.264 분석 (신규)
+
+- 디코더 엔진 **JM (analysis)** (JM 19.0 레퍼런스 디코더): H.264 파일의 속성 창 디코더 콤보에서 고릅니다 (기본은 FFmpeg).
+  MB type, 예측 모드(intra/L0/L1/Bi/direct/skip), intra 방향, ref idx, motion vector, transform 8x8, QP, CBP, slice,
+  skip, **MB bits** overlay 와 Block Info, 블록 hexdump (CAVLC 는 정확한 비트 범위, CABAC 은 근사), MB 비트 기반 RD plot·BD-rate.
+- Info pane **Frame 탭**: POC, frame_num, slice type, nal_ref_idc, IDR, coding_order. 비트스트림 트리에서 NAL 을
+  더블클릭하면 그 프레임으로 이동합니다.
+- 인터레이스(PAFF/MBAFF)는 디코딩만 되고 MB 정보는 아직 없습니다.
+
+### 수정
+
+- FFmpeg 엔진의 motion vector overlay 가 FFmpeg 7.1 에서 항상 비어 있던 문제, 길이가 1/4 로 그려지고 방향이 반대이던 문제를 고쳤습니다.
+- MP4 의 B 프레임에서 hexdump 가 다른 프레임의 패킷을 보여주던 문제를 고쳤습니다 (JM 엔진).
+
+---
+
 ## 0.5.0 (2026-10-19)
 
 ### LCEVC 디코딩 (신규)

@@ -33,7 +33,7 @@
 %global __requires_exclude ^(%{__requires_exclude_bundled}|%{__requires_exclude_optional})$
 
 Name:           bd-analyzer
-Version:        %{?bda_version}%{!?bda_version:0.5.0}
+Version:        %{?bda_version}%{!?bda_version:0.5.1}
 Release:        %{?bda_release}%{!?bda_release:1}%{?dist}
 Summary:        Video bitstream and YUV analysis toolset
 Summary(ko):    비디오 비트스트림·YUV 분석 도구
@@ -75,17 +75,17 @@ verification: AV1/H.264/HEVC bitstream inspection, LCEVC enhancement decoding,
 YUV analysis with PSNR/SSIM metrics and scopes, YUV test pattern generation and
 image filters.
 
-This package bundles Qt 6.5.3, FFmpeg 7.1, the dav1d analyzer decoder and the
-LCEVC decoders (MPEG LTM, V-Nova LCEVCdec; licences under decoder/licenses -
-LCEVCdec grants no patent licence) under %{bda_home}, so no Qt installation is
-required on the target machine.
+This package bundles Qt 6.5.3, FFmpeg 7.1, the dav1d analyzer decoder, the JM
+H.264 analyzer decoder and the LCEVC decoders (MPEG LTM, V-Nova LCEVCdec;
+licences under decoder/licenses - LCEVCdec grants no patent licence) under
+%{bda_home}, so no Qt installation is required on the target machine.
 
 %description -l ko
 bd_analyzer 는 코덱 개발·검증용으로 확장한 IENT/YUView fork 입니다.
 AV1/H.264/HEVC 비트스트림 분석, LCEVC enhancement 디코딩, PSNR/SSIM 및 스코프를
 포함한 YUV 분석, YUV 테스트 패턴 생성, 이미지 필터를 제공합니다.
 
-Qt 6.5.3, FFmpeg 7.1, dav1d analyzer 디코더, LCEVC 디코더 (MPEG LTM, V-Nova
+Qt 6.5.3, FFmpeg 7.1, dav1d analyzer 디코더, JM H.264 분석 디코더, LCEVC 디코더 (MPEG LTM, V-Nova
 LCEVCdec; 라이선스는 decoder/licenses, LCEVCdec 은 특허 라이선스를 주지 않습니다) 가
 %{bda_home} 아래에 번들되어 있으므로 대상 머신에 Qt 를 설치하지 않아도 됩니다.
 
@@ -146,6 +146,15 @@ fi
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Wed Oct 21 2026 knight.kim <knight.kim@blue-dot.io> - 0.5.1-1
+- H.264 macroblock analysis: decoder engine "JM (analysis)" (JM 19.0 reference decoder) with MB type,
+  prediction, intra modes, reference indices, motion vectors, transform size, QP, CBP, slice, skip and
+  MB bits overlays, Block Info, block hexdump and MB bits for the RD plot / BD-rate.
+- H.264 Frame tab (POC, frame_num, slice type, nal_ref_idc, IDR, coding order) and double-click seek
+  from the NAL tree.
+- Fix the FFmpeg motion vector overlay (empty with FFmpeg 7.1, quarter length, inverted sign) and the
+  hexdump packet of a B-frame in MP4.
+
 * Mon Oct 19 2026 knight.kim <knight.kim@blue-dot.io> - 0.5.0-1
 - LCEVC (MPEG-5 Part 2) decoding over any base decoder: .lvc (H.264/HEVC/VVC Annex-B with LCEVC NAL
   units), AV1 with LCEVC in metadata OBUs (ITU-T T.35), and base + enhancement files (enh.nal).
