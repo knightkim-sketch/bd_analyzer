@@ -27,6 +27,7 @@ tests/data/*.ivf
 tests/data/*.mp4
 tests/data/*.yuv
 tests/data/*.h264
+tests/data/*.hevc
 tests/data/*.av1
 tests/data/*.y4m
 

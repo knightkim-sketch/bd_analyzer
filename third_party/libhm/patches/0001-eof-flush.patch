@@ -1,0 +1,28 @@
+--- a/source/App/libHMDecoder/libHMDecoder.cpp
++++ b/source/App/libHMDecoder/libHMDecoder.cpp
+@@ -144,6 +144,25 @@
+     if (!d)
+       return LIBHMDEC_ERROR;
+ 
++    if (length <= 0 && eof)
++    {
++      // End of the bitstream without a NAL unit (bd-analyzer): YUView's decoderHM signals the end with
++      // an empty push. Finish the last picture (unless an EOS NAL unit already did) and flush right
++      // away: a normal output pass first would use stale DPB counters, output nothing, and leave the
++      // caller waiting for data that never comes, so the remaining pictures were never output.
++      if (!d->loopFiltered)
++      {
++        int poc;
++        d->decTop.executeLoopFilters(poc, d->pcListPic);
++        d->loopFiltered = true;
++      }
++      bNewPicture          = false;
++      checkOutputPictures  = true;
++      d->flushOutput       = true;
++      d->sheduleFlushing   = false;
++      d->pcListPic_readIdx = 0;
++      return LIBHMDEC_OK;
++    }
+     if (length <= 0)
+       return LIBHMDEC_ERROR_READ_ERROR;
+ 

@@ -1,0 +1,12 @@
+--- a/YUViewLib/src/decoder/decoderHM.cpp
++++ b/YUViewLib/src/decoder/decoderHM.cpp
+@@ -260,6 +260,9 @@
+     return true;
+   }
+ 
++  // A picture fetched without a push in between (several at a time when the DPB is flushed at the
++  // end of the stream) must not reuse the previous picture's buffer (bd-analyzer).
++  currentOutputBuffer.clear();
+   return getNextFrameFromDecoder();
+ }
+ 

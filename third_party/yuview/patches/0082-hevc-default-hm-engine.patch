@@ -1,0 +1,25 @@
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+@@ -422,7 +422,12 @@
+       else
+       {
+         // Prefer libde265 over FFmpeg over others
+-        if (vectorContains(possibleDecoders, DecoderEngine::Libde265))
++        if (codec == Codec::HEVC && vectorContains(possibleDecoders, DecoderEngine::HM))
++          // HEVC prefers HM: it is the decoder library bd-analyzer ships (libde265 is not), and
++          // it provides the block statistics. Falls back to FFmpeg below if the library can not
++          // be loaded (bd-analyzer).
++          this->decoderEngine = DecoderEngine::HM;
++        else if (vectorContains(possibleDecoders, DecoderEngine::Libde265))
+           this->decoderEngine = DecoderEngine::Libde265;
+         else if (codec == Codec::AV1 && vectorContains(possibleDecoders, DecoderEngine::Dav1d))
+           // For AV1 prefer dav1d: only it provides the block statistics, and ffmpeg can only
+@@ -473,7 +478,7 @@
+     // unusable, because the signalRequestRawData connection at the end of this constructor is
+     // never made, so no reallocation from the decoder combo box can revive it.
+     if (((codec == Codec::AV1 && this->decoderEngine == DecoderEngine::Dav1d) ||
+-         this->decoderEngine == DecoderEngine::JM) &&
++         this->decoderEngine == DecoderEngine::JM || this->decoderEngine == DecoderEngine::HM) &&
+         vectorContains(this->possibleDecoders, DecoderEngine::FFMpeg))
+     {
+       this->decoderEngine = DecoderEngine::FFMpeg;

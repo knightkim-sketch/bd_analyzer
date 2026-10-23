@@ -600,6 +600,26 @@ else
 fi
 
 echo
+echo "== HEVC: HM 엔진 (패치 0082) =="
+# HM 기본 선택, HM 디코드 == FFmpeg (8/10-bit, B-frame), 블록 통계.
+HEVC_8="$DATA/test_hevc_8bit.hevc"; HEVC_10="$DATA/test_hevc_10bit.hevc"
+if [[ -x "$ff" ]]; then
+    [[ -s "$HEVC_8" ]] || "$ff" -hide_banner -loglevel error -y -f lavfi -i "testsrc2=size=352x288:rate=25:duration=1" \
+        -c:v libx265 -x265-params bframes=3:log-level=error -pix_fmt yuv420p -f hevc "$HEVC_8" >/dev/null 2>&1
+    [[ -s "$HEVC_10" ]] || "$ff" -hide_banner -loglevel error -y -f lavfi -i "testsrc2=size=352x288:rate=25:duration=1" \
+        -c:v libx265 -x265-params bframes=3:log-level=error -pix_fmt yuv420p10le -f hevc "$HEVC_10" >/dev/null 2>&1
+fi
+if [[ ! -e "$APPDIR/decoder/libHMDecoder.so" ]]; then
+    echo "  SKIP  62-hm-hevc-decode (libHMDecoder.so 없음: scripts/setup-hm.sh)"
+    ((skip_count++))
+elif [[ -s "$HEVC_8" && -s "$HEVC_10" ]]; then
+    run_test "$ROOT/tests/regression/62-hm-hevc-decode.cpp" "$HEVC_8" "$HEVC_10"
+else
+    echo "  SKIP  62-hm-hevc-decode (테스트 스트림 생성 실패)"
+    ((skip_count++))
+fi
+
+echo
 echo "== motion vector 표시: 모든 디코더 두께 3, 색 지정 (패치 0081) =="
 # JM·FFmpeg(H.264)·dav1d(AV1) MV 타입 스타일, JM MV 가 실제로 그려지는지(pan 프레임), JM intra 방향 화살표.
 if [[ -e "$APPDIR/decoder/libbda-jm-analyzer.so" && -s "$PAN" ]]; then

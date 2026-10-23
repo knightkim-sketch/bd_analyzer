@@ -76,7 +76,7 @@ YUV analysis with PSNR/SSIM metrics and scopes, YUV test pattern generation and
 image filters.
 
 This package bundles Qt 6.5.3, FFmpeg 7.1, the dav1d analyzer decoder, the JM
-H.264 analyzer decoder and the LCEVC decoders (MPEG LTM, V-Nova LCEVCdec;
+H.264 analyzer decoder, the HM HEVC decoder and the LCEVC decoders (MPEG LTM, V-Nova LCEVCdec;
 licences under decoder/licenses - LCEVCdec grants no patent licence) under
 %{bda_home}, so no Qt installation is required on the target machine.
 
@@ -85,7 +85,7 @@ bd_analyzer 는 코덱 개발·검증용으로 확장한 IENT/YUView fork 입니
 AV1/H.264/HEVC 비트스트림 분석, LCEVC enhancement 디코딩, PSNR/SSIM 및 스코프를
 포함한 YUV 분석, YUV 테스트 패턴 생성, 이미지 필터를 제공합니다.
 
-Qt 6.5.3, FFmpeg 7.1, dav1d analyzer 디코더, JM H.264 분석 디코더, LCEVC 디코더 (MPEG LTM, V-Nova
+Qt 6.5.3, FFmpeg 7.1, dav1d analyzer 디코더, JM H.264 분석 디코더, HM HEVC 디코더, LCEVC 디코더 (MPEG LTM, V-Nova
 LCEVCdec; 라이선스는 decoder/licenses, LCEVCdec 은 특허 라이선스를 주지 않습니다) 가
 %{bda_home} 아래에 번들되어 있으므로 대상 머신에 Qt 를 설치하지 않아도 됩니다.
 

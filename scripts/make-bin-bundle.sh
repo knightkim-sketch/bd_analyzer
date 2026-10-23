@@ -141,6 +141,16 @@ if [[ -f "$APPDIR/decoder/libbda-jm-analyzer.so" ]]; then
 else
     echo "   (skip) decoder/libbda-jm-analyzer.so 가 없습니다 - H.264 (JM) 분석 디코딩 비활성. scripts/setup-jm-analyzer.sh 참조."
 fi
+# HEVC analysis backend (optional): libHMDecoder.so <- scripts/setup-hm.sh (libHM HM16.15_v1.02).
+# HM's BSD licence must travel with the binary.
+if [[ -f "$APPDIR/decoder/libHMDecoder.so" ]]; then
+    cp "$APPDIR/decoder/libHMDecoder.so" "$OUT/decoder/"
+    tar xzf "$ROOT/third_party/libhm/libHM-HM16.15_v1.02.tar.gz" -O libHM-HM16.15_v1.02/COPYING \
+        > "$OUT/decoder/licenses/HM-COPYING.txt" \
+        || echo "   경고: HM 라이선스 파일을 꺼내지 못했습니다 (third_party/libhm)."
+else
+    echo "   (skip) decoder/libHMDecoder.so 가 없습니다 - HEVC (HM) 분석 디코딩 비활성. scripts/setup-hm.sh 참조."
+fi
 
 echo "== 6b. AI 어시스턴트 자산 (런처 + 격리 정책 + 주입 프롬프트) =="
 # AssistPanelWidget 은 applicationDirPath()/assist/launch-claude.sh 를 찾는다. 이것이 없으면
@@ -233,6 +243,7 @@ check "$HERE/decoder/libdav1d-internals.so"     "dav1d analyzer 디코더"
 [[ -e "$HERE/decoder/liblcevc_dec_pipeline_cpu.so" ]] && check "$HERE/decoder/liblcevc_dec_pipeline_cpu.so" "LCEVCdec CPU pipeline"
 # The JM (H.264) analysis backend is optional too.
 [[ -e "$HERE/decoder/libbda-jm-analyzer.so" ]] && check "$HERE/decoder/libbda-jm-analyzer.so" "H.264 JM 분석 디코더"
+[[ -e "$HERE/decoder/libHMDecoder.so" ]] && check "$HERE/decoder/libHMDecoder.so" "HEVC HM 디코더"
 check "$HERE/assist/launch-claude.sh"           "AI 어시스턴트 런처"
 check "$HERE/assist/system-prompt.md"           "AI 어시스턴트 앱 레퍼런스"
 check "$HERE/yt-transcode/yt-transcode.sh"      "YouTube transcode 스크립트"
