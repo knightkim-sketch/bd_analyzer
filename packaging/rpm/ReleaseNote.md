@@ -8,6 +8,15 @@
 
 ---
 
+## 0.5.2 (2026-10-23)
+
+- HEVC 파일이 **HM** 디코더(HM 16.15 레퍼런스 디코더)로 열립니다. 화면을 클릭하면 Block Info 에 HM 블록 통계가 나옵니다.
+  HM 라이브러리가 없으면 FFmpeg 으로 엽니다. 이전에는 번들에 없는 libde265 를 기본으로 골라 HEVC 파일이 열리지 않을 수 있었습니다.
+- 디코더 라이브러리를 추가하는 방법은 소스 저장소의 `docs/dev/decoder-plugins.md` 에 있습니다. 설치본에 넣을 때는
+  `decoder/` 폴더에 `.so` 를 복사하거나 Settings > Decoders > Decoder Search Path 를 지정합니다.
+
+---
+
 ## 0.5.1.1 (2026-10-21)
 
 - H.264 파일이 **JM (analysis)** 엔진으로 열립니다 (AV1 이 dav1d analyzer 로 열리는 것과 같음). 화면을 클릭하면 Block Info 와
