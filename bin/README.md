@@ -34,6 +34,7 @@ Qt 경로(`/home/knight2/Qt/6.5.3/gcc_64/lib`)를 가리키고 있어서, 그 �
 | `syslib/` | X11 / xcb / xkb 헬퍼 20개 | xcb 플랫폼 플러그인이 요구. `xcb-util-*` 는 GUI 없는 설치에 대개 없어서 번들에 넣었다 |
 | `ffmpeg/` | libavcodec/avformat/avutil/swresample | YUView 가 `applicationDirPath()/ffmpeg/` 에서 dlopen. **libdav1d 가 avcodec 안에 static 내장** |
 | `decoder/libdav1d-internals.so` | dav1d analyzer fork | 블록 통계(Pred Mode 등). 없으면 FFmpeg 디코더로 폴백되고 통계가 안 나온다 |
+| `decoder/libHMDecoder.so` | HM 16.15 HEVC 디코더 (libHM) | HEVC 블록 통계. 없으면 FFmpeg 로 폴백. 추가 방법은 `docs/dev/decoder-plugins.md` |
 | `check-deps.sh` | 진단 | 대상 머신에서 부족한 라이브러리를 한 번에 보고 |
 
 ## 새 머신에서 먼저 할 것
