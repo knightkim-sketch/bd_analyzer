@@ -33,7 +33,7 @@
 %global __requires_exclude ^(%{__requires_exclude_bundled}|%{__requires_exclude_optional})$
 
 Name:           bd-analyzer
-Version:        %{?bda_version}%{!?bda_version:0.5.2}
+Version:        %{?bda_version}%{!?bda_version:0.5.3}
 Release:        %{?bda_release}%{!?bda_release:1}%{?dist}
 Summary:        Video bitstream and YUV analysis toolset
 Summary(ko):    비디오 비트스트림·YUV 분석 도구
@@ -146,6 +146,12 @@ fi
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Sat Oct 31 2026 knight.kim <knight.kim@blue-dot.io> - 0.5.3-1
+- LCEVC analysis decoding is about 2x faster (1080p 38.6 -> 18.5 ms/frame): faster LTM kernels,
+  a Huffman lookup table and a thread pool (LTM patch 0002).
+- Main window cleanup: one Block Info pane, the RD plot in its own dock (hidden by default), new
+  Analysis and Tools menus, Show Frame Info moved to Ctrl+Shift+F so Ctrl+F toggles full screen,
+  the status bar shown, and Reset Window Layout / full screen handling every dock.
 * Fri Oct 23 2026 knight.kim <knight.kim@blue-dot.io> - 0.5.2-1
 - HEVC opens under the HM decoder (HM 16.15, libHM) by default and falls back to FFmpeg without the
   library, so a click shows HM's block statistics; libde265 is not shipped and could not open them.

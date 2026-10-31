@@ -8,6 +8,19 @@
 
 ---
 
+## 0.5.3 (2026-10-31)
+
+- LCEVC 분석 디코딩이 약 2배 빨라졌습니다 (1080p 기준 프레임당 38.6 → 18.5 ms).
+- 메인 창 구성을 정리했습니다.
+  - Block Info 패널이 하나로 합쳐졌습니다 (이전 "Caching Info" 가 Block Info 입니다, Ctrl+B).
+  - RD plot 은 아래쪽 별도 패널로 옮겼고 기본은 숨김입니다 (Ctrl+Shift+R). hex dump 는 그림 아래 그대로입니다.
+  - SB BD-rate / Find diff / Global motion 은 **Analysis** 메뉴로, Y4M 생성·export 는 **Tools** 메뉴로 옮겼습니다.
+  - Ctrl+F 는 전체 화면입니다. Show Frame Info 는 Ctrl+Shift+F 로 바뀌었습니다.
+  - 아래쪽 상태 표시줄이 다시 보입니다. 전체 화면에서는 모든 패널이 숨고, 나오면 원래대로 돌아옵니다.
+- 업그레이드 후 처음 실행하면 이전에 저장된 배치가 복원됩니다. 새 기본 배치는 **Help > Reset Window Layout** 으로 적용합니다.
+
+---
+
 ## 0.5.2 (2026-10-23)
 
 - HEVC 파일이 **HM** 디코더(HM 16.15 레퍼런스 디코더)로 열립니다. 화면을 클릭하면 Block Info 에 HM 블록 통계가 나옵니다.
