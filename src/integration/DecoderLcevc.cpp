@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <vector>
 
 namespace bda::integration
 {
@@ -413,14 +414,32 @@ void DecoderLcevc::addStatistics(const LcevcDecodedPicture &picture)
     const auto &s = picture.surfaces[std::size_t(surfaceId)][0];
     if (!s.valid())
       return;
-    // Edge blocks may be cut by the surface border.
+    // Edge blocks may be cut by the surface border. One row of blocks at a time, summed row by row.
+    const int        blocksWide = (s.width + tb - 1) / tb;
+    std::vector<int> sums(static_cast<std::size_t>(blocksWide));
     for (int by = 0; by < s.height; by += tb)
-      for (int bx = 0; bx < s.width; bx += tb)
+    {
+      std::fill(sums.begin(), sums.end(), 0);
+      for (int y = by; y < std::min(by + tb, s.height); ++y)
       {
-        int sum = 0;
-        for (int y = by; y < std::min(by + tb, s.height); ++y)
-          for (int x = bx; x < std::min(bx + tb, s.width); ++x)
-            sum += std::abs(int(s.s16(x, y))) >> shift;
+        const auto *row = s.data.data() + std::size_t(y) * std::size_t(s.width) * 2;
+        for (int i = 0, x = 0; i < blocksWide; ++i)
+        {
+          int       sum  = 0;
+          const int xEnd = std::min(x + tb, s.width);
+          for (; x < xEnd; ++x)
+          {
+            std::int16_t v;
+            std::memcpy(&v, row + std::size_t(x) * 2, 2);
+            sum += std::abs(int(v)) >> shift;
+          }
+          sums[std::size_t(i)] += sum;
+        }
+      }
+      for (int i = 0; i < blocksWide; ++i)
+      {
+        const int bx  = i * tb;
+        const int sum = sums[std::size_t(i)];
         if (sum == 0)
           continue;
         const int x0 = bx * W / s.width, y0 = by * H / s.height;
@@ -430,6 +449,7 @@ void DecoderLcevc::addStatistics(const LcevcDecodedPicture &picture)
                                          std::uint16_t(std::min(x1, W) - x0), std::uint16_t(std::min(y1, H) - y0),
                                          sum);
       }
+    }
   };
   addResidual(BDA_LTM_SURF_LOQ0_RESIDUAL, kStatLoq0Residual);
   addResidual(BDA_LTM_SURF_LOQ1_RESIDUAL, kStatLoq1Residual);

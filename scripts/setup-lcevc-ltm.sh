@@ -14,6 +14,12 @@
 #     patches/0001-library-build-hooks.patch is applied to COPIES of three LTM files in the build
 #     directory (never to the submodule) to capture surfaces in memory, throw instead of exit, and keep
 #     stdout/stderr quiet. All patched code is guarded by BDA_LTM_LIBRARY.
+#   - patches/0002-faster-decode.patch speeds decoding up without changing a single output sample: the
+#     per-pel loops of the hot stages (inverse transform and quantisation, upsampling, conversion,
+#     temporal map, predicted residual) work on row pointers, Huffman symbols are decoded through a
+#     lookup table, and rows (and the entropy coded layers) are spread over a thread pool
+#     (bda_ltm_parallel.cpp; BDA_LTM_THREADS=<n> overrides the thread count, 1 = serial). Plain C++11 and
+#     std::thread: no instruction set beyond the x86-64 baseline, so the library runs on any Rocky 8 machine.
 #   - Same compiler and optimisation flags as LTM's CMake Release build (gcc-toolset-13, -O3
 #     -fomit-frame-pointer -funroll-loops, forced include of the libstdc++ fixups), so results stay
 #     bit-exact with ModelDecoder. libstdc++/libgcc are static; only bda_ltm_* symbols are exported.
@@ -52,6 +58,7 @@ PATCHED="$BUILD/patched"
 rm -rf "$PATCHED" "$BUILD/obj" && mkdir -p "$PATCHED" "$BUILD/obj"
 cp -r "$LTM_SRC/decoder" "$LTM_SRC/util" "$LTM_SRC/src" "$PATCHED/"
 patch -s -p1 -d "$PATCHED" < "$WRAP/patches/0001-library-build-hooks.patch" || die "patch did not apply"
+patch -s -p1 -d "$PATCHED" < "$WRAP/patches/0002-faster-decode.patch" || die "0002 patch did not apply"
 find "$PATCHED" -name '*.orig' -delete
 # LTM checks bitstream bounds with assert(), which would abort() the host application on a malformed
 # stream. Route every assert() in the copied sources to bda_ltm_assert.h, which throws instead (the
@@ -74,7 +81,7 @@ for f in BitstreamStatistic BitstreamUnpacker Buffer Component Diagnostics Image
          YUVReader YUVWriter; do
     SRCS+=("$PATCHED/util/src/$f.cpp")
 done
-SRCS+=("$PATCHED/src/Types.cpp" "$WRAP/bda_lcevc_ltm.cpp")
+SRCS+=("$PATCHED/src/Types.cpp" "$WRAP/bda_lcevc_ltm.cpp" "$WRAP/bda_ltm_parallel.cpp")
 
 CXXFLAGS=(
     -std=c++11 -g -O3 -fomit-frame-pointer -funroll-loops

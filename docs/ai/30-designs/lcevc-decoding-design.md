@@ -123,8 +123,41 @@ lcevc-av1-mux base_av1.ivf enc.lvc lcevc_av1.ivf
 
 ## 8. 남은 것·한계
 
-- 10-bit, 4:4:4, conformance window, tiled 스트림은 실행하지 않았다.
+- 10-bit, 4:4:4, conformance window, tiled 스트림은 ModelDecoder 와 대조하지 않았다 (10-bit·tiled 는 9절의 최적화 전후 대조에만 썼다).
 - AV1 경로는 우리가 만든 스트림 하나(libaom base, LTM enhancement)로만 검증했다. 다른 도구가 만든 AV1 + LCEVC 스트림과의 상호 운용은 미검증.
 - LCEVC NAL 이 access unit 의 slice 뒤에 오는 스트림(suffix 배치)은 짝짓기가 한 프레임 밀린다 (HEVC 는 항상, AVC 는 뒤따르는 NAL 에 따라). 한 access unit 에 LCEVC NAL 이 둘 이상이면 마지막 것만 쓴다. 둘 다 실물 미확인 (Progy 검토).
 - 스트림 중간에 global_config 가 출력 크기·chroma·bit depth 를 바꾸면 디코더 오류로 멈춘다 (캔버스는 첫 global_config 로 고정).
 - IVF 는 열 때 파일 전체를 mmap 해 훑는다.
+
+## 9. LTM 디코딩 속도 (2026-10-23)
+
+analysis 모드(LTM)가 느리다는 요청으로 최적화했다. 출력은 한 샘플도 바뀌지 않는다.
+
+### 무엇을 바꿨나
+
+| 위치 | 내용 |
+|---|---|
+| `third_party/lcevc-ltm-wrapper/patches/0002-faster-decode.patch` | LTM 빌드 사본에 적용. hot stage(역변환 DD/DDS, 역양자화, 업샘플링, 변환, temporal map, predicted residual)를 화소 단위 콜백 대신 행 포인터 루프로. 수직 업샘플링은 행 우선(벡터화). entropy: Huffman lookup table(12 bit, 미스·스트림 끝은 원래 루프), 0 run 은 한 번에 쓰기, 레이어마다 따로 디코딩 |
+| `third_party/lcevc-ltm-wrapper/bda_ltm_parallel.{h,cpp}` | 행·레이어를 나누는 스레드 풀 (std::thread, 코어 수, 최대 16). `BDA_LTM_THREADS=<n>` 으로 덮어쓰기, 1 = 직렬 |
+| `src/integration/DecoderLcevc.cpp` | overlay(LoQ residual 합) 계산을 블록 행 단위로 |
+
+- 명령어 집합은 x86-64 기본만 쓴다 (`-march` 없음, nasm/yasm 불필요). Rocky 8 어느 머신에서도 돈다.
+- LTM 의 `__OPT_MATRIX__` 경로는 쓰지 않았다. InverseQuantize 판이 clamp 전에 int16 으로 잘라 원래 식과 다르다. DDS 와 Convert 의 같은 블록은 원래 식과 같음을 확인하고 썼다 (DDS 16 개 식은 소스를 파싱해 부호 패턴을 기계적으로 대조).
+
+### 측정 (1080p 30 프레임, HEVC base + LCEVC, 부하 30~38 인 20 코어 머신)
+
+| | 기준 | 최적화 | 배율 |
+|---|---|---|---|
+| analysis 모드 ms/frame, 5회 중앙값 | 38.6 | 18.5 | 2.09x |
+| 같은 조건, 최솟값끼리 | 36.6 | 17.9 | 2.05x |
+| 최적화, 단일 스레드 (`BDA_LTM_THREADS=1`) 중앙값 | | 25.6 | 1.51x |
+| `bda_ltm_decode` 명령어 수 (callgrind, 30 프레임) | 157.6억 | 78.5억 | −50% |
+
+- wall time 은 공유 머신의 부하로 흔들린다. 첫 프레임이나 열기 직후에 수 초~수십 초 멈추는 일이 기준판에도 있었다 (시스템 쪽, 이 최적화와 무관). 표는 같은 시각에 번갈아 돈 값이다.
+- 남은 큰 비용: 화면 표시용 YUV→RGB 변환(upstream `convertYUVToImage`), base 디코딩.
+
+### 검증
+
+- 스트림 8개에서 display signal 8종 전부와 overlay 의 해시가 최적화 전과 같다: 1080p DD, 720p DDS, 10-bit DDS, tile 256 + 1D/2D 스케일링 + user data, 3-plane enhancement, 기존 테스트 스트림 3개(HEVC/H.264 base `.lvc`, AV1 `.ivf`).
+- 회귀 54–57(ModelDecoder MD5 대조 포함) 통과.
+- 스레드 풀 첫 판에는 race 가 있었다: 앞 작업의 worker 가 다음 작업의 chunk 를 옛 인덱스로 잡아 두 번 돌릴 수 있었다 (스트레스 테스트에서 재현, 회귀 56 이 한 번 SIGSEGV — 이 race 탓인지는 미확인). 작업마다 카운터를 따로 두게 고친 뒤 스트레스 테스트 200,000 루프 × 3, 두 호스트 스레드 동시 호출·예외 주입·dlopen/dlclose 반복(Progy 검토) 모두 통과.

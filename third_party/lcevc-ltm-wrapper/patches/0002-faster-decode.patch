@@ -1,0 +1,719 @@
+diff -ruN a/decoder/include/HuffmanDecoder.hpp b/decoder/include/HuffmanDecoder.hpp
+--- a/decoder/include/HuffmanDecoder.hpp	2026-10-23 16:10:13.360788416 +0900
++++ b/decoder/include/HuffmanDecoder.hpp	2026-10-23 17:10:44.318111890 +0900
+@@ -64,6 +64,11 @@
+ 	unsigned single_symbol_ = 0;
+ 
+ 	std::vector<HuffmanCode> codes_;
++
++	// bd-analyzer: codes_ index of the first code (in codes_ order) that the next lut_bits_ bits start
++	// with, or -1 when only a longer code can match - see decode_symbol().
++	std::vector<int16_t> lut_;
++	unsigned lut_bits_ = 0;
+ };
+ 
+ } // namespace lctm
+diff -ruN a/decoder/src/Convert.cpp b/decoder/src/Convert.cpp
+--- a/decoder/src/Convert.cpp	2026-10-23 16:10:14.885800529 +0900
++++ b/decoder/src/Convert.cpp	2026-10-23 16:37:46.668512219 +0900
+@@ -49,17 +49,22 @@
+ 		int16_t half;
+ 	} context = {surface.view_as<int16_t>(), shift, (int16_t)((1 << shift) / 2)};
+ 
+-#if defined __OPT_MATRIX__
++// bd-analyzer: always the row-pointer form (the same expression as the per-pel form), rows in parallel.
++#if 1
+ 	auto dest = Surface::build_from<uint8_t>();
+ 	dest.reserve(surface.width(), surface.height());
+-	for (unsigned y = 0; y < surface.height(); ++y) {
++	bda_ltm_parallel_for(surface.height(), bda_ltm_min_rows(surface.width()), [&](unsigned y0, unsigned y1) {
++	const unsigned width_ = surface.width(), shift_ = context.shift;
++	const int16_t half_ = context.half;
++	for (unsigned y = y0; y < y1; ++y) {
+ 		const int16_t *__restrict psrc = context.src.data(0, y);
+ 		uint8_t *__restrict pdst = dest.data(0, y);
+-		for (unsigned x = 0; x < surface.width(); ++x) {
+-			// dest.write(x, y, clamp(((context.src.read(x, y) + 0x4000 + context.half) >> context.shift), 0, 255));
+-			*pdst++ = clamp(((*psrc++ + 0x4000 + context.half) >> context.shift), 0, 255);
++		for (unsigned x = 0; x < width_; ++x) {
++			// dest.write(x, y, clamp(((context.src.read(x, y) + 0x4000 + half_) >> shift_), 0, 255));
++			*pdst++ = clamp(((*psrc++ + 0x4000 + half_) >> shift_), 0, 255);
+ 		}
+ 	}
++	});
+ 	return dest.finish();
+ #else
+ 	return Surface::build_from<uint8_t>()
+@@ -82,17 +87,21 @@
+ 	    shift,
+ 	};
+ 
+-#if defined __OPT_MATRIX__
++// bd-analyzer: always the row-pointer form (the same expression as the per-pel form), rows in parallel.
++#if 1
+ 	auto dest = Surface::build_from<int16_t>();
+ 	dest.reserve(surface.width(), surface.height());
+-	for (unsigned y = 0; y < surface.height(); ++y) {
++	bda_ltm_parallel_for(surface.height(), bda_ltm_min_rows(surface.width()), [&](unsigned y0, unsigned y1) {
++	const unsigned width_ = surface.width(), shift_ = context.shift;
++	for (unsigned y = y0; y < y1; ++y) {
+ 		const uint8_t *__restrict psrc = context.src.data(0, y);
+ 		int16_t *__restrict pdst = dest.data(0, y);
+-		for (unsigned x = 0; x < surface.width(); ++x) {
+-			// dest.write(x, y, ((context.src.read(x, y) << context.shift) - 0x4000));
+-			*pdst++ = ((*psrc++ << context.shift) - 0x4000);
++		for (unsigned x = 0; x < width_; ++x) {
++			// dest.write(x, y, ((context.src.read(x, y) << shift_) - 0x4000));
++			*pdst++ = ((*psrc++ << shift_) - 0x4000);
+ 		}
+ 	}
++	});
+ 	return dest.finish();
+ #else
+ 	return Surface::build_from<int16_t>()
+@@ -109,17 +118,22 @@
+ 		unsigned shift;
+ 		int16_t half;
+ 	} context = {surface.view_as<int16_t>(), shift, (int16_t)((1 << shift) / 2)};
+-#if defined __OPT_MATRIX__
++// bd-analyzer: always the row-pointer form (the same expression as the per-pel form), rows in parallel.
++#if 1
+ 	auto dest = Surface::build_from<uint16_t>();
+ 	dest.reserve(surface.width(), surface.height());
+-	for (unsigned y = 0; y < surface.height(); ++y) {
++	bda_ltm_parallel_for(surface.height(), bda_ltm_min_rows(surface.width()), [&](unsigned y0, unsigned y1) {
++	const unsigned width_ = surface.width(), shift_ = context.shift;
++	const int16_t half_ = context.half;
++	for (unsigned y = y0; y < y1; ++y) {
+ 		const int16_t *__restrict psrc = context.src.data(0, y);
+ 		uint16_t *__restrict pdst = dest.data(0, y);
+-		for (unsigned x = 0; x < surface.width(); ++x) {
+-			// dest.write(x, y, clamp(((context.src.read(x, y) + 0x4000 + context.half) >> context.shift), 0, 32767 >> context.shift));
+-			*pdst++ = clamp((*psrc++ + 0x4000 + context.half) >> context.shift, 0, 32767 >> context.shift);
++		for (unsigned x = 0; x < width_; ++x) {
++			// dest.write(x, y, clamp(((context.src.read(x, y) + 0x4000 + half_) >> shift_), 0, 32767 >> shift_));
++			*pdst++ = clamp((*psrc++ + 0x4000 + half_) >> shift_, 0, 32767 >> shift_);
+ 		}
+ 	}
++	});
+ 	return dest.finish();
+ #else
+ 	return Surface::build_from<uint16_t>()
+@@ -142,17 +156,21 @@
+ 	    shift,
+ 	};
+ 
+-#if defined __OPT_MATRIX__
++// bd-analyzer: always the row-pointer form (the same expression as the per-pel form), rows in parallel.
++#if 1
+ 	auto dest = Surface::build_from<int16_t>();
+ 	dest.reserve(surface.width(), surface.height());
+-	for (unsigned y = 0; y < surface.height(); ++y) {
++	bda_ltm_parallel_for(surface.height(), bda_ltm_min_rows(surface.width()), [&](unsigned y0, unsigned y1) {
++	const unsigned width_ = surface.width(), shift_ = context.shift;
++	for (unsigned y = y0; y < y1; ++y) {
+ 		const uint16_t *__restrict psrc = context.src.data(0, y);
+ 		int16_t *__restrict pdst = dest.data(0, y);
+-		for (unsigned x = 0; x < surface.width(); ++x) {
+-			// dest.write(x, y, ((context.src.read(x, y) << context.shift) - 0x4000));
+-			*pdst++ = ((*psrc++ << context.shift) - 0x4000);
++		for (unsigned x = 0; x < width_; ++x) {
++			// dest.write(x, y, ((context.src.read(x, y) << shift_) - 0x4000));
++			*pdst++ = ((*psrc++ << shift_) - 0x4000);
+ 		}
+ 	}
++	});
+ 	return dest.finish();
+ #else
+ 	return Surface::build_from<int16_t>()
+diff -ruN a/decoder/src/Deserializer.cpp b/decoder/src/Deserializer.cpp
+--- a/decoder/src/Deserializer.cpp	2026-10-23 16:10:14.885800529 +0900
++++ b/decoder/src/Deserializer.cpp	2026-10-23 16:18:00.103083269 +0900
+@@ -730,6 +730,12 @@
+ #endif
+ 		CHECK(b.u(1, "alignment") == 0);
+ 
++	struct LayerJob {
++		unsigned plane, loq, layer;
++		Packet data;
++		unsigned width, height;
++	};
++	std::vector<LayerJob> layer_jobs;
+ 	for (unsigned plane = 0; plane < dst_configuration.global_configuration.num_processed_planes; ++plane) {
+ 		if (dst_configuration.picture_configuration.enhancement_enabled ||
+ 		    dst_configuration.picture_configuration.temporal_signalling_present) {
+@@ -746,30 +752,40 @@
+ 						data = b.bytes((unsigned)data_size);
+ 					}
+ 
+-					PacketView view(data);
++					// Each layer's bytes are cut out of the bitstream here, in bitstream order; the layers are
++					// then entropy decoded in parallel below, each into its own surface (bd-analyzer).
++					layer_jobs.push_back({plane, loq, layer, data, surface_configuration.width, surface_configuration.height});
++				}
++			}
++		}
++	}
++
++	bda_ltm_parallel_for((unsigned)layer_jobs.size(), 1, [&](unsigned j0, unsigned j1) {
++		for (unsigned j = j0; j < j1; ++j) {
++			const LayerJob &job = layer_jobs[j];
++			const unsigned plane = job.plane, loq = job.loq, layer = job.layer;
++					PacketView view(job.data);
+ 					BitstreamUnpacker pb(view);
+ 					if (!is_temporal_layer(dst_configuration, plane, loq, layer)) {
+ 						const bool use_tiled_encoding_order = dst_configuration.global_configuration.temporal_enabled ||
+ 						                                      dst_configuration.global_configuration.tile_dimensions_type > 0;
+ 						if (use_tiled_encoding_order) {
+ 							symbols[plane][loq][layer] = EntropyDecoderResidualsTiled().process(
+-							    surface_configuration.width, surface_configuration.height, entropy_enabled[plane][loq][layer],
++							    job.width, job.height, entropy_enabled[plane][loq][layer],
+ 							    rle_only[plane][loq][layer], pb, dst_configuration.global_configuration.transform_block_size);
+ 						} else {
+ 							symbols[plane][loq][layer] = EntropyDecoderResiduals().process(
+-							    surface_configuration.width, surface_configuration.height, entropy_enabled[plane][loq][layer],
++							    job.width, job.height, entropy_enabled[plane][loq][layer],
+ 							    rle_only[plane][loq][layer], pb);
+ 						}
+ 					} else {
+ 						symbols[plane][loq][layer] = EntropyDecoderTemporal().process(
+-						    surface_configuration.width, surface_configuration.height, entropy_enabled[plane][loq][layer],
++						    job.width, job.height, entropy_enabled[plane][loq][layer],
+ 						    rle_only[plane][loq][layer], pb, dst_configuration.global_configuration.transform_block_size,
+ 						    dst_configuration.global_configuration.temporal_tile_intra_signalling_enabled);
+ 					}
+-				}
+-			}
+ 		}
+-	}
++	});
+ 
+ #if BITSTREAM_DEBUG
+ 	fprintf(goBits, "@@@@ @@@@ encoded_data <<<< \n");
+diff -ruN a/decoder/src/EntropyDecoder.cpp b/decoder/src/EntropyDecoder.cpp
+--- a/decoder/src/EntropyDecoder.cpp	2026-10-23 16:10:14.886800537 +0900
++++ b/decoder/src/EntropyDecoder.cpp	2026-10-23 17:16:31.213399569 +0900
+@@ -237,19 +237,21 @@
+ 			// For each transform in tile
+ 			// for (unsigned y = ty; y < std::min(ty + d, height); ++y) {
+ 			for (unsigned y = ty; y < LCEVC_MIN(ty + d, height); ++y) {
+-				//				int16_t *__restrict pdst = dest.data(tx, y);
+-				// for (unsigned x = tx; x < std::min(tx + d, width); ++x) {
+-				for (unsigned x = tx; x < LCEVC_MIN(tx + d, width); ++x) {
++				// bd-analyzer: the same values in the same order as dest.write() per pel, over a row pointer,
++				// with a run of zeros written in one go.
++				int16_t *__restrict row = dest.data(0, y);
++				const unsigned x_end = LCEVC_MIN(tx + d, width);
++				for (unsigned x = tx; x < x_end;) {
+ 					if (current.zero_runlength > 0) {
+ 						// Extend the run of zeros
+-						dest.write(x, y, 0);
+-						//						*pdst++ = 0;
+-						--current.zero_runlength;
++						const unsigned n = LCEVC_MIN(current.zero_runlength, x_end - x);
++						std::fill(row + x, row + x + n, (int16_t)0);
++						x += n;
++						current.zero_runlength -= n;
+ 					} else {
+ 						// Write PEL value
+ 						current = decode_pel(*symbol_source);
+-						dest.write(x, y, current.pel);
+-						//						*pdst++ = current.pel;
++						row[x++] = current.pel;
+ 					}
+ 				}
+ 			}
+diff -ruN a/decoder/src/HuffmanDecoder.cpp b/decoder/src/HuffmanDecoder.cpp
+--- a/decoder/src/HuffmanDecoder.cpp	2026-10-23 16:10:14.886800537 +0900
++++ b/decoder/src/HuffmanDecoder.cpp	2026-10-23 17:10:44.480112977 +0900
+@@ -124,14 +124,44 @@
+ 		}
+ 		c->value = current_value++;
+ 	}
++
++	// bd-analyzer: lookup table over the next lut_bits_ bits. Entries are filled in codes_ order and never
++	// overwritten, so an entry is the code decode_symbol()'s loop would match first.
++	lut_bits_ = std::min(codes_.back().bits, 12u);
++	lut_.assign(size_t(1) << lut_bits_, -1);
++	for (size_t i = 0; i < codes_.size() && i < 32768; ++i) {
++		const HuffmanCode &c = codes_[i];
++		if (c.bits > lut_bits_ || c.value >= (1u << c.bits))
++			break;
++		const unsigned first = c.value << (lut_bits_ - c.bits), last = (c.value + 1) << (lut_bits_ - c.bits);
++		for (unsigned w = first; w < last; ++w)
++			if (lut_[w] < 0)
++				lut_[w] = (int16_t)i;
++	}
+ }
+ 
+ unsigned HuffmanDecoder::decode_symbol(BitstreamUnpacker &b) {
++#if BITSTREAM_DEBUG
+ 	BitstreamUnpacker::ScopedContextLabel label(b, "entropy_symb");
++#endif
+ 
+ 	if (codes_.empty())
+ 		return single_symbol_;
+ 
++#if !BITSTREAM_DEBUG
++	// bd-analyzer: table lookup on the next lut_bits_ bits. A miss (only a longer code matches) or the end
++	// of the data falls through to the bit-by-bit loop, which starts from the same, unconsumed position.
++	if (lut_bits_ && b.remaining_bits() >= lut_bits_) {
++		const int16_t i = lut_[b.peek(lut_bits_)];
++		if (i >= 0) {
++			HuffmanCode &c = codes_[(size_t)i];
++			b.skip(c.bits);
++			c.count++;
++			return c.symbol;
++		}
++	}
++#endif
++
+ 	// Codes are sorted by increaing bit-length
+ 	//
+ 	// Check each code, adding bits to current value as necessary a match is found
+diff -ruN a/decoder/src/InverseQuantize.cpp b/decoder/src/InverseQuantize.cpp
+--- a/decoder/src/InverseQuantize.cpp	2026-10-23 16:10:14.886800537 +0900
++++ b/decoder/src/InverseQuantize.cpp	2026-10-23 16:37:31.066396362 +0900
+@@ -262,6 +262,25 @@
+ 	}
+ 	return dest.finish();
+ #else
++	// bd-analyzer: the per-pel expression below over row pointers, rows in parallel.
++	{
++		auto dst = Surface::build_from<int16_t>();
++		dst.reserve(src_plane.width(), src_plane.height());
++		const unsigned w = src_plane.width();
++		bda_ltm_parallel_for(src_plane.height(), bda_ltm_min_rows(w), [&](unsigned y0, unsigned y1) {
++			const unsigned wl = w;
++			const int32_t sw = ctx.layer_step_width, off = ctx.applied_dequant_offset;
++			for (unsigned y = y0; y < y1 && wl; ++y) {
++				const int16_t *__restrict src = ctx.src.data(0, y);
++				int16_t *__restrict out = dst.data(0, y);
++				for (unsigned x = 0; x < wl; ++x) {
++					const int16_t c = src[x];
++					out[x] = c > 0 ? clamp_int16(c * sw + off) : c < 0 ? clamp_int16(c * sw - off) : 0;
++				}
++			}
++		});
++		return dst.finish();
++	}
+ 	return Surface::build_from<int16_t>()
+ 	    .generate<Context>(
+ 	        src_plane.width(), src_plane.height(),
+@@ -327,6 +346,30 @@
+ 	}
+ 	return dest.finish();
+ #else
++	// bd-analyzer: the per-pel expression below over row pointers, rows in parallel. The mask must cover
++	// the plane (its reads are bounds checked in the per-pel form, which takes over otherwise).
++	if (temporal_map.bpp() == 1 && temporal_map.width() >= src_plane.width() && temporal_map.height() >= src_plane.height()) {
++		auto dst = Surface::build_from<int16_t>();
++		dst.reserve(src_plane.width(), src_plane.height());
++		const unsigned w = src_plane.width();
++		bda_ltm_parallel_for(src_plane.height(), bda_ltm_min_rows(w), [&](unsigned y0, unsigned y1) {
++			const unsigned wl = w;
++			const int32_t sw0 = ctx.layer_step_width[0], sw1 = ctx.layer_step_width[1];
++			const int32_t off0 = ctx.applied_dequant_offset[0], off1 = ctx.applied_dequant_offset[1];
++			for (unsigned y = y0; y < y1 && wl; ++y) {
++				const int16_t *__restrict src = ctx.src.data(0, y);
++				const uint8_t *__restrict mask = ctx.mask.data(0, y);
++				int16_t *__restrict out = dst.data(0, y);
++				for (unsigned x = 0; x < wl; ++x) {
++					const int16_t c = src[x];
++					const bool pred = mask[x] == TEMPORAL_PRED;
++					const int32_t sw = pred ? sw0 : sw1, off = pred ? off0 : off1;
++					out[x] = c > 0 ? clamp_int16(c * sw + off) : c < 0 ? clamp_int16(c * sw - off) : 0;
++				}
++			}
++		});
++		return dst.finish();
++	}
+ 	return Surface::build_from<int16_t>()
+ 	    .generate<Context>(
+ 	        src_plane.width(), src_plane.height(),
+diff -ruN a/decoder/src/InverseTransformDD.cpp b/decoder/src/InverseTransformDD.cpp
+--- a/decoder/src/InverseTransformDD.cpp	2026-10-23 16:10:14.886800537 +0900
++++ b/decoder/src/InverseTransformDD.cpp	2026-10-23 16:37:30.657393325 +0900
+@@ -58,6 +58,37 @@
+ 		}};
+ 	// clang-format on
+ 
++	// Direct 2x2 butterfly over row pointers, rows in parallel (bd-analyzer). Same sums as the per-pel
++	// loop below: int16_t wraps the same whether it is applied per term or to the total. Layers smaller
++	// than the picture take the per-pel loop, whose reads check the bounds.
++	const unsigned lw = (unsigned)(width + 1) / 2, lh = (unsigned)(height + 1) / 2;
++	bool direct = width > 0 && height > 0;
++	for (unsigned s = 0; s < 4 && direct; ++s)
++		direct = src_layers[s].bpp() == sizeof(int16_t) && src_layers[s].width() >= lw && src_layers[s].height() >= lh;
++	if (direct) {
++		auto dst = Surface::build_from<int16_t>();
++		dst.reserve(width, height);
++		bda_ltm_parallel_for((unsigned)height, bda_ltm_min_rows((unsigned)width), [&](unsigned y0, unsigned y1) {
++			const unsigned w = (unsigned)width; // a local copy: the stores below cannot alias it
++			for (unsigned y = y0; y < y1; ++y) {
++				const int16_t *__restrict c0 = ctx[0].data(0, y), *__restrict c1 = ctx[1].data(0, y),
++				                          *__restrict c2 = ctx[2].data(0, y), *__restrict c3 = ctx[3].data(0, y);
++				int16_t *__restrict out = dst.data(0, y);
++				const int sv = (y & 1) ? -1 : 1; // basis rows 2 and 3 flip the sign of layers 2 and 3
++				for (unsigned i = 0; i < w / 2; ++i) {
++					const int a = c0[i] + sv * c2[i], b = c1[i] + sv * c3[i];
++					out[2 * i] = (int16_t)(a + b);
++					out[2 * i + 1] = (int16_t)(a - b);
++				}
++				if (w & 1) {
++					const unsigned i = w >> 1;
++					out[w - 1] = (int16_t)(c0[i] + c1[i] + sv * (c2[i] + c3[i]));
++				}
++			}
++		});
++		return dst.finish();
++	}
++
+ 	return Surface::build_from<int16_t>()
+ 	    .generate<Context>(
+ 	        width, height,
+diff -ruN a/decoder/src/InverseTransformDDS.cpp b/decoder/src/InverseTransformDDS.cpp
+--- a/decoder/src/InverseTransformDDS.cpp	2026-10-23 16:10:14.886800537 +0900
++++ b/decoder/src/InverseTransformDDS.cpp	2026-10-23 16:32:32.796181510 +0900
+@@ -78,8 +78,12 @@
+ 
+ 	auto dst = Surface::build_from<int16_t>();
+ 	dst.reserve(width, height);
+-#if defined __OPT_MATRIX__
+-	for (unsigned y = 0; y < static_cast<unsigned>(height) / 4; y++) {
++	// bd-analyzer: always the row-pointer form (the same 16 sums as the per-pel form below), block rows in
++	// parallel.
++#if 1
++	bda_ltm_parallel_for(static_cast<unsigned>(height) / 4, bda_ltm_min_rows(static_cast<unsigned>(width) * 4),
++	                     [&](unsigned by0, unsigned by1) {
++	for (unsigned y = by0; y < by1; y++) {
+ 		unsigned dy = y * 4;
+ 		const int16_t *pc00 = coeffs[0].data(0, y);
+ 		const int16_t *pc01 = coeffs[1].data(0, y);
+@@ -141,6 +145,7 @@
+ 			*pd03++ = c00 - c01 - c02 + c03 - c04 + c05 + c06 - c07 - c08 + c09 + c10 - c11 + c12 - c13 - c14 + c15;
+ 		}
+ 	}
++	});
+ #else
+ 	for (unsigned y = 0; y < static_cast<unsigned>(height) / 4; y++) {
+ 		for (unsigned x = 0; x < static_cast<unsigned>(width) / 4; x++) {
+diff -ruN a/decoder/src/PredictedResidual.cpp b/decoder/src/PredictedResidual.cpp
+--- a/decoder/src/PredictedResidual.cpp	2026-10-23 16:10:14.886800537 +0900
++++ b/decoder/src/PredictedResidual.cpp	2026-10-23 16:51:15.632757644 +0900
+@@ -49,6 +49,23 @@
+ 
+ 	const Context ctx = src_plane.view_as<int16_t>();
+ 
++	// bd-analyzer: the per-pel sum below over row pointers, rows in parallel.
++	if (src_plane.width() >= 2) {
++		auto dst = Surface::build_from<int32_t>();
++		const unsigned w = src_plane.width() / 2, h = src_plane.height() / 2;
++		dst.reserve(w, h);
++		bda_ltm_parallel_for(h, bda_ltm_min_rows(w), [&](unsigned y0, unsigned y1) {
++			const unsigned wl = w;
++			for (unsigned y = y0; y < y1; ++y) {
++				const int16_t *__restrict r0 = ctx.data(0, y * 2 + 0), *__restrict r1 = ctx.data(0, y * 2 + 1);
++				int32_t *__restrict out = dst.data(0, y);
++				for (unsigned x = 0; x < wl; ++x)
++					out[x] = r0[x * 2 + 0] + r1[x * 2 + 0] + r0[x * 2 + 1] + r1[x * 2 + 1];
++			}
++		});
++		return dst.finish();
++	}
++
+ #if defined __OPT_MATRIX__
+ 	auto dest = Surface::build_from<int32_t>();
+ 	dest.reserve(src_plane.width() / 2, src_plane.height() / 2);
+@@ -101,6 +118,38 @@
+ 		SurfaceView<int32_t> sum;
+ 	} ctx = {base_plane.view_as<int16_t>(), enhanced_plane.view_as<int16_t>(), sum_plane.view_as<int32_t>()};
+ 
++	// bd-analyzer: the per-pel expression below over row pointers, rows in parallel, when the base and
++	// sum planes cover the enhanced one (the per-pel reads check that otherwise).
++	{
++		const unsigned w = enhanced_plane.width(), h = enhanced_plane.height();
++		const unsigned hw = (w + 1) / 2, hh = (h + 1) / 2;
++		if (w > 0 && base_plane.width() >= hw && base_plane.height() >= hh && sum_plane.width() >= hw &&
++		    sum_plane.height() >= hh) {
++			auto dst = Surface::build_from<int16_t>();
++			dst.reserve(w, h);
++			bda_ltm_parallel_for(h, bda_ltm_min_rows(w), [&](unsigned y0, unsigned y1) {
++				const unsigned wl = w;
++				for (unsigned y = y0; y < y1; ++y) {
++					const int16_t *__restrict base = ctx.base.data(0, y / 2);
++					const int32_t *__restrict sum = ctx.sum.data(0, y / 2);
++					const int16_t *__restrict enh = ctx.enhanced.data(0, y);
++					int16_t *__restrict out = dst.data(0, y);
++					// Pels 2i and 2i + 1 share base[i] and sum[i].
++					for (unsigned i = 0; i < wl / 2; ++i) {
++						const int32_t adjust = base[i] - ((sum[i] + 2) >> 2);
++						out[2 * i] = clamp(enh[2 * i] + adjust, -32767, 32767);
++						out[2 * i + 1] = clamp(enh[2 * i + 1] + adjust, -32767, 32767);
++					}
++					if (wl & 1) {
++						const int32_t adjust = base[wl / 2] - ((sum[wl / 2] + 2) >> 2);
++						out[wl - 1] = clamp(enh[wl - 1] + adjust, -32767, 32767);
++					}
++				}
++			});
++			return dst.finish();
++		}
++	}
++
+ #if defined __OPT_MATRIX__
+ 	auto dest = Surface::build_from<int16_t>();
+ 	dest.reserve(enhanced_plane.width(), enhanced_plane.height());
+diff -ruN a/decoder/src/TemporalDecode.cpp b/decoder/src/TemporalDecode.cpp
+--- a/decoder/src/TemporalDecode.cpp	2026-10-23 16:10:14.887800545 +0900
++++ b/decoder/src/TemporalDecode.cpp	2026-10-23 16:37:31.254397758 +0900
+@@ -338,6 +338,25 @@
+ 	const auto src = src_plane.view_as<int16_t>();
+ 	const auto map = map_plane.view_as<uint8_t>();
+ 
++	// bd-analyzer: the per-pel expression below over row pointers, rows in parallel (the CHECKs above
++	// make the map cover the plane).
++	if (src_plane.width() > 0) {
++		auto dst = Surface::build_from<int16_t>();
++		dst.reserve(src_plane.width(), src_plane.height());
++		const unsigned w = src_plane.width();
++		bda_ltm_parallel_for(src_plane.height(), bda_ltm_min_rows(w), [&](unsigned y0, unsigned y1) {
++			const unsigned wl = w, sbw = shift_bw, sbh = shift_bh;
++			for (unsigned y = y0; y < y1; ++y) {
++				const uint8_t *__restrict m = map.data(0, y >> sbh);
++				const int16_t *__restrict in = src.data(0, y);
++				int16_t *__restrict out = dst.data(0, y);
++				for (unsigned x = 0; x < wl; ++x)
++					out[x] = m[x >> sbw] == TemporalType::TEMPORAL_INTR ? 0 : in[x];
++			}
++		});
++		return dst.finish();
++	}
++
+ #if defined __OPT_MATRIX__
+ 	auto dest = Surface::build_from<int16_t>();
+ 	dest.reserve(src.width(), src.height());
+diff -ruN a/decoder/src/Upsampling.cpp b/decoder/src/Upsampling.cpp
+--- a/decoder/src/Upsampling.cpp	2026-10-23 16:10:14.887800545 +0900
++++ b/decoder/src/Upsampling.cpp	2026-10-23 16:37:31.518399719 +0900
+@@ -163,8 +163,39 @@
+ 
+ 	// Vertical scale
+ 	//
+-	for (unsigned x = 0; x < width; ++x)
+-		apply_kernel(v_dest.data(x, 0), width, v_src.data(x, 0), width, height, kernel);
++	if (height >= 4 && width > 0) {
++		// bd-analyzer: apply_kernel() down every column at once, one output row at a time (rows in
++		// parallel, the x loop vectorises). Output row o uses source rows clamp(s - 1 + k) with weights
++		// kernel[k] (o odd, s = (o - 1) / 2) or kernel[3 - k] (o even, s = (o - 2) / 2) - the first and last
++		// samples and the head and tail pairs of apply_kernel() are this formula at its clamped ends.
++		bda_ltm_parallel_for(height * 2, bda_ltm_min_rows(width), [&](unsigned o0, unsigned o1) {
++			const unsigned wl = width;
++			for (unsigned o = o0; o < o1; ++o) {
++				const int s = (o & 1) ? (int)(o - 1) / 2 : (int)o / 2 - 1;
++				const int16_t *rows[4];
++				int32_t w[4];
++				for (int k = 0; k < 4; ++k) {
++					rows[k] = v_src.data(0, clamp(s - 1 + k, 0, (int)height - 1));
++					w[k] = (o & 1) ? kernel[k] : kernel[3 - k];
++				}
++				int16_t *__restrict out = v_dest.data(0, o);
++				const int16_t *__restrict s0 = rows[0], *__restrict s1 = rows[1], *__restrict s2 = rows[2],
++				                          *__restrict s3 = rows[3];
++				const int32_t w0 = w[0], w1 = w[1], w2 = w[2], w3 = w[3];
++				for (unsigned x = 0; x < wl; ++x) {
++					int32_t d = 0x2000;
++					d += w0 * s0[x];
++					d += w1 * s1[x];
++					d += w2 * s2[x];
++					d += w3 * s3[x];
++					out[x] = us_shift_clamp_s16(d);
++				}
++			}
++		});
++	} else {
++		for (unsigned x = 0; x < width; ++x)
++			apply_kernel(v_dest.data(x, 0), width, v_src.data(x, 0), width, height, kernel);
++	}
+ 
+ 	Surface intermediate = v_dest.finish();
+ 
+@@ -175,8 +206,11 @@
+ 
+ 	// Horizontal scale
+ 	//
+-	for (unsigned y = 0; y < height * 2; ++y)
+-		apply_kernel(h_dst.data(0, y), 1, h_src.data(0, y), 1, width, kernel);
++	// Rows are independent (bd-analyzer).
++	bda_ltm_parallel_for(height * 2, bda_ltm_min_rows(width * 2), [&](unsigned y0, unsigned y1) {
++		for (unsigned y = y0; y < y1; ++y)
++			apply_kernel(h_dst.data(0, y), 1, h_src.data(0, y), 1, width, kernel);
++	});
+ 
+ 	return h_dst.finish();
+ }
+@@ -195,8 +229,10 @@
+ 
+ 	// Horizontal scale
+ 	//
+-	for (unsigned y = 0; y < height; ++y)
+-		apply_kernel(h_dest.data(0, y), 1, h_src.data(0, y), 1, width, kernel);
++	bda_ltm_parallel_for(height, bda_ltm_min_rows(width * 2), [&](unsigned y0, unsigned y1) {
++		for (unsigned y = y0; y < y1; ++y)
++			apply_kernel(h_dest.data(0, y), 1, h_src.data(0, y), 1, width, kernel);
++	});
+ 
+ 	return h_dest.finish();
+ }
+diff -ruN a/util/include/BitstreamUnpacker.hpp b/util/include/BitstreamUnpacker.hpp
+--- a/util/include/BitstreamUnpacker.hpp	2026-10-23 16:10:17.160818600 +0900
++++ b/util/include/BitstreamUnpacker.hpp	2026-10-23 17:10:44.296111742 +0900
+@@ -64,6 +64,11 @@
+ 
+ 	// Read 0..32 bits into unsigned integer - with optional debug label
+ 	uint32_t u(unsigned nbits);
++
++	// The next 0..32 bits without consuming them, and consume them (bd-analyzer: table Huffman decoding).
++	// The caller checks remaining_bits() first.
++	uint32_t peek(unsigned nbits) const;
++	void skip(unsigned nbits);
+ 	uint32_t u(unsigned nbits, const char *label);
+ 
+ 	// Read a single byte
+diff -ruN a/util/include/Surface.hpp b/util/include/Surface.hpp
+--- a/util/include/Surface.hpp	2026-10-23 16:10:20.617846061 +0900
++++ b/util/include/Surface.hpp	2026-10-23 16:31:53.654905513 +0900
+@@ -41,6 +41,7 @@
+ 
+ #include "Buffer.hpp"
+ #include "Diagnostics.hpp"
++#include "bda_ltm_parallel.h"
+ 
+ #include <cassert>
+ #include <cstring>
+diff -ruN a/util/include/SurfaceImpl.hpp b/util/include/SurfaceImpl.hpp
+--- a/util/include/SurfaceImpl.hpp	2026-10-23 16:10:20.617846061 +0900
++++ b/util/include/SurfaceImpl.hpp	2026-10-23 16:31:53.834906781 +0900
+@@ -166,9 +166,11 @@
+ template <typename T>
+ SurfaceBuilder<T> &SurfaceBuilder<T>::generate(unsigned width, unsigned height, std::function<T(unsigned x, unsigned y)> fn) {
+ 	reserve(width, height);
+-	for (unsigned y = 0; y < height; ++y)
+-		for (unsigned x = 0; x < width; ++x)
+-			write(x, y, fn(x, y));
++	bda_ltm_parallel_for(height, bda_ltm_min_rows(width), [&](unsigned y0, unsigned y1) {
++		for (unsigned y = y0; y < y1; ++y)
++			for (unsigned x = 0; x < width; ++x)
++				write(x, y, fn(x, y));
++	});
+ 
+ 	return *this;
+ }
+@@ -178,9 +180,11 @@
+ SurfaceBuilder<T> &SurfaceBuilder<T>::generate(unsigned width, unsigned height, T (*fn)(unsigned x, unsigned y, const C &c),
+                                                const C &c) {
+ 	reserve(width, height);
+-	for (unsigned y = 0; y < height; ++y)
+-		for (unsigned x = 0; x < width; ++x)
+-			write(x, y, fn(x, y, c));
++	bda_ltm_parallel_for(height, bda_ltm_min_rows(width), [&](unsigned y0, unsigned y1) {
++		for (unsigned y = y0; y < y1; ++y)
++			for (unsigned x = 0; x < width; ++x)
++				write(x, y, fn(x, y, c));
++	});
+ 
+ 	return *this;
+ }
+@@ -189,9 +193,11 @@
+ template <typename A1>
+ SurfaceBuilder<T> &SurfaceBuilder<T>::generate(unsigned width, unsigned height, T (*fn)(unsigned x, unsigned y, A1 a1), A1 a1) {
+ 	reserve(width, height);
+-	for (unsigned y = 0; y < height; ++y)
+-		for (unsigned x = 0; x < width; ++x)
+-			write(x, y, fn(x, y, a1));
++	bda_ltm_parallel_for(height, bda_ltm_min_rows(width), [&](unsigned y0, unsigned y1) {
++		for (unsigned y = y0; y < y1; ++y)
++			for (unsigned x = 0; x < width; ++x)
++				write(x, y, fn(x, y, a1));
++	});
+ 
+ 	return *this;
+ }
+@@ -201,9 +207,11 @@
+ SurfaceBuilder<T> &SurfaceBuilder<T>::generate(unsigned width, unsigned height, T (*fn)(unsigned x, unsigned y, A1 a1, A2 a2),
+                                                A1 a1, A2 a2) {
+ 	reserve(width, height);
+-	for (unsigned y = 0; y < height; ++y)
+-		for (unsigned x = 0; x < width; ++x)
+-			write(x, y, fn(x, y, a1, a2));
++	bda_ltm_parallel_for(height, bda_ltm_min_rows(width), [&](unsigned y0, unsigned y1) {
++		for (unsigned y = y0; y < y1; ++y)
++			for (unsigned x = 0; x < width; ++x)
++				write(x, y, fn(x, y, a1, a2));
++	});
+ 
+ 	return *this;
+ }
+@@ -213,9 +221,11 @@
+ SurfaceBuilder<T> &SurfaceBuilder<T>::generate(unsigned width, unsigned height,
+                                                T (*fn)(unsigned x, unsigned y, A1 a1, A2 a2, A3 a3), A1 a1, A2 a2, A3 a3) {
+ 	reserve(width, height);
+-	for (unsigned y = 0; y < height; ++y)
+-		for (unsigned x = 0; x < width; ++x)
+-			write(x, y, fn(x, y, a1, a2, a3));
++	bda_ltm_parallel_for(height, bda_ltm_min_rows(width), [&](unsigned y0, unsigned y1) {
++		for (unsigned y = y0; y < y1; ++y)
++			for (unsigned x = 0; x < width; ++x)
++				write(x, y, fn(x, y, a1, a2, a3));
++	});
+ 
+ 	return *this;
+ }
+@@ -231,9 +241,11 @@
+ 
+ template <typename T> template <typename F> SurfaceBuilder<T> &SurfaceBuilder<T>::xgenerate(unsigned width, unsigned height, F fn) {
+ 	reserve(width, height);
+-	for (unsigned y = 0; y < height; ++y)
+-		for (unsigned x = 0; x < width; ++x)
+-			write(x, y, fn(x, y));
++	bda_ltm_parallel_for(height, bda_ltm_min_rows(width), [&](unsigned y0, unsigned y1) {
++		for (unsigned y = y0; y < y1; ++y)
++			for (unsigned x = 0; x < width; ++x)
++				write(x, y, fn(x, y));
++	});
+ 
+ 	return *this;
+ }
+diff -ruN a/util/src/BitstreamUnpacker.cpp b/util/src/BitstreamUnpacker.cpp
+--- a/util/src/BitstreamUnpacker.cpp	2026-10-23 16:10:20.623846108 +0900
++++ b/util/src/BitstreamUnpacker.cpp	2026-10-23 17:10:44.318111890 +0900
+@@ -122,6 +122,29 @@
+ 	return r;
+ }
+ 
++uint32_t BitstreamUnpacker::peek(unsigned num_bits) const {
++	assert(num_bits <= 32);
++	assert((bit_offset_ + num_bits) <= bit_size());
++
++	// Same extraction as u(), on a copy of the offset.
++	unsigned offset = bit_offset_;
++	uint32_t r = 0;
++	while (num_bits) {
++		const unsigned bit_left = BITS_PER_BYTE - offset % BITS_PER_BYTE;
++		const unsigned data = view_.data()[offset / BITS_PER_BYTE];
++		const unsigned n = LCEVC_MIN(bit_left, num_bits);
++		r = (r << n) | ((data >> (bit_left - n)) & ((1 << n) - 1));
++		offset += n;
++		num_bits -= n;
++	}
++	return r;
++}
++
++void BitstreamUnpacker::skip(unsigned num_bits) {
++	assert((bit_offset_ + num_bits) <= bit_size());
++	bit_offset_ += num_bits;
++}
++
+ // Read a single of byte from stream - expects offset byte aligned
+ //
+ uint8_t BitstreamUnpacker::byte() {
