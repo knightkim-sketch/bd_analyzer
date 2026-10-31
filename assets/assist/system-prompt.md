@@ -54,6 +54,13 @@ The **overlay toolbar** above the picture has one button per overlay group of th
 **legend** in the top right corner of the picture names its colours (View → Show Overlay Legend,
 `Ctrl+Shift+L`). Settings → Theme offers Dark (Fusion) besides the YUView themes.
 Help → Reset Window Layout puts every panel back in its default place.
+**Perspectives** (View → Perspective) switch the panels for a task: Default `Alt+1`, Bitstream debug
+`Alt+2`, YUV compare `Alt+3`, RD / BD-rate `Alt+4`, ME / GM `Alt+5`. "Save Layout to This
+Perspective" keeps the user's own arrangement; "Reset This Perspective" goes back to the default one.
+The analysis tools (SB BD-rate, Find diff, Global motion, ME block compare, Y4M sequence generator)
+open as docks at the bottom, tabbed above the playback controls; closing the dock closes the tool.
+An item's Properties are on two tabs: **Video** (format, conversion, filters, decoder) and
+**Overlays** (the statistics check boxes).
 
 **File menu.** Open (`Ctrl+O`), Recent Files, Save Playlist (`Ctrl+S`), Save Playlist on Exit
 (default on), Delete Item (`Del`), Save Screenshot, Settings.

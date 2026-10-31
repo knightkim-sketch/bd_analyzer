@@ -80,6 +80,11 @@ Qt 없이 도는 코어 단위 테스트 (`tests/unit/`):
       Properties 체크박스와 서로 따라간다 (`64` 가 헤드리스로 봄, 실제 F 키 입력은 여기서만)
 - [ ] overlay 를 켜면 그림 오른쪽 위에 범례가 나오고 `Ctrl+Shift+L` 로 끄고 켠다
 - [ ] Settings → Theme → Dark (Fusion) 에서 패널·메뉴가 모두 어두워지고, Default 로 돌아오면 원래대로
+- [ ] View → Perspective (`Alt+1`~`Alt+5`) 가 작업별 패널 묶음으로 바뀌고, Save Layout / Reset 이 동작한다 (`65`)
+- [ ] 분석 도구(BD-rate, Find diff, Global motion, ME compare, Y4M generator)가 아래쪽 dock 탭으로 열리고,
+      dock 을 떼어(float) 다른 모니터로 옮길 수 있다. dock 을 닫으면 실행 중인 작업이 멈춘다
+- [ ] Properties 의 Video / Overlays 탭이 item 을 바꿔도 마지막에 고른 탭으로 열린다
+- [ ] Settings → Decoders → H.264 Default Decoder 를 FFMpeg 로 바꾸면 새로 연 H.264 가 FFmpeg 로 열린다
 - [ ] View → Save / Restore View State (`Ctrl+1`~`Ctrl+8`) 가 레이아웃을 저장·복원한다
 - [ ] Zoom `Ctrl+0` (1:1) / `Ctrl+9` (fit) / `Ctrl++` / `Ctrl+-`
 - [ ] Split View 가 좌우 비교로 전환된다

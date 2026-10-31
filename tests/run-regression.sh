@@ -481,6 +481,8 @@ run_test "$ROOT/tests/regression/25-mainwindow-teardown.cpp"
 # 메인 창 배치 (패치 0084): 단축키 중복 없음, Block Info 1개, Analysis/Tools 메뉴, Reset Window Layout 이
 # 모든 dock 을 제자리에 두는지, Fullscreen 이 보이던 dock 을 전부 숨겼다 그대로 되살리는지.
 run_test "$ROOT/tests/regression/63-mainwindow-layout.cpp" "$DATA/bdrate_org_176x144.y4m"
+# perspective (Alt+1~5), 분석 도구 dock 5개, Properties 의 Video/Overlays 탭, H.264 기본 디코더 설정.
+run_test "$ROOT/tests/regression/65-perspectives-and-tool-docks.cpp" "$DATA/bdrate_org_176x144.y4m"
 
 echo
 echo "== SB BD-rate =="

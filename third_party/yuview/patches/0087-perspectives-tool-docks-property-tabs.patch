@@ -1,0 +1,372 @@
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+@@ -32,6 +32,8 @@
+ 
+ #include "playlistItemCompressedVideo.h"
+ 
++#include <integration/PropertyTabs.h>
++
+ #include <QInputDialog>
+ #include <QPlainTextEdit>
+ #include <QThread>
+@@ -409,6 +411,9 @@
+         defaultDecSetting = "DefaultDecoderVVC";
+       if (codec == Codec::AV1)
+         defaultDecSetting = "DefaultDecoderAV1";
++      // H.264 has no Codec of its own here; the JM / FFmpeg choice is a bd-analyzer setting.
++      if (vectorContains(possibleDecoders, DecoderEngine::JM))
++        defaultDecSetting = "DefaultDecoderAVC";
+ 
+       auto defaultDecoder =
+         defaultDecSetting.isEmpty()
+@@ -1230,14 +1235,16 @@
+   ui.verticalLayout->insertWidget(1, lineOne.release());
+   ui.verticalLayout->insertLayout(2, video->createVideoHandlerControls(true));
+   ui.verticalLayout->insertWidget(5, lineTwo.release());
+-  ui.verticalLayout->insertLayout(
+-    6, this->statisticsUIHandler.createStatisticsHandlerControls(), 1);
+-  /* A second block of checkboxes, for the reproduced vectors. Two blocks rather than one list,
++  /* The overlays go on a tab of their own (bd-analyzer, integration/PropertyTabs): Video holds how
++   * the item is decoded and processed, Overlays what is drawn on top.
++   * A second block of checkboxes, for the reproduced vectors. Two blocks rather than one list,
+    * because the two describe different things - what the stream says, and what an estimator would
+    * have chosen - and mixing them into one column would make that distinction invisible.
+    */
+-  ui.verticalLayout->insertLayout(
+-    7, this->meStatisticsUIHandler.createStatisticsHandlerControls(), 1);
++  bda::integration::splitPropertiesIntoTabs(
++    ui.verticalLayout,
++    {this->statisticsUIHandler.createStatisticsHandlerControls(),
++     this->meStatisticsUIHandler.createStatisticsHandlerControls()});
+ 
+   // Set the components that we can display
+   if (loadingDecoder)
+--- a/YUViewLib/src/playlistitem/playlistItemRawFile.cpp
++++ b/YUViewLib/src/playlistitem/playlistItemRawFile.cpp
+@@ -31,6 +31,8 @@
+  */
+ 
+ #include "playlistItemRawFile.h"
++
++#include <integration/PropertyTabs.h>
+ #include <integration/MeStatisticsAdapter.h>
+ #include <statistics/BlockInfo.h>
+ #include <statistics/StatisticsDataPainting.h>
+@@ -513,10 +515,12 @@
+   vAllLaout->addWidget(line);
+   vAllLaout->addLayout(this->video->createVideoHandlerControls());
+ 
+-  // The statistics controls, so the ME overlays can be toggled and styled like any other.
+-  vAllLaout->addLayout(this->statisticsUIHandler.createStatisticsHandlerControls(), 1);
+-
+   vAllLaout->insertStretch(-1, 1); // Push controls up
++
++  // The statistics controls, so the ME overlays can be toggled and styled like any other - on a
++  // tab of their own next to the video controls (bd-analyzer, integration/PropertyTabs).
++  bda::integration::splitPropertiesIntoTabs(
++    vAllLaout, {this->statisticsUIHandler.createStatisticsHandlerControls()});
+ }
+ 
+ void playlistItemRawFile::savePlaylist(QDomElement &root, const QDir &playlistDir) const
+--- a/YUViewLib/src/ui/Mainwindow.cpp
++++ b/YUViewLib/src/ui/Mainwindow.cpp
+@@ -39,6 +39,8 @@
+ #include <integration/MeStatisticsAdapter.h>
+ #include <integration/AppTheme.h>
+ #include <integration/MotionEstimationWidget.h>
++#include <integration/Perspectives.h>
++#include <integration/ToolDock.h>
+ #include <integration/LcevcSeparateOpen.h>
+ #include <integration/StabilizedY4mExport.h>
+ #include <playlistitem/playlistItemCompressedVideo.h>
+@@ -247,6 +249,30 @@
+           &splitViewWidget::viewFrameChanged,
+           this->overlayToolBar,
+           &bda::integration::OverlayToolBar::refresh);
++
++  /* The analysis tools are docks now rather than floating dialogs (ToolDock). The docks exist from
++   * here on so that the saved state and the perspectives can place them; each tool is still created
++   * the first time it is asked for. Bottom area, tabbed with the RD plot, hidden.
++   */
++  auto toolDock = [this](const char *title, const char *name, const char *howToOpen) {
++    auto *dock = new bda::integration::ToolDock(title, name, howToOpen, this);
++    this->addDockWidget(Qt::BottomDockWidgetArea, dock);
++    this->tabifyDockWidget(ui.rateDistortionPlotDock, dock);
++    dock->hide();
++    return dock;
++  };
++  this->bdRateDock = toolDock(
++      "SB BD-rate", "bdRateDock", "Select the streams of one rate point and use Analysis > SB BD-rate from Selection.");
++  this->streamDiffDock = toolDock(
++      "Find diff", "streamDiffDock", "Select two streams and use Analysis > Find diff between two Streams.");
++  this->globalMotionDock = toolDock(
++      "Global motion", "globalMotionDock", "Select an item and use Analysis > Global motion of the selected Item.");
++  this->meCompareDock = toolDock(
++      "ME block compare", "meCompareDock", "Shift+click a block in the view to compare the motion estimators on it.");
++  this->sequenceGeneratorDock = toolDock(
++      "Y4M sequence generator", "sequenceGeneratorDock", "Use Tools > Generate Y4M Sequence.");
++  this->perspectives =
++      new bda::integration::Perspectives(this, [this] { this->placeDocksByDefault(); });
+   // Shift+click in either view opens the ME compare popup on that block.
+   connect(ui.displaySplitView,
+           &splitViewWidget::blockCompareRequested,
+@@ -809,6 +835,7 @@
+   addActionToMenu(
+       loadStateMenu, "Slot 8", &stateHandler, &ViewStateHandler::loadViewState8, Qt::Key_8);
+ 
++  this->perspectives->addMenuActions(viewMenu->addMenu("&Perspective"));
+   auto dockPanelsMenu = viewMenu->addMenu("Dock Panels");
+   auto addDockViewAction =
+       [dockPanelsMenu](QDockWidget *dockWidget, QString text, const QKeySequence &shortcut = {})
+@@ -839,6 +866,13 @@
+    * the other docks rather than in a menu of its own.
+    */
+   addDockViewAction(ui.ytTranscodeDock, "Show &YouTube Transcode", Qt::CTRL | Qt::Key_Y);
++  // The analysis tools' docks. No shortcut: the Analysis / Tools menu entries open them.
++  dockPanelsMenu->addSeparator();
++  addDockViewAction(this->bdRateDock, "Show SB BD-rate");
++  addDockViewAction(this->streamDiffDock, "Show Find diff");
++  addDockViewAction(this->globalMotionDock, "Show Global motion");
++  addDockViewAction(this->meCompareDock, "Show ME block compare");
++  addDockViewAction(this->sequenceGeneratorDock, "Show Y4M sequence generator");
+   viewMenu->addSeparator();
+   addDockViewAction(ui.playbackControllerDock, "Show Playback &Controls", Qt::CTRL | Qt::Key_D);
+   auto overlayToolBarAction = this->overlayToolBar->toggleViewAction();
+@@ -1051,8 +1085,8 @@
+     return;
+   }
+ 
+-  this->streamDiffWindow->show();
+-  this->streamDiffWindow->raise();
++  this->streamDiffDock->setTool(this->streamDiffWindow);
++  this->streamDiffDock->present();
+ }
+ 
+ void MainWindow::globalMotionFromSelection()
+@@ -1083,8 +1117,8 @@
+     QMessageBox::information(this, "Global motion", result.message);
+     return;
+   }
+-  this->globalMotionWindow->show();
+-  this->globalMotionWindow->raise();
++  this->globalMotionDock->setTool(this->globalMotionWindow);
++  this->globalMotionDock->present();
+ }
+ 
+ void MainWindow::showGlobalMotionFrame(playlistItem *item, int frameIdx)
+@@ -1233,8 +1267,8 @@
+           .arg(pixelPos.y()),
+       layout,
+       entries);
+-  this->meCompareWindow->show();
+-  this->meCompareWindow->raise();
++  this->meCompareDock->setTool(this->meCompareWindow);
++  this->meCompareDock->present();
+ }
+ 
+ void MainWindow::showStreamDiffLocation(playlistItem *blockStream,
+@@ -1298,8 +1332,8 @@
+       return;
+   }
+ 
+-  this->bdRateWindow->show();
+-  this->bdRateWindow->raise();
++  this->bdRateDock->setTool(this->bdRateWindow);
++  this->bdRateDock->present();
+ }
+ 
+ void MainWindow::motionEstimationTargetChanged(playlistItem *item, int frameIdx)
+@@ -1545,8 +1579,8 @@
+             this,
+             [this](const QString &path) { this->loadFiles({path}); });
+   }
+-  this->sequenceGeneratorWindow->show();
+-  this->sequenceGeneratorWindow->raise();
++  this->sequenceGeneratorDock->setTool(this->sequenceGeneratorWindow);
++  this->sequenceGeneratorDock->present();
+ }
+ 
+ MainWindow::MeAdvKey MainWindow::meAdvKeyFor(playlistItem *item) const
+@@ -2248,35 +2282,16 @@
+ 
+ /// End Full screen. Goto one window mode and reset all the geometry and state settings that were
+ /// saved.
+-void MainWindow::resetWindowLayout()
++/* Every dock in its default area and visibility. Used by Reset Window Layout and as the base every
++ * perspective starts from (integration/Perspectives).
++ */
++void MainWindow::placeDocksByDefault()
+ {
+-  /*QByteArray windowsGeometry = separateViewWindow.saveState();
+-  QString test = windowsGeometry.toHex();
+-  qDebug() << test;*/
+-
+-  QSettings settings;
+-
+-  // Quit full screen if anything is in full screen
+-  ui.displaySplitView->showNormal();
+-  separateViewWindow.showNormal();
+-  showNormal();
+-
+-  // Reset the separate window and save the state
+-  separateViewWindow.hide();
+-  separateViewWindow.setGeometry(0, 0, 500, 300);
+-  separateViewWindow.move(0, 0);
+-  settings.setValue("separateViewWindow/geometry", separateViewWindow.saveGeometry());
+-  settings.setValue("separateViewWindow/windowState", separateViewWindow.saveState(QT_VERSION));
+-
+-  // show the menu bar
+-  if (!is_Q_OS_MAC)
+-    ui.menuBar->show();
+-  statusBar()->show();
+-
+   /* Place every dock explicitly. This used to restore a saved hex blob, which named docks that no
+    * longer exist and none of the ones added since, so those kept wherever they had been dragged.
+    * Left: what is in the stream and in the clicked block. Right: how the item is shown. Bottom:
+-   * playback. The task-specific docks start hidden and come back from View > Dock Panels.
++   * playback. The task-specific docks start hidden and come back from View > Dock Panels, the
++   * Analysis / Tools menus or a perspective (View > Perspective).
+    */
+   const QList<QDockWidget *> leftColumn  = {ui.playlistDockWidget, ui.fileInfoDock, ui.cachingInfoDock};
+   const QList<QDockWidget *> rightColumn = {ui.propertiesDock, ui.frameInfoDock};
+@@ -2292,8 +2307,21 @@
+   this->splitDockWidget(rightColumn[0], rightColumn[1], Qt::Vertical);
+   for (auto *dock : hiddenRight)
+     this->addDockWidget(Qt::RightDockWidgetArea, dock);
+-  this->addDockWidget(Qt::BottomDockWidgetArea, ui.playbackControllerDock);
++  /* Bottom: the RD plot and the tools tabbed together, above the playback controls rather than
++   * beside them - side by side they got the playback bar's height and were unusable.
++   */
+   this->addDockWidget(Qt::BottomDockWidgetArea, ui.rateDistortionPlotDock);
++  this->splitDockWidget(ui.rateDistortionPlotDock, ui.playbackControllerDock, Qt::Vertical);
++  const QList<QDockWidget *> toolDocks = {this->bdRateDock,
++                                          this->streamDiffDock,
++                                          this->globalMotionDock,
++                                          this->meCompareDock,
++                                          this->sequenceGeneratorDock};
++  for (auto *dock : toolDocks)
++  {
++    this->addDockWidget(Qt::BottomDockWidgetArea, dock);
++    this->tabifyDockWidget(ui.rateDistortionPlotDock, dock);
++  }
+ 
+   for (auto *dock : leftColumn + rightColumn)
+     dock->show();
+@@ -2301,9 +2329,40 @@
+   for (auto *dock : hiddenRight)
+     dock->hide();
+   ui.rateDistortionPlotDock->hide();
++  for (auto *dock : toolDocks)
++    dock->hide();
+   this->resizeDocks({ui.playlistDockWidget, ui.propertiesDock}, {300, 300}, Qt::Horizontal);
+   this->addToolBar(Qt::TopToolBarArea, this->overlayToolBar);
+   this->overlayToolBar->show();
++}
++
++void MainWindow::resetWindowLayout()
++{
++  /*QByteArray windowsGeometry = separateViewWindow.saveState();
++  QString test = windowsGeometry.toHex();
++  qDebug() << test;*/
++
++  QSettings settings;
++
++  // Quit full screen if anything is in full screen
++  ui.displaySplitView->showNormal();
++  separateViewWindow.showNormal();
++  showNormal();
++
++  // Reset the separate window and save the state
++  separateViewWindow.hide();
++  separateViewWindow.setGeometry(0, 0, 500, 300);
++  separateViewWindow.move(0, 0);
++  settings.setValue("separateViewWindow/geometry", separateViewWindow.saveGeometry());
++  settings.setValue("separateViewWindow/windowState", separateViewWindow.saveState(QT_VERSION));
++
++  // show the menu bar
++  if (!is_Q_OS_MAC)
++    ui.menuBar->show();
++  statusBar()->show();
++
++  this->placeDocksByDefault();
++  this->perspectives->markCurrent("Default");
+ 
+   // Set the size/position of the main window
+   setGeometry(0, 0, 1100, 750);
+--- a/YUViewLib/src/ui/Mainwindow.h
++++ b/YUViewLib/src/ui/Mainwindow.h
+@@ -48,6 +48,8 @@
+ #include <integration/StreamDiffWindow.h>
+ #include <integration/MeRunner.h>
+ #include <integration/OverlayControls.h>
++#include <integration/Perspectives.h>
++#include <integration/ToolDock.h>
+ 
+ #include <handler/UpdateHandler.h>
+ #include <ui/SeparateWindow.h>
+@@ -284,4 +286,12 @@
+   bool showNormalMaximized;     // When going to full screen: Was this windows maximized?
+   QList<QPointer<QWidget>> fullScreenHiddenDocks; // Docks and toolbars hidden when going to full screen
+   bda::integration::OverlayToolBar *overlayToolBar{}; // F1 - F8 overlay switches above the picture
++  // The analysis tools as docks (integration/ToolDock) and the named layouts that place them.
++  bda::integration::ToolDock     *bdRateDock{};
++  bda::integration::ToolDock     *streamDiffDock{};
++  bda::integration::ToolDock     *globalMotionDock{};
++  bda::integration::ToolDock     *meCompareDock{};
++  bda::integration::ToolDock     *sequenceGeneratorDock{};
++  bda::integration::Perspectives *perspectives{};
++  void                            placeDocksByDefault();
+ };
+--- a/YUViewLib/src/ui/SettingsDialog.cpp
++++ b/YUViewLib/src/ui/SettingsDialog.cpp
+@@ -42,7 +42,10 @@
+ #include <ffmpeg/FFmpegVersionHandler.h>
+ 
+ #include <QColorDialog>
++#include <QComboBox>
+ #include <QFileDialog>
++#include <QFormLayout>
++#include <QGroupBox>
+ #include <QMessageBox>
+ #include <QSettings>
+ #include <QTextStream>
+@@ -153,6 +156,23 @@
+   ui.comboBoxDefaultVVC->setCurrentText(settings.value("DefaultDecoderVVC", 0).toString());
+   ui.comboBoxDefaultAV1->setCurrentText(settings.value("DefaultDecoderAV1", 0).toString());
+ 
++  /* H.264 (bd-analyzer): JM for the macroblock analysis, or FFmpeg. Built here rather than in the
++   * .ui; the default when nothing is saved is JM, as in playlistItemCompressedVideo.
++   */
++  {
++    auto *box    = new QGroupBox("H.264");
++    auto *form   = new QFormLayout(box);
++    this->comboBoxDefaultAVC = new QComboBox(box);
++    for (const auto decoder : {decoder::DecoderEngine::JM, decoder::DecoderEngine::FFMpeg})
++      this->comboBoxDefaultAVC->addItem(
++          QString::fromStdString(std::string(decoder::DecoderEngineMapper.getName(decoder))));
++    const auto avcDefault = settings.value("DefaultDecoderAVC").toString();
++    if (!avcDefault.isEmpty())
++      this->comboBoxDefaultAVC->setCurrentText(avcDefault);
++    form->addRow("Default Decoder", this->comboBoxDefaultAVC);
++    ui.verticalLayout_3->insertWidget(std::max(0, ui.verticalLayout_3->count() - 1), box);
++  }
++
+   ui.lineEditLibde265File->setText(settings.value("libde265File", "").toString());
+   ui.lineEditLibHMFile->setText(settings.value("libHMFile", "").toString());
+   ui.lineEditLibDav1d->setText(settings.value("libDav1dFile", "").toString());
+@@ -475,6 +495,7 @@
+   settings.setValue("DefaultDecoderHEVC", ui.comboBoxDefaultHEVC->currentText());
+   settings.setValue("DefaultDecoderVVC", ui.comboBoxDefaultVVC->currentText());
+   settings.setValue("DefaultDecoderAV1", ui.comboBoxDefaultAV1->currentText());
++  settings.setValue("DefaultDecoderAVC", this->comboBoxDefaultAVC->currentText());
+   // Raw coded video files
+   settings.setValue("libde265File", ui.lineEditLibde265File->text());
+   settings.setValue("libHMFile", ui.lineEditLibHMFile->text());
+--- a/YUViewLib/src/ui/SettingsDialog.h
++++ b/YUViewLib/src/ui/SettingsDialog.h
+@@ -88,4 +88,5 @@
+   QStringList getLibraryPath(QString currentFile, QString caption, bool multipleFiles=false);
+ 
+   Ui::SettingsDialog ui;
++  QComboBox         *comboBoxDefaultAVC{}; // bd-analyzer: H.264 has no group in the .ui
+ };
