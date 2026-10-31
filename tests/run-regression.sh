@@ -478,6 +478,10 @@ run_test "$ROOT/tests/regression/30-cache-in-working-directory.cpp"
 # View 메뉴에서 다시 켜지는지. 다른 MainWindow 테스트는 창을 일부러 leak 하므로 여기서만 잡힌다.
 run_test "$ROOT/tests/regression/25-mainwindow-teardown.cpp"
 
+# 메인 창 배치 (패치 0084): 단축키 중복 없음, Block Info 1개, Analysis/Tools 메뉴, Reset Window Layout 이
+# 모든 dock 을 제자리에 두는지, Fullscreen 이 보이던 dock 을 전부 숨겼다 그대로 되살리는지.
+run_test "$ROOT/tests/regression/63-mainwindow-layout.cpp"
+
 echo
 echo "== SB BD-rate =="
 # 같은 소스의 CRF 3점 + 원본. 그룹 구성과 프레임 수집을 검사한다 (수식은 단위 테스트).

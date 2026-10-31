@@ -69,10 +69,12 @@ Qt 없이 도는 코어 단위 테스트 (`tests/unit/`):
 - [ ] 앱이 뜨고 메뉴바가 보인다 — `./bin/YUView.sh` 또는 설치본 `bd-analyzer`
 - [ ] File → Open (`Ctrl+O`) 로 파일이 열리고 playlist 에 들어간다
 - [ ] Recent Files 에 직전 파일이 남는다
-- [ ] View → Dock Panels 의 9개 단축키가 각각 해당 패널을 토글한다
+- [ ] View → Dock Panels 의 10개 단축키가 각각 해당 패널을 토글한다
       — Playlist `Ctrl+L` / Properties `Ctrl+P` / Info `Ctrl+I` / Block Info `Ctrl+B` /
-      Frame Info `Ctrl+F` / Motion Estimation `Ctrl+M` / AI Assistant `Ctrl+K` /
-      YouTube Transcode `Ctrl+Y` / Playback Controls `Ctrl+D`
+      Frame Info `Ctrl+Shift+F` / RD Plot `Ctrl+Shift+R` / Motion Estimation `Ctrl+M` /
+      AI Assistant `Ctrl+K` / YouTube Transcode `Ctrl+Y` / Playback Controls `Ctrl+D`
+      (단축키 중복·메뉴 위치·Reset Layout·Fullscreen 왕복은 `63` 이 헤드리스로 본다. 실제 키 입력은 여기서만)
+- [ ] `Ctrl+F` 가 Fullscreen 으로 들어가고 나오며, 나올 때 들어가기 전의 패널이 그대로 돌아온다
 - [ ] View → Save / Restore View State (`Ctrl+1`~`Ctrl+8`) 가 레이아웃을 저장·복원한다
 - [ ] Zoom `Ctrl+0` (1:1) / `Ctrl+9` (fit) / `Ctrl++` / `Ctrl+-`
 - [ ] Split View 가 좌우 비교로 전환된다
@@ -147,7 +149,7 @@ Qt 없이 도는 코어 단위 테스트 (`tests/unit/`):
       같은 파일끼리 넣어 `every compared frame reconstructs identically` 가 나오는지로 먼저 확인한다
 - [ ] D 의 첫 차이 프레임이 4단계 프레임보다 **앞설 수 있다** — 정상이다. hidden ARF 가 갈렸으면 그것을
       참조하는 앞 표시 프레임이 먼저 다르다 (WorldCup: 4단계 표시 16, D 프레임 1)
-- [ ] **Find diff 창** (View → Find diff, 스트림 2개 선택) — 1-2 / 3 / 4단계가 한 번에 돈다. `.av1` 과
+- [ ] **Find diff 창** (Analysis → Find diff, 스트림 2개 선택) — 1-2 / 3 / 4단계가 한 번에 돈다. `.av1` 과
       `.ivf` 둘 다. 블록 행 더블클릭 또는 **Go to first difference** 로 그 프레임·블록이 선택되고
       Block Info dock 이 열린다. 화면의 하이라이트와 hexdump 가 같은 블록을 가리키는지 **눈으로** 본다
       (회귀 42 는 선택 순서·프레임·Block Info 상태 문자열까지만 본다)
@@ -157,7 +159,7 @@ Qt 없이 도는 코어 단위 테스트 (`tests/unit/`):
 - [ ] 창의 **Compare reconstructed pictures** — 결과가 나온 뒤 체크하면 D 만 추가로 돈다. 진행 중
       체크 해제는 D 만 멈추고, 창 닫기는 전부 멈춘다
 - [ ] 긴 4K 스트림을 dav1d 로 재생해도 RSS 가 프레임 수에 비례해 늘지 않는다 (YUView `0059`, dav1d `0002`)
-- [ ] **Global motion 창** (raw YUV 또는 원본이 붙은 스트림 선택 → View → Global motion, Ctrl+Shift+G) —
+- [ ] **Global motion 창** (raw YUV 또는 원본이 붙은 스트림 선택 → Analysis → Global motion, Ctrl+Shift+G) —
       Run 후 프레임 행을 고르면 메인 창이 그 프레임으로 가고 4×4 윈도가 그려진다. **눈으로 확인**:
       화살표가 내용이 온 쪽(ref)을 가리키는지 — 오른쪽으로 패닝하는 장면이면 화살표는 왼쪽,
       채택(청록)·기각(회색) 색이 구분되는지, 윈도 클릭 시 Block Info 에 GM 행이 나오는지

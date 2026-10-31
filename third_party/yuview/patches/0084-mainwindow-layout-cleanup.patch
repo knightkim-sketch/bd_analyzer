@@ -1,0 +1,409 @@
+--- a/YUViewLib/src/ui/Mainwindow.cpp
++++ b/YUViewLib/src/ui/Mainwindow.cpp
+@@ -126,11 +126,8 @@
+ 
+   setFocusPolicy(Qt::StrongFocus);
+ 
+-  statusBar()->hide();
+ 
+   saveWindowsStateOnExit = true;
+-  for (int i = 0; i < 7; i++)
+-    panelsVisible[i] = false;
+ 
+   // Initialize the separate window
+   separateViewWindow.setWindowTitle("Separate View");
+@@ -234,19 +231,6 @@
+           &PlaylistTreeWidget::selectionRangeChanged,
+           this,
+           &MainWindow::currentSelectedItemsChanged);
+-  connect(ui.playlistTreeWidget,
+-          &PlaylistTreeWidget::selectionRangeChanged,
+-          ui.blockInfoWidget,
+-          &BlockInfoWidget::currentSelectedItemsChanged);
+-  // Both views can be clicked; the pane shows whichever was clicked last.
+-  connect(ui.displaySplitView,
+-          &splitViewWidget::blockSelected,
+-          ui.blockInfoWidget,
+-          &BlockInfoWidget::setSelectedBlock);
+-  connect(&separateViewWindow.splitView,
+-          &splitViewWidget::blockSelected,
+-          ui.blockInfoWidget,
+-          &BlockInfoWidget::setSelectedBlock);
+   // Shift+click in either view opens the ME compare popup on that block.
+   connect(ui.displaySplitView,
+           &splitViewWidget::blockCompareRequested,
+@@ -256,23 +240,13 @@
+           &splitViewWidget::blockCompareRequested,
+           this,
+           &MainWindow::compareBlockAt);
+-  // Statistics for a newly selected frame arrive asynchronously, and switching the decoder rebuilds
+-  // the type list. Both end up here, so just re-read the values.
+-  connect(ui.playlistTreeWidget,
+-          &PlaylistTreeWidget::selectedItemChanged,
+-          ui.blockInfoWidget,
+-          &BlockInfoWidget::refresh);
+-  /* The syntax shown belongs to the frame on screen, not to the frame that happened to be displayed
+-   * when the block was clicked. Without this the pane went stale as soon as the frame changed, while
+-   * the pixel side of the same click (Frame Info) kept following along.
+-   */
+-  connect(ui.displaySplitView,
+-          &splitViewWidget::viewFrameChanged,
+-          ui.blockInfoWidget,
+-          &BlockInfoWidget::setCurrentFrame);
+-
+-  /* The caching info pane hosts a second copy of the block syntax table (the caching thread list it
+-   * used to show was removed). Same signals as the dock above.
++  /* The block syntax table lives in the caching info pane (the caching thread list it used to show
++   * was removed), which is therefore titled Block Info. It used to have a twin in a separate, hidden
++   * dock; that copy was dropped so the same table is not shown twice.
++   * Both views can be clicked; the pane shows whichever was clicked last. Statistics for a newly
++   * selected frame arrive asynchronously and switching the decoder rebuilds the type list, so
++   * selectedItemChanged just re-reads the values. The syntax shown belongs to the frame on screen,
++   * hence viewFrameChanged.
+    */
+   if (auto *cachingBlockInfo = ui.cachingInfoWidget->getBlockInfoWidget())
+   {
+@@ -748,13 +722,6 @@
+   }
+   fileMenu->addSeparator();
+   addActionToMenu(fileMenu, "&Save Screenshot...", this, &MainWindow::saveScreenshot);
+-  connect(fileMenu->addAction(tr("Export &Filtered Y4M...")), &QAction::triggered, this, [this]() {
+-    bda::integration::exportFilteredY4m(ui.playlistTreeWidget->getSelectedItems()[0], this);
+-  });
+-  connect(fileMenu->addAction(tr("Export &Stabilized Y4M...")), &QAction::triggered, this, [this]() {
+-    bda::integration::exportStabilizedY4m(ui.playlistTreeWidget->getSelectedItems()[0], this);
+-  });
+-  addActionToMenu(fileMenu, "&Generate Y4M Sequence...", this, &MainWindow::openSequenceGenerator);
+   fileMenu->addSeparator();
+   addActionToMenu(fileMenu, "&Settings...", this, &MainWindow::showSettingsWindow);
+   fileMenu->addSeparator();
+@@ -825,29 +792,6 @@
+       loadStateMenu, "Slot 7", &stateHandler, &ViewStateHandler::loadViewState7, Qt::Key_7);
+   addActionToMenu(
+       loadStateMenu, "Slot 8", &stateHandler, &ViewStateHandler::loadViewState8, Qt::Key_8);
+-  /* Not in a dock: it opens three plots side by side and two tables, and it is opened for a
+-   * comparison rather than kept around. The playlist selection is the input, so the action lives
+-   * next to the other things that act on a selection.
+-   */
+-  addActionToMenu(viewMenu,
+-                  "SB BD-&rate from Selection",
+-                  this,
+-                  &MainWindow::addBdRateGroupFromSelection,
+-                  Qt::CTRL | Qt::Key_R);
+-  /* Also a comparison of a selection rather than a panel, so it sits next to the BD-rate action.
+-   * Two streams in, one answer out: where their syntax first parts company.
+-   */
+-  addActionToMenu(viewMenu,
+-                  "Find di&ff between two Streams",
+-                  this,
+-                  &MainWindow::findDiffFromSelection,
+-                  Qt::CTRL | Qt::Key_J);
+-  addActionToMenu(viewMenu,
+-                  "&Global motion of the selected Item",
+-                  this,
+-                  &MainWindow::globalMotionFromSelection,
+-                  Qt::CTRL | Qt::SHIFT | Qt::Key_G);
+-  viewMenu->addSeparator();
+ 
+   auto dockPanelsMenu = viewMenu->addMenu("Dock Panels");
+   auto addDockViewAction =
+@@ -861,9 +805,11 @@
+   addDockViewAction(ui.playlistDockWidget, "Show P&laylist", Qt::CTRL | Qt::Key_L);
+   addDockViewAction(ui.propertiesDock, "Show &Properties", Qt::CTRL | Qt::Key_P);
+   addDockViewAction(ui.fileInfoDock, "Show &Info", Qt::CTRL | Qt::Key_I);
+-  addDockViewAction(ui.cachingInfoDock, "Show Caching Info");
+-  addDockViewAction(ui.blockInfoDock, "Show &Block Info", Qt::CTRL | Qt::Key_B);
+-  addDockViewAction(ui.frameInfoDock, "Show &Frame Info", Qt::CTRL | Qt::Key_F);
++  addDockViewAction(ui.cachingInfoDock, "Show &Block Info", Qt::CTRL | Qt::Key_B);
++  // Ctrl+Shift+F: plain Ctrl+F is the split view's full screen toggle, also in this menu.
++  addDockViewAction(ui.frameInfoDock, "Show &Frame Info", Qt::CTRL | Qt::SHIFT | Qt::Key_F);
++  // Hidden by default: the plot is wanted for some streams, not for every block one clicks.
++  addDockViewAction(ui.rateDistortionPlotDock, "Show &RD Plot", Qt::CTRL | Qt::SHIFT | Qt::Key_R);
+   /* The panel starts hidden (mainwindow.ui), so without this entry there is no way to bring it up
+    * at all - which is exactly how it shipped the first time.
+    */
+@@ -896,6 +842,38 @@
+   addActionToMenu(zoomMenu, "Zoom to 200%", this, &MainWindow::onMenuZoomTo200);
+   addActionToMenu(zoomMenu, "Zoom to ...", this, &MainWindow::onMenuZoomToCustom);
+ 
++  /* Analysis: actions that take the playlist selection and open a window with the answer. They are
++   * opened for a comparison rather than kept around, so they are not docks.
++   */
++  auto analysisMenu = menuBar()->addMenu(tr("&Analysis"));
++  addActionToMenu(analysisMenu,
++                  "SB BD-&rate from Selection",
++                  this,
++                  &MainWindow::addBdRateGroupFromSelection,
++                  Qt::CTRL | Qt::Key_R);
++  // Two streams in, one answer out: where their syntax first parts company.
++  addActionToMenu(analysisMenu,
++                  "Find di&ff between two Streams",
++                  this,
++                  &MainWindow::findDiffFromSelection,
++                  Qt::CTRL | Qt::Key_J);
++  addActionToMenu(analysisMenu,
++                  "&Global motion of the selected Item",
++                  this,
++                  &MainWindow::globalMotionFromSelection,
++                  Qt::CTRL | Qt::SHIFT | Qt::Key_G);
++
++  // Tools: making new material - test sequences and processed copies of the selected item.
++  auto toolsMenu = menuBar()->addMenu(tr("&Tools"));
++  addActionToMenu(toolsMenu, "&Generate Y4M Sequence...", this, &MainWindow::openSequenceGenerator);
++  toolsMenu->addSeparator();
++  connect(toolsMenu->addAction(tr("Export &Filtered Y4M...")), &QAction::triggered, this, [this]() {
++    bda::integration::exportFilteredY4m(ui.playlistTreeWidget->getSelectedItems()[0], this);
++  });
++  connect(toolsMenu->addAction(tr("Export &Stabilized Y4M...")), &QAction::triggered, this, [this]() {
++    bda::integration::exportStabilizedY4m(ui.playlistTreeWidget->getSelectedItems()[0], this);
++  });
++
+   auto playbackMenu = menuBar()->addMenu(tr("&Playback"));
+   addActionToMenu(playbackMenu,
+                   "Play/Pause",
+@@ -1248,8 +1226,8 @@
+   if (pixelPos.x() >= 0 && pixelPos.y() >= 0)
+   {
+     ui.displaySplitView->selectBlockAtItemPixel(0, pixelPos);
+-    ui.blockInfoDock->show();
+-    ui.blockInfoDock->raise();
++    ui.cachingInfoDock->show();
++    ui.cachingInfoDock->raise();
+   }
+   // The selection made the Bitstream Analysis pane show blockStream; override it only when the
+   // syntax toggle names the other one, so the same file is not parsed twice.
+@@ -1793,12 +1771,12 @@
+   if (item1 == nullptr)
+   {
+     // Nothing is selected
+-    setWindowTitle("YUView");
++    setWindowTitle("bd-analyzer");
+   }
+   else
+   {
+     // update window caption
+-    QString newCaption = "YUView - " + item1->text(0);
++    QString newCaption = "bd-analyzer - " + item1->text(0);
+     setWindowTitle(newCaption);
+   }
+   // The Rec/Org selector belongs to the selected item, so it has to follow the selection.
+@@ -1918,23 +1896,12 @@
+     // We are in full screen mode. Toggle back to windowed mode.
+ 
+     // Show all dock panels which were previously visible.
+-    if (panelsVisible[0])
+-      ui.propertiesDock->show();
+-    if (panelsVisible[1])
+-      ui.playlistDockWidget->show();
+-    if (panelsVisible[2])
+-      ui.playbackControllerDock->show();
+-    if (panelsVisible[3])
+-      ui.fileInfoDock->show();
+-    if (panelsVisible[4])
+-      ui.cachingInfoDock->show();
+-    if (panelsVisible[5])
+-      ui.blockInfoDock->show();
+-    if (panelsVisible[6])
+-      ui.frameInfoDock->show();
+-    if (panelsVisible[7])
+-      ui.motionEstimationDock->show();
++    for (auto &dock : this->fullScreenHiddenDocks)
++      if (dock)
++        dock->show();
++    this->fullScreenHiddenDocks.clear();
+ 
++    statusBar()->show();
+     if (!is_Q_OS_MAC)
+       ui.menuBar->show();
+     ui.tabWidget->tabBar()->show();
+@@ -1947,28 +1914,22 @@
+   }
+   else
+   {
+-    // Toggle to full screen mode. Save which panels are currently visible. This
+-    // is restored when returning from full screen.
+-    panelsVisible[0] = ui.propertiesDock->isVisible();
+-    panelsVisible[1] = ui.playlistDockWidget->isVisible();
+-    panelsVisible[2] = ui.playbackControllerDock->isVisible();
+-    panelsVisible[3] = ui.fileInfoDock->isVisible();
+-    panelsVisible[4] = ui.cachingInfoDock->isVisible();
+-    panelsVisible[5] = ui.blockInfoDock->isVisible();
+-    panelsVisible[6] = ui.frameInfoDock->isVisible();
+-    panelsVisible[7] = ui.motionEstimationDock->isVisible();
+-
+-    // Hide panels
+-    ui.propertiesDock->hide();
+-    ui.playlistDockWidget->hide();
+-    QSettings settings;
+-    if (!settings.value("ShowPlaybackControlFullScreen", false).toBool())
+-      ui.playbackControllerDock->hide();
+-    ui.fileInfoDock->hide();
+-    ui.cachingInfoDock->hide();
+-    ui.blockInfoDock->hide();
+-    ui.frameInfoDock->hide();
++    /* Toggle to full screen mode. Save which panels are currently visible. This is restored when
++     * returning from full screen. Every dock, not a fixed list: the list went stale each time a
++     * panel was added.
++     */
++    QSettings  settings;
++    const auto keepPlayback = settings.value("ShowPlaybackControlFullScreen", false).toBool();
++    this->fullScreenHiddenDocks.clear();
++    for (auto *dock : this->findChildren<QDockWidget *>(QString(), Qt::FindDirectChildrenOnly))
++    {
++      if (!dock->isVisible() || (keepPlayback && dock == ui.playbackControllerDock))
++        continue;
++      this->fullScreenHiddenDocks.push_back(dock);
++      dock->hide();
++    }
+ 
++    statusBar()->hide();
+     if (!is_Q_OS_MAC)
+       ui.menuBar->hide();
+     ui.tabWidget->tabBar()->hide();
+@@ -2203,7 +2164,8 @@
+    * syntax pane reads the same click, so keep the two in step.
+    */
+   ui.frameInfoWidget->refresh();
+-  ui.blockInfoWidget->refresh();
++  if (auto *blockInfo = ui.cachingInfoWidget->getBlockInfoWidget())
++    blockInfo->refresh();
+   // The plot has an SSE axis only once an original is attached, so it was showing a hint until now.
+   ui.rateDistortionPlot->refresh();
+   this->updateDisplaySourceComboBox();
+@@ -2253,10 +2215,6 @@
+ /// saved.
+ void MainWindow::resetWindowLayout()
+ {
+-  // This is the code to obtain the raw value that is used below for restoring the state
+-  /*QByteArray windowState = saveState();
+-  QString test = windowState.toHex();
+-  qDebug() << test;*/
+   /*QByteArray windowsGeometry = separateViewWindow.saveState();
+   QString test = windowsGeometry.toHex();
+   qDebug() << test;*/
+@@ -2275,31 +2233,40 @@
+   settings.setValue("separateViewWindow/geometry", separateViewWindow.saveGeometry());
+   settings.setValue("separateViewWindow/windowState", separateViewWindow.saveState(QT_VERSION));
+ 
+-  // Dock all dock panels
+-  ui.playlistDockWidget->setFloating(false);
+-  ui.propertiesDock->setFloating(false);
+-  ui.playbackControllerDock->setFloating(false);
+-  ui.fileInfoDock->setFloating(false);
+-  ui.cachingInfoDock->setFloating(false);
+-
+   // show the menu bar
+   if (!is_Q_OS_MAC)
+     ui.menuBar->show();
++  statusBar()->show();
+ 
+-  // Reset main window state (the size and position of the dock widgets). The code to obtain this
+-  // raw value is above.
+-  QByteArray mainWindowState = QByteArray::fromHex(
+-      "000000ff00000000fd00000003000000000000011600000348fc0200000003fb000000240070006c00610079006c"
+-      "0069007300740044006f0063006b005700690064006700650074010000001500000212000000c000fffffffb0000"
+-      "001800660069006c00650049006e0066006f0044006f0063006b010000022b000000840000005b00fffffffb0000"
+-      "002000630061006300680069006e0067004400650062007500670044006f0063006b01000002b3000000aa000000"
+-      "aa00ffffff00000001000000b900000348fc0200000002fb0000001c00700072006f007000650072007400690065"
+-      "00730044006f0063006b0100000015000002670000002d00fffffffb000000220064006900730070006c00610079"
+-      "0044006f0063006b0057006900640067006500740100000280000000dd000000dd0007ffff000000030000048f00"
+-      "000032fc0100000001fb0000002c0070006c00610079006200610063006b0043006f006e00740072006f006c006c"
+-      "006500720044006f0063006b01000000000000048f000001460007ffff000002b800000348000000040000000400"
+-      "00000800000008fc00000000");
+-  restoreState(mainWindowState);
++  /* Place every dock explicitly. This used to restore a saved hex blob, which named docks that no
++   * longer exist and none of the ones added since, so those kept wherever they had been dragged.
++   * Left: what is in the stream and in the clicked block. Right: how the item is shown. Bottom:
++   * playback. The task-specific docks start hidden and come back from View > Dock Panels.
++   */
++  const QList<QDockWidget *> leftColumn  = {ui.playlistDockWidget, ui.fileInfoDock, ui.cachingInfoDock};
++  const QList<QDockWidget *> rightColumn = {ui.propertiesDock, ui.frameInfoDock};
++  const QList<QDockWidget *> hiddenRight = {
++      ui.motionEstimationDock, ui.assistDock, ui.ytTranscodeDock};
++  for (auto *dock : this->findChildren<QDockWidget *>(QString(), Qt::FindDirectChildrenOnly))
++    dock->setFloating(false);
++
++  this->addDockWidget(Qt::LeftDockWidgetArea, leftColumn[0]);
++  for (int i = 1; i < leftColumn.size(); i++)
++    this->splitDockWidget(leftColumn[i - 1], leftColumn[i], Qt::Vertical);
++  this->addDockWidget(Qt::RightDockWidgetArea, rightColumn[0]);
++  this->splitDockWidget(rightColumn[0], rightColumn[1], Qt::Vertical);
++  for (auto *dock : hiddenRight)
++    this->addDockWidget(Qt::RightDockWidgetArea, dock);
++  this->addDockWidget(Qt::BottomDockWidgetArea, ui.playbackControllerDock);
++  this->addDockWidget(Qt::BottomDockWidgetArea, ui.rateDistortionPlotDock);
++
++  for (auto *dock : leftColumn + rightColumn)
++    dock->show();
++  ui.playbackControllerDock->show();
++  for (auto *dock : hiddenRight)
++    dock->hide();
++  ui.rateDistortionPlotDock->hide();
++  this->resizeDocks({ui.playlistDockWidget, ui.propertiesDock}, {300, 300}, Qt::Horizontal);
+ 
+   // Set the size/position of the main window
+   setGeometry(0, 0, 1100, 750);
+--- a/YUViewLib/src/ui/Mainwindow.h
++++ b/YUViewLib/src/ui/Mainwindow.h
+@@ -281,5 +281,5 @@
+   QPointer<bda::integration::MeCompareWindow>      meCompareWindow;
+ 
+   bool showNormalMaximized;     // When going to full screen: Was this windows maximized?
+-  bool panelsVisible[8]{false}; // Which panels are visible when going to full-screen mode?
++  QList<QPointer<QDockWidget>> fullScreenHiddenDocks; // Docks hidden when going to full screen
+ };
+--- a/YUViewLib/ui/mainwindow.ui
++++ b/YUViewLib/ui/mainwindow.ui
+@@ -17,7 +17,7 @@
+    </sizepolicy>
+   </property>
+   <property name="windowTitle">
+-   <string>YUView</string>
++   <string>bd-analyzer</string>
+   </property>
+   <property name="unifiedTitleAndToolBarOnMac">
+    <bool>false</bool>
+@@ -84,7 +84,6 @@
+             <enum>Qt::Horizontal</enum>
+            </property>
+            <widget class="HexdumpViewerWidget" name="hexdumpViewer"/>
+-           <widget class="RateDistortionPlotWidget" name="rateDistortionPlot"/>
+           </widget>
+          </widget>
+         </item>
+@@ -340,30 +339,24 @@
+   </widget>
+   <widget class="QDockWidget" name="cachingInfoDock">
+    <property name="windowTitle">
+-    <string>Caching Info</string>
++    <string>Block Info</string>
+    </property>
+    <attribute name="dockWidgetArea">
+     <number>1</number>
+    </attribute>
+    <widget class="VideoCacheInfoWidget" name="cachingInfoWidget"/>
+   </widget>
+-  <widget class="QDockWidget" name="blockInfoDock">
++  <widget class="QDockWidget" name="rateDistortionPlotDock">
+    <property name="visible">
+     <bool>false</bool>
+    </property>
+-   <property name="minimumSize">
+-    <size>
+-     <width>150</width>
+-     <height>100</height>
+-    </size>
+-   </property>
+    <property name="windowTitle">
+-    <string>Block Info</string>
++    <string>RD Plot</string>
+    </property>
+    <attribute name="dockWidgetArea">
+-    <number>1</number>
++    <number>8</number>
+    </attribute>
+-   <widget class="BlockInfoWidget" name="blockInfoWidget"/>
++   <widget class="RateDistortionPlotWidget" name="rateDistortionPlot"/>
+   </widget>
+   <widget class="QDockWidget" name="frameInfoDock">
+    <property name="minimumSize">

@@ -39,18 +39,28 @@ features refuse to run on it and say so.
 |---|---|---|
 | Playlist | `Ctrl+L` | Open items; multi-select feeds BD-rate groups |
 | Properties | `Ctrl+P` | Per-item settings and the statistics overlay checkboxes |
-| Info | `Ctrl+I` | File-level info |
-| Caching Info | — | Decoded-frame cache state |
-| Block Info | `Ctrl+B` | AV1 syntax of the clicked block; ME results per block size |
-| Frame Info | `Ctrl+F` | Frame-level info, OBU list, bitstream hexdump |
+| Info | `Ctrl+I` | File / Frame / OBU tabs: file-level info, the frame on screen, the packet tree |
+| Block Info | `Ctrl+B` | Cache state, syntax of the clicked block (ME results per block size), its pixel statistics |
+| Frame Info | `Ctrl+Shift+F` | Analysis grid toggle and the frame's luma histogram |
+| RD Plot | `Ctrl+Shift+R` | Rate/distortion scatter of the frame on screen (hidden by default) |
 | Motion Estimation | `Ctrl+M` | ME re-run controls (see below) |
+| AI Assistant | `Ctrl+K` | This panel |
+| YouTube Transcode | `Ctrl+Y` | Download and transcode a YouTube clip |
 | Playback Controls | `Ctrl+D` | Frame stepping and playback |
+
+The bitstream hexdump of the clicked block sits under the picture. `Ctrl+F` is full screen.
+Help → Reset Window Layout puts every panel back in its default place.
 
 **File menu.** Open (`Ctrl+O`), Recent Files, Save Playlist (`Ctrl+S`), Save Playlist on Exit
 (default on), Delete Item (`Del`), Save Screenshot, Settings.
 
-**View menu.** Save / Restore View State (`Ctrl+1`–`Ctrl+8`), Split View, zoom 1:1 (`Ctrl+0`),
-zoom to fit (`Ctrl+9`), `Ctrl++` / `Ctrl+-`, and **SB BD-rate from Selection** (`Ctrl+R`).
+**View menu.** Save / Restore View State (`Ctrl+1`–`Ctrl+8`), Dock Panels, Split View, zoom 1:1
+(`Ctrl+0`), zoom to fit (`Ctrl+9`), `Ctrl++` / `Ctrl+-`.
+
+**Analysis menu.** SB BD-rate from Selection (`Ctrl+R`), Find diff between two Streams (`Ctrl+J`),
+Global motion of the selected Item (`Ctrl+Shift+G`).
+
+**Tools menu.** Generate Y4M Sequence, Export Filtered Y4M, Export Stabilized Y4M.
 
 **Statistics overlay.** Block partitioning, prediction mode, motion vectors, `sb_qindex`,
 `sb_bitcount`, and the ME layers are all statistics types drawn over the picture and toggled from
