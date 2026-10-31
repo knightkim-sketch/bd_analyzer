@@ -75,6 +75,11 @@ Qt 없이 도는 코어 단위 테스트 (`tests/unit/`):
       AI Assistant `Ctrl+K` / YouTube Transcode `Ctrl+Y` / Playback Controls `Ctrl+D`
       (단축키 중복·메뉴 위치·Reset Layout·Fullscreen 왕복은 `63` 이 헤드리스로 본다. 실제 키 입력은 여기서만)
 - [ ] `Ctrl+F` 가 Fullscreen 으로 들어가고 나오며, 나올 때 들어가기 전의 패널이 그대로 돌아온다
+- [ ] 재생 컨트롤의 step back / step forward 버튼이 한 프레임씩 움직인다 (`63` 이 헤드리스로 봄)
+- [ ] AV1 을 열면 그림 위 overlay toolbar 에 overlay 묶음 버튼이 나오고 `F1`~`F8` 이 각각을 토글한다.
+      Properties 체크박스와 서로 따라간다 (`64` 가 헤드리스로 봄, 실제 F 키 입력은 여기서만)
+- [ ] overlay 를 켜면 그림 오른쪽 위에 범례가 나오고 `Ctrl+Shift+L` 로 끄고 켠다
+- [ ] Settings → Theme → Dark (Fusion) 에서 패널·메뉴가 모두 어두워지고, Default 로 돌아오면 원래대로
 - [ ] View → Save / Restore View State (`Ctrl+1`~`Ctrl+8`) 가 레이아웃을 저장·복원한다
 - [ ] Zoom `Ctrl+0` (1:1) / `Ctrl+9` (fit) / `Ctrl++` / `Ctrl+-`
 - [ ] Split View 가 좌우 비교로 전환된다

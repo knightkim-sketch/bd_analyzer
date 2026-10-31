@@ -1,4 +1,5 @@
 #include "MeStatisticsAdapter.h"
+#include "OverlayPalette.h"
 
 #include <algorithm>
 
@@ -63,21 +64,22 @@ const char *nativeCostName(Algorithm algorithm)
   return "cost";
 }
 
-/* One colour per algorithm, so an overlay of two of them is readable at a glance. The bitstream's
- * own motion vectors are already red (type 24) and blue (type 25), so both of these avoid those.
+/* One colour per algorithm, so an overlay of two of them is readable at a glance. All warm colours
+ * (OverlayPalette.h): the bitstream's own overlays use red, blue, green and purple, global motion
+ * uses cyan.
  */
 Color algorithmColor(Algorithm algorithm)
 {
   switch (algorithm)
   {
   case Algorithm::SvtIntegerMe:
-    return Color(0, 200, 0); // green
+    return palette::meSvtInteger;
   case Algorithm::OdysseyOpenLoop:
-    return Color(255, 160, 0); // amber
+    return palette::meOpenLoop;
   case Algorithm::OdysseyClosedLoop:
-    return Color(180, 0, 220); // violet
+    return palette::meClosedLoop;
   case Algorithm::OdysseyOpenLoopAdv:
-    return Color(0, 200, 220); // cyan
+    return palette::meOpenLoopAdv;
   }
   return Color(255, 255, 255);
 }

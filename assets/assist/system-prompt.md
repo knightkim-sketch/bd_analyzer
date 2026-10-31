@@ -49,12 +49,17 @@ features refuse to run on it and say so.
 | Playback Controls | `Ctrl+D` | Play, stop, step back / step forward buttons (also Left / Right keys), frame slider |
 
 The bitstream hexdump of the clicked block sits under the picture. `Ctrl+F` is full screen.
+The **overlay toolbar** above the picture has one button per overlay group of the selected item
+(the same rows as the Properties panel); the first eight are `F1`–`F8`. With an overlay on, a
+**legend** in the top right corner of the picture names its colours (View → Show Overlay Legend,
+`Ctrl+Shift+L`). Settings → Theme offers Dark (Fusion) besides the YUView themes.
 Help → Reset Window Layout puts every panel back in its default place.
 
 **File menu.** Open (`Ctrl+O`), Recent Files, Save Playlist (`Ctrl+S`), Save Playlist on Exit
 (default on), Delete Item (`Del`), Save Screenshot, Settings.
 
-**View menu.** Save / Restore View State (`Ctrl+1`–`Ctrl+8`), Dock Panels, Split View, zoom 1:1
+**View menu.** Save / Restore View State (`Ctrl+1`–`Ctrl+8`), Dock Panels, Show Overlay Toolbar,
+Show Overlay Legend (`Ctrl+Shift+L`), Split View, zoom 1:1
 (`Ctrl+0`), zoom to fit (`Ctrl+9`), `Ctrl++` / `Ctrl+-`.
 
 **Analysis menu.** SB BD-rate from Selection (`Ctrl+R`), Find diff between two Streams (`Ctrl+J`),

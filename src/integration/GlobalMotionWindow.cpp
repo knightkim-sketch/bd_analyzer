@@ -108,8 +108,8 @@ GlobalMotionWindow::GlobalMotionWindow(QWidget *parent) : QDialog(parent)
   auto *buttons = new QHBoxLayout();
   this->runButton    = new QPushButton("Run", this);
   this->stopButton   = new QPushButton("Stop", this);
-  this->exportButton = new QPushButton("Export CSV…", this);
-  this->exportModelButton = new QPushButton("Export model CSV…", this);
+  this->exportButton = new QPushButton("Export CSV...", this);
+  this->exportModelButton = new QPushButton("Export model CSV...", this);
   this->progress     = new QLabel(this);
   buttons->addWidget(this->runButton);
   buttons->addWidget(this->stopButton);
@@ -179,7 +179,7 @@ GlobalMotionWindow::GlobalMotionWindow(QWidget *parent) : QDialog(parent)
                                 "and statistics. Motion estimation keeps reading the source, and its "
                                 "overlays stay in source coordinates.");
   this->stabForm->addRow(this->applyToView);
-  this->exportStabilizedButton = new QPushButton("Export stabilized…", stabBox);
+  this->exportStabilizedButton = new QPushButton("Export stabilized...", stabBox);
   this->stabForm->addRow(this->exportStabilizedButton);
   this->stabStatus = new QLabel(stabBox);
   this->stabStatus->setWordWrap(true);
@@ -394,7 +394,7 @@ bool GlobalMotionWindow::run()
   const bool y4m   = this->isY4m;
   const int  w = this->width, h = this->height, depth = this->bitDepth;
   const int  modelType = this->model->currentIndex() - 1; // -1: off
-  this->progress->setText(QString("Estimating %1 frames …").arg(last - first + 1));
+  this->progress->setText(QString("Estimating %1 frames...").arg(last - first + 1));
 
   this->worker = QThread::create([this, p, first, last, file, y4m, w, h, depth, modelType] {
     me::YuvLumaReader reader;
@@ -727,7 +727,7 @@ void GlobalMotionWindow::updateStabilization()
   {
     this->trajectory.clear();
     this->trajectoryPlot->setTrajectory(0, {});
-    this->stabStatus->setText(this->running ? "Estimating …"
+    this->stabStatus->setText(this->running ? "Estimating..."
                                             : "Run with a Model (not off) to get the camera trajectory.");
     return;
   }
@@ -807,7 +807,7 @@ bool GlobalMotionWindow::exportStabilized(const QString &out, QString *error)
       *error = "Run with a Model first.";
     return false;
   }
-  QProgressDialog progress("Writing the stabilized Y4M …", "Cancel", 0, 0, this);
+  QProgressDialog progress("Writing the stabilized Y4M...", "Cancel", 0, 0, this);
   progress.setWindowModality(Qt::WindowModal);
   progress.setMinimumDuration(500);
   const auto result = exportStabilizedY4m(this->item, out, this->modelsByFrame(), this->stabilizerParams(),

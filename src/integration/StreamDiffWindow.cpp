@@ -350,7 +350,7 @@ void StreamDiffWindow::startWorker(const bool headersAndBlocks, const bool recon
   this->cancelRequested      = false;
   this->reconCancelRequested = false;
   this->updateControls();
-  this->setBusy(QString("Comparing …\n  A  %1\n  B  %2")
+  this->setBusy(QString("Comparing...\n  A  %1\n  B  %2")
                     .arg(QFileInfo(this->nameA).fileName())
                     .arg(QFileInfo(this->nameB).fileName()));
 
@@ -601,7 +601,7 @@ void StreamDiffWindow::addPayloadSection(QString &text)
     if (shown++ >= MaxRows)
     {
       auto *more = new QTreeWidgetItem(node);
-      more->setText(0, QString("… %1 more").arg(result.diffs.size() - MaxRows));
+      more->setText(0, QString("... %1 more").arg(result.diffs.size() - MaxRows));
       break;
     }
     auto *row = new QTreeWidgetItem(node);
@@ -751,7 +751,7 @@ void StreamDiffWindow::addReconSection(QString &text)
     if (shown++ >= MaxRows)
     {
       auto *more = new QTreeWidgetItem(node);
-      more->setText(0, QString("… %1 more").arg(differing - MaxRows));
+      more->setText(0, QString("... %1 more").arg(differing - MaxRows));
       break;
     }
     QStringList psnr;

@@ -655,6 +655,8 @@ fi
 if [[ -e "$APPDIR/decoder/libdav1d-internals.so" ]]; then
     run_test "$ROOT/tests/regression/14-block-bitstream-range.cpp"      "$STREAM"
     run_test "$ROOT/tests/regression/16-statistics-ui-grouping.cpp"     "$STREAM"
+    # 그림 위 overlay toolbar (F1~F8) 와 Properties 체크박스의 양방향 동기, 범례, Dark (Fusion) 테마.
+    run_test "$ROOT/tests/regression/64-overlay-toolbar-and-legend.cpp" "$STREAM"
     # 스트림 길이(마지막 인덱스 off-by-one)와 한 프레임이 만들 수 있는 통계 항목 수의 상한.
     # 상한이 깨지면 transform size 루프가 0 만큼 전진하며 bad_alloc 까지 간다.
     run_test "$ROOT/tests/regression/35-frame-range-and-statistics-bounds.cpp" "$STREAM"
@@ -670,6 +672,8 @@ else
     echo "  SKIP  14-block-bitstream-range (libdav1d-internals.so 없음)"
     ((skip_count++))
     echo "  SKIP  16-statistics-ui-grouping (libdav1d-internals.so 없음)"
+    ((skip_count++))
+    echo "  SKIP  64-overlay-toolbar-and-legend (libdav1d-internals.so 없음)"
     ((skip_count++))
     echo "  SKIP  35-frame-range-and-statistics-bounds (libdav1d-internals.so 없음)"
     ((skip_count++))

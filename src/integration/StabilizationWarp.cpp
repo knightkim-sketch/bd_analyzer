@@ -21,7 +21,7 @@ bool layoutFor(const video::yuv::PixelFormatYUV &format, const Size &size, me::Y
       (layout.bitDepth != 8 && layout.bitDepth != 10) || layout.width % 2 != 0 || layout.height % 2 != 0)
   {
     if (why)
-      *why = QString("Stabilisation takes planar 4:2:0 or 4:0:0, 8 or 10 bit little endian, even size. "
+      *why = QString("Stabilization takes planar 4:2:0 or 4:0:0, 8 or 10 bit little endian, even size. "
                      "This item's format is %1.")
                  .arg(QString::fromStdString(format.getName()));
     return false;

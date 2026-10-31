@@ -1,4 +1,5 @@
 #include "GmStatisticsAdapter.h"
+#include "OverlayPalette.h"
 
 #include <algorithm>
 
@@ -39,7 +40,7 @@ bool syncGmStatTypes(stats::StatisticsData &data)
   bool changed = false;
   if (!hasType(data, kGmAcceptedTypeId))
   {
-    auto type = vectorType(kGmAcceptedTypeId, "GM accepted", Color(0, 220, 255), 3);
+    auto type = vectorType(kGmAcceptedTypeId, "GM accepted", palette::gmAccepted, 3);
     type.description = "Global motion vector per window, as odyssey would receive it: a rejected "
                        "axis is 0. Drawn from the window centre.";
     data.addStatType(type);
@@ -47,7 +48,7 @@ bool syncGmStatTypes(stats::StatisticsData &data)
   }
   if (!hasType(data, kGmRawTypeId))
   {
-    auto type = vectorType(kGmRawTypeId, "GM rejected (raw)", Color(150, 150, 150), 2);
+    auto type = vectorType(kGmRawTypeId, "GM rejected (raw)", palette::gmRejected, 2);
     type.description = "The search's answer for windows where an axis was rejected - what the "
                        "gates turned down.";
     data.addStatType(type);
@@ -62,7 +63,7 @@ bool syncGmStatTypes(stats::StatisticsData &data)
     // The grid only: a colour fill over the whole picture would hide what the arrows are about.
     type.renderValueData = false;
     type.renderGrid      = true;
-    type.gridStyle       = stats::LineDrawStyle({Color(0, 220, 255), 1.0, stats::Pattern::Dash});
+    type.gridStyle       = stats::LineDrawStyle({palette::gmAccepted, 1.0, stats::Pattern::Dash});
     type.uiGroup         = "Global motion";
     data.addStatType(type);
     changed = true;
@@ -83,7 +84,7 @@ bool syncGmStatTypes(stats::StatisticsData &data)
   }
   if (!hasType(data, kGmModelTypeId))
   {
-    auto type = vectorType(kGmModelTypeId, "GM model vector", Color(255, 200, 0), 2);
+    auto type = vectorType(kGmModelTypeId, "GM model vector", palette::gmModel, 2);
     type.vectorScale = 8; // eighth-pel, as the model is evaluated
     type.description = "The RANSAC global model's vector at the centre of each 64x64 block.";
     data.addStatType(type);

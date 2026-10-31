@@ -1,0 +1,370 @@
+--- a/YUViewLib/src/common/Functions.cpp
++++ b/YUViewLib/src/common/Functions.cpp
+@@ -97,6 +97,7 @@
+   ret.append("Default");
+   ret.append("Simple Dark/Blue");
+   ret.append("Simple Dark/Orange");
++  ret.append("Dark (Fusion)"); // bd-analyzer: a palette, not a style sheet (integration/AppTheme)
+   return ret;
+ }
+ 
+@@ -119,6 +120,12 @@
+                          << "#E0E0E0"
+                          << "#808080"
+                          << "#FFC300 ";
++  // Only for tinting the icons (functionsGui::convertIcon); the theme has no style sheet.
++  if (themeName == "Dark (Fusion)")
++    return QStringList() << "#2B2B2B"
++                         << "#E0E0E0"
++                         << "#808080"
++                         << "#3daee9";
+   return QStringList();
+ }
+ 
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
+@@ -118,6 +118,10 @@
+   QByteArray readRawFrame(int frameIdx) override;
+ 
+   stats::StatisticsData     *getMotionEstimationData() override { return &this->meStatisticsData; }
++  /* The decoder's statistics, for the overlay toolbar and legend (bd-analyzer). Overlay containers
++   * still leave this item alone: they only ask items with providesStatistics, which stays false.
++   */
++  stats::StatisticUIHandler *getStatisticsUIHandler() override { return &this->statisticsUIHandler; }
+   stats::StatisticUIHandler *getMotionEstimationUIHandler() override
+   {
+     return &this->meStatisticsUIHandler;
+--- a/YUViewLib/src/playlistitem/playlistItemWithVideo.cpp
++++ b/YUViewLib/src/playlistitem/playlistItemWithVideo.cpp
+@@ -619,7 +619,7 @@
+   if (this->rawFormat != video::RawFormat::YUV || handler == nullptr)
+   {
+     if (why)
+-      *why = "Stabilisation needs a YUV item.";
++      *why = "Stabilization needs a YUV item.";
+     return false;
+   }
+   if (table && !bda::integration::stabilizationSupported(this->getRawPixelFormat(), this->getRawFrameSize(), why))
+--- a/YUViewLib/src/statistics/StatisticUIHandler.cpp
++++ b/YUViewLib/src/statistics/StatisticUIHandler.cpp
+@@ -351,6 +351,57 @@
+   }
+ }
+ 
++/* The three below read the types under the data's mutex (a decoder thread fills them) and leave
++ * uiRows alone: that list must keep matching the check boxes that exist, which a query must not
++ * rebuild behind the panel's back.
++ */
++QStringList StatisticUIHandler::overlayGroups()
++{
++  QStringList groups;
++  if (!this->statisticsData)
++    return groups;
++  std::unique_lock<std::mutex> lock(this->statisticsData->accessMutex);
++  for (const auto &type : this->statisticsData->getStatisticsTypes())
++  {
++    const auto group = type.uiGroup.isEmpty() ? type.typeName : type.uiGroup;
++    if (!groups.contains(group))
++      groups.append(group);
++  }
++  return groups;
++}
++
++bool StatisticUIHandler::isOverlayGroupRendered(const QString &group)
++{
++  if (!this->statisticsData)
++    return false;
++  std::unique_lock<std::mutex> lock(this->statisticsData->accessMutex);
++  for (const auto &type : this->statisticsData->getStatisticsTypes())
++    if ((type.uiGroup.isEmpty() ? type.typeName : type.uiGroup) == group)
++      return type.render;
++  return false;
++}
++
++void StatisticUIHandler::setOverlayGroupRendered(const QString &group, bool render)
++{
++  if (!this->statisticsData)
++    return;
++  // Through the panel's check box when there is one: its signal updates the types, the secondary
++  // controls and the view. Found by its label, which is the group.
++  for (auto *box : itemNameCheckBoxes[0])
++    if (box->text() == group)
++    {
++      box->setChecked(render);
++      return;
++    }
++  {
++    std::unique_lock<std::mutex> lock(this->statisticsData->accessMutex);
++    for (auto &type : this->statisticsData->getStatisticsTypes())
++      if ((type.uiGroup.isEmpty() ? type.typeName : type.uiGroup) == group)
++        type.render = render;
++  }
++  emit updateItem(true);
++}
++
+ void StatisticUIHandler::updateStatisticsHandlerControls()
+ {
+   if (!this->statisticsData)
+--- a/YUViewLib/src/statistics/StatisticUIHandler.h
++++ b/YUViewLib/src/statistics/StatisticUIHandler.h
+@@ -81,6 +81,15 @@
+   // Update the settings. For the statistics this means updating the icons for editing statistic.
+   void updateSettings();
+ 
++  /* The rows of the properties panel - one per group of types (StatisticsType::uiGroup) - so that a
++   * toolbar can switch them on and off. Setting one goes through the panel's check box when the
++   * panel exists, so both stay in step and updateItem() is emitted either way.
++   */
++  QStringList     overlayGroups();
++  bool            isOverlayGroupRendered(const QString &group);
++  void            setOverlayGroupRendered(const QString &group, bool render);
++  StatisticsData *getStatisticsData() const { return this->statisticsData; }
++
+ signals:
+   // Update the item (and maybe redraw it)
+   void updateItem(bool redraw);
+--- a/YUViewLib/src/ui/Mainwindow.cpp
++++ b/YUViewLib/src/ui/Mainwindow.cpp
+@@ -37,6 +37,7 @@
+ #include <integration/FilteredY4mExport.h>
+ #include <integration/MeFrameSource.h>
+ #include <integration/MeStatisticsAdapter.h>
++#include <integration/AppTheme.h>
+ #include <integration/MotionEstimationWidget.h>
+ #include <integration/LcevcSeparateOpen.h>
+ #include <integration/StabilizedY4mExport.h>
+@@ -231,6 +232,21 @@
+           &PlaylistTreeWidget::selectionRangeChanged,
+           this,
+           &MainWindow::currentSelectedItemsChanged);
++
++  /* The overlay switches sit above the picture. Created here, before the saved window state is
++   * restored, so that the state can place it. A frame step can bring the decoder's first statistics
++   * types (it registers them with the first decoded frame), hence the refresh on every frame.
++   */
++  this->overlayToolBar = new bda::integration::OverlayToolBar(this);
++  this->addToolBar(Qt::TopToolBarArea, this->overlayToolBar);
++  connect(ui.playlistTreeWidget,
++          &PlaylistTreeWidget::selectionRangeChanged,
++          this->overlayToolBar,
++          &bda::integration::OverlayToolBar::currentSelectedItemsChanged);
++  connect(ui.displaySplitView,
++          &splitViewWidget::viewFrameChanged,
++          this->overlayToolBar,
++          &bda::integration::OverlayToolBar::refresh);
+   // Shift+click in either view opens the ME compare popup on that block.
+   connect(ui.displaySplitView,
+           &splitViewWidget::blockCompareRequested,
+@@ -825,6 +841,18 @@
+   addDockViewAction(ui.ytTranscodeDock, "Show &YouTube Transcode", Qt::CTRL | Qt::Key_Y);
+   viewMenu->addSeparator();
+   addDockViewAction(ui.playbackControllerDock, "Show Playback &Controls", Qt::CTRL | Qt::Key_D);
++  auto overlayToolBarAction = this->overlayToolBar->toggleViewAction();
++  overlayToolBarAction->setText("Show &Overlay Toolbar");
++  viewMenu->addAction(overlayToolBarAction);
++  auto legendAction = viewMenu->addAction("Show Overlay &Legend");
++  legendAction->setCheckable(true);
++  legendAction->setChecked(bda::integration::overlayLegendEnabled());
++  legendAction->setShortcut(Qt::CTRL | Qt::SHIFT | Qt::Key_L);
++  connect(legendAction, &QAction::toggled, this, [this](bool on) {
++    bda::integration::setOverlayLegendEnabled(on);
++    ui.displaySplitView->update();
++    separateViewWindow.splitView.update();
++  });
+ 
+   auto splitViewMenu = viewMenu->addMenu("Split View");
+   ui.displaySplitView->addMenuActions(splitViewMenu);
+@@ -1928,6 +1956,11 @@
+       this->fullScreenHiddenDocks.push_back(dock);
+       dock->hide();
+     }
++    if (this->overlayToolBar->isVisible())
++    {
++      this->fullScreenHiddenDocks.push_back(this->overlayToolBar);
++      this->overlayToolBar->hide();
++    }
+ 
+     statusBar()->hide();
+     if (!is_Q_OS_MAC)
+@@ -2024,6 +2057,8 @@
+         styleSheet.clear();
+     }
+   }
++  // The palette first: its first call records the platform's style, which a sheet would wrap.
++  bda::integration::applyThemePalette(themeName);
+   // Set the style sheet. If the string is empty, the default will be used/set.
+   qApp->setStyleSheet(styleSheet);
+ 
+@@ -2267,6 +2302,8 @@
+     dock->hide();
+   ui.rateDistortionPlotDock->hide();
+   this->resizeDocks({ui.playlistDockWidget, ui.propertiesDock}, {300, 300}, Qt::Horizontal);
++  this->addToolBar(Qt::TopToolBarArea, this->overlayToolBar);
++  this->overlayToolBar->show();
+ 
+   // Set the size/position of the main window
+   setGeometry(0, 0, 1100, 750);
+--- a/YUViewLib/src/ui/Mainwindow.h
++++ b/YUViewLib/src/ui/Mainwindow.h
+@@ -47,6 +47,7 @@
+ #include <integration/MeCompareWindow.h>
+ #include <integration/StreamDiffWindow.h>
+ #include <integration/MeRunner.h>
++#include <integration/OverlayControls.h>
+ 
+ #include <handler/UpdateHandler.h>
+ #include <ui/SeparateWindow.h>
+@@ -281,5 +282,6 @@
+   QPointer<bda::integration::MeCompareWindow>      meCompareWindow;
+ 
+   bool showNormalMaximized;     // When going to full screen: Was this windows maximized?
+-  QList<QPointer<QDockWidget>> fullScreenHiddenDocks; // Docks hidden when going to full screen
++  QList<QPointer<QWidget>> fullScreenHiddenDocks; // Docks and toolbars hidden when going to full screen
++  bda::integration::OverlayToolBar *overlayToolBar{}; // F1 - F8 overlay switches above the picture
+ };
+--- a/YUViewLib/src/ui/views/SplitViewWidget.cpp
++++ b/YUViewLib/src/ui/views/SplitViewWidget.cpp
+@@ -33,11 +33,13 @@
+ #include "SplitViewWidget.h"
+ 
+ #include <playlistitem/playlistItem.h>
++#include <integration/OverlayControls.h>
+ #include <ui/PlaybackController.h>
+ #include <video/FrameHandler.h>
+ #include <video/caching/VideoCache.h>
+ 
+ #include <QActionGroup>
++#include <QApplication>
+ #include <QBackingStore>
+ #include <QDockWidget>
+ #include <QInputDialog>
+@@ -69,20 +71,18 @@
+ // matching VQAnalyzer's superblock grid. A grid size the user picked from the menu keeps using the
+ // configurable View/GridColor instead.
+ const QColor SUPERBLOCK_GRID_COLOR = QColor(0, 112, 255);
++// The text in the view uses the application's font (viewFont() below) in these sizes. It used to name
++// "helvetica", which is not installed on Linux and fell back to whatever fontconfig picked.
+ // The font and size of the text that will be drawn in the top left corner indicating the zoom
+ // factor
+-const QString SPLITVIEWWIDGET_ZOOMFACTOR_FONT     = "helvetica";
+ const int     SPLITVIEWWIDGET_ZOOMFACTOR_FONTSIZE = 24;
+ // The font and the font size of the "loading..." message
+-const QString SPLITVIEWWIDGET_LOADING_FONT     = "helvetica";
+ const int     SPLITVIEWWIDGET_LOADING_FONTSIZE = 10;
+ // The font and the font size when drawing the item path in split view mode
+-const QString SPLITVIEWWIDGET_SPLITPATH_FONT       = "helvetica";
+ const int     SPLITVIEWWIDGET_SPLITPATH_FONTSIZE   = 10;
+ const int     SPLITVIEWWIDGET_SPLITPATH_PADDING    = 20;
+ const int     SPLITVIEWWIDGET_SPLITPATH_TOP_OFFSET = 10;
+ // The font and the font size when drawing the pixel values
+-const QString SPLITVIEWWIDGET_PIXEL_VALUES_FONT     = "helvetica";
+ const int     SPLITVIEWWIDGET_PIXEL_VALUES_FONTSIZE = 10;
+ // When zooming in or out, you can only step by factors of x
+ const int SPLITVIEWWIDGET_ZOOM_STEP_FACTOR = 2;
+@@ -98,6 +98,16 @@
+ #define DEBUG_LOAD_DRAW(fmt) ((void)0)
+ #endif
+ 
++namespace
++{
++QFont viewFont(int pointSize)
++{
++  auto font = QApplication::font();
++  font.setPointSize(pointSize);
++  return font;
++}
++} // namespace
++
+ splitViewWidget::splitViewWidget(QWidget *parent) : MoveAndZoomableView(parent)
+ {
+   paletteBackgroundColorSettingsTag = "View/BackgroundColor";
+@@ -111,7 +121,7 @@
+   connect(&testProgrssUpdateTimer, &QTimer::timeout, this, [this] { updateTestProgress(); });
+ 
+   // Initialize the font and the position of the zoom factor indication
+-  zoomFactorFont = QFont(SPLITVIEWWIDGET_ZOOMFACTOR_FONT, SPLITVIEWWIDGET_ZOOMFACTOR_FONTSIZE);
++  zoomFactorFont = viewFont(SPLITVIEWWIDGET_ZOOMFACTOR_FONTSIZE);
+   QFontMetrics fm(zoomFactorFont);
+   zoomFactorFontPos = QPoint(10, fm.height());
+ 
+@@ -296,7 +306,7 @@
+       if (!waitingForCaching)
+       {
+         painter.setFont(
+-          QFont(SPLITVIEWWIDGET_PIXEL_VALUES_FONT, SPLITVIEWWIDGET_PIXEL_VALUES_FONTSIZE));
++          viewFont(SPLITVIEWWIDGET_PIXEL_VALUES_FONTSIZE));
+         item[0]->drawItem(&painter, frame, zoom, drawRawValues);
+       }
+ 
+@@ -354,7 +364,7 @@
+       if (!waitingForCaching)
+       {
+         painter.setFont(
+-          QFont(SPLITVIEWWIDGET_PIXEL_VALUES_FONT, SPLITVIEWWIDGET_PIXEL_VALUES_FONTSIZE));
++          viewFont(SPLITVIEWWIDGET_PIXEL_VALUES_FONTSIZE));
+         item[1]->drawItem(&painter, frame, zoom, drawRawValues);
+       }
+ 
+@@ -421,7 +431,7 @@
+       if (!waitingForCaching)
+       {
+         painter.setFont(
+-          QFont(SPLITVIEWWIDGET_PIXEL_VALUES_FONT, SPLITVIEWWIDGET_PIXEL_VALUES_FONTSIZE));
++          viewFont(SPLITVIEWWIDGET_PIXEL_VALUES_FONTSIZE));
+         item[0]->drawItem(&painter, frame, zoom, drawRawValues);
+       }
+ 
+@@ -509,6 +519,8 @@
+       painter.setClipping(false);
+   }
+ 
++  bda::integration::paintOverlayLegend(painter, item[0], QRect(QPoint(0, 0), drawArea_botR));
++
+   if (zoom != 1.0)
+   {
+     // Draw the zoom factor
+@@ -1150,7 +1162,7 @@
+   const auto extent  = this->gridExtent(item);
+   const bool fullCell = this->fullCellGrid();
+ 
+-  const QFont indexFont = QFont(SPLITVIEWWIDGET_ZOOMFACTOR_FONT, 9);
++  const QFont indexFont = viewFont(9);
+   painter->setFont(indexFont);
+   painter->setPen(this->gridColor());
+   const QFontMetrics metrics(indexFont);
+@@ -1193,7 +1205,7 @@
+     return;
+ 
+   // Set the font for drawing the values
+-  QFont valueFont = QFont(SPLITVIEWWIDGET_ZOOMFACTOR_FONT, 10);
++  QFont valueFont = viewFont(10);
+   painter.setFont(valueFont);
+ 
+   // Get the pixel values that are visible on screen
+@@ -1247,7 +1259,7 @@
+     return;
+ 
+   // Set the font for drawing the values
+-  QFont valueFont = QFont(SPLITVIEWWIDGET_ZOOMFACTOR_FONT, 10);
++  QFont valueFont = viewFont(10);
+   painter.setFont(valueFont);
+ 
+   QSize frameSize      = item->getSize();
+@@ -1294,7 +1306,7 @@
+   DEBUG_LOAD_DRAW("splitViewWidget::drawLoadingMessage");
+ 
+   // Set the font for drawing the values
+-  QFont valueFont = QFont(SPLITVIEWWIDGET_LOADING_FONT, SPLITVIEWWIDGET_LOADING_FONTSIZE);
++  QFont valueFont = viewFont(SPLITVIEWWIDGET_LOADING_FONTSIZE);
+   painter->setFont(valueFont);
+ 
+   // Create the QRect to draw to
+@@ -2345,7 +2357,7 @@
+   auto pathSplit = path.split(sep);
+ 
+   // The metrics for evaluating the width of the rendered text
+-  QFont valueFont = QFont(SPLITVIEWWIDGET_SPLITPATH_FONT, SPLITVIEWWIDGET_SPLITPATH_FONTSIZE);
++  QFont valueFont = viewFont(SPLITVIEWWIDGET_SPLITPATH_FONTSIZE);
+   QFontMetrics metrics(valueFont);
+ 
+   QString currentLine = "";

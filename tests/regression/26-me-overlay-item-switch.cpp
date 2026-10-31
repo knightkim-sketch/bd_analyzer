@@ -255,8 +255,9 @@ int main(int argc, char **argv)
       for (int x = 0; x < img.width(); ++x)
       {
         const auto c = img.pixelColor(x, y);
-        // The SVT overlay draws in green; the cost overlays would show up as filled blocks.
-        if (c.green() > 100 && c.green() > c.red() + 40 && c.green() > c.blue() + 40)
+        // The SVT overlay draws in orange (OverlayPalette.h), blended at the type's opacity
+        // (255,198,128 on white at 50%); the cost overlays would show up as filled grey blocks.
+        if (c.red() > 200 && c.red() - c.blue() > 80 && c.green() < c.red() - 30)
           ++arrowPixels;
       }
     check(arrowPixels > 50, "the vectors are actually painted (" + std::to_string(arrowPixels) +
