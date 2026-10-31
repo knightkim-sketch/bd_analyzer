@@ -46,7 +46,7 @@ features refuse to run on it and say so.
 | Motion Estimation | `Ctrl+M` | ME re-run controls (see below) |
 | AI Assistant | `Ctrl+K` | This panel |
 | YouTube Transcode | `Ctrl+Y` | Download and transcode a YouTube clip |
-| Playback Controls | `Ctrl+D` | Frame stepping and playback |
+| Playback Controls | `Ctrl+D` | Play, stop, step back / step forward buttons (also Left / Right keys), frame slider |
 
 The bitstream hexdump of the clicked block sits under the picture. `Ctrl+F` is full screen.
 Help → Reset Window Layout puts every panel back in its default place.

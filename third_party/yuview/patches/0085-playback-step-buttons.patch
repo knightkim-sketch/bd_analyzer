@@ -1,0 +1,120 @@
+--- a/YUViewLib/images/images.qrc
++++ b/YUViewLib/images/images.qrc
+@@ -24,6 +24,10 @@
+         <file>img_stats.png</file>
+         <file>img_stats@2x.png</file>
+         <file>img_stop@2x.png</file>
++        <file>img_step_back.png</file>
++        <file>img_step_back@2x.png</file>
++        <file>img_step_forward.png</file>
++        <file>img_step_forward@2x.png</file>
+         <file>img_text@2x.png</file>
+         <file>img_videoHEVC.png</file>
+         <file>img_videoHEVC@2x.png</file>
+--- a/YUViewLib/src/ui/PlaybackController.cpp
++++ b/YUViewLib/src/ui/PlaybackController.cpp
+@@ -114,6 +114,10 @@
+   this->loadButtonIcons();
+   this->updatePlayPauseButtonIcon();
+   this->ui.stopButton->setIcon(this->iconStop);
++  this->ui.stepBackButton->setIcon(functionsGui::convertIcon(":img_step_back.png"));
++  this->ui.stepForwardButton->setIcon(functionsGui::convertIcon(":img_step_forward.png"));
++  connect(this->ui.stepBackButton, &QPushButton::clicked, this, &PlaybackController::previousFrame);
++  connect(this->ui.stepForwardButton, &QPushButton::clicked, this, &PlaybackController::nextFrame);
+   this->setRepeatModeAndUpdateIcons(this->repeatMode);
+ 
+   this->updateSettings();
+@@ -583,6 +587,8 @@
+ {
+   this->ui.frameSlider->setEnabled(enable);
+   this->ui.frameSpinBox->setEnabled(enable);
++  this->ui.stepBackButton->setEnabled(enable);
++  this->ui.stepForwardButton->setEnabled(enable);
+   this->ui.fpsLabel->setEnabled(enable);
+ 
+   const auto resetControls = !enable;
+--- a/YUViewLib/ui/playbackController.ui
++++ b/YUViewLib/ui/playbackController.ui
+@@ -41,6 +41,26 @@
+     </widget>
+    </item>
+    <item>
++    <widget class="QPushButton" name="stepBackButton">
++     <property name="toolTip">
++      <string>Step one frame back (Left)</string>
++     </property>
++     <property name="text">
++      <string/>
++     </property>
++    </widget>
++   </item>
++   <item>
++    <widget class="QPushButton" name="stepForwardButton">
++     <property name="toolTip">
++      <string>Step one frame forward (Right)</string>
++     </property>
++     <property name="text">
++      <string/>
++     </property>
++    </widget>
++   </item>
++   <item>
+     <widget class="QSlider" name="frameSlider">
+      <property name="toolTip">
+       <string>Slide to select a frame from the sequence</string>
+diff --git a/YUViewLib/images/img_step_back.png b/YUViewLib/images/img_step_back.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..8dbc53824fb173ed4977ab6d7a967b3c204fd979
+GIT binary patch
+literal 197
+zcmeAS@N?(olHy`uVBq!ia0vp^5+KaM0wlfaz7_+i9#0p?kcv6U2@;JBf}M98Toy5L
+zw+YW^;^O%)`Oo;z@kM*uADWx(-jH38u%q{|#2Tq(4o5pKJvjV9V%;1L-tLJa!dC<i
+zeUS3CoW!QKCaQA7%#QP(QatURg+eS(3~JPTnVFlJ4yRo*F#rM;gFWg%0cPgISt)^H
+r7Oxo(Gvz!3inkcGJeVM<$-r>5GVbhl#r$JHcQJUn`njxgN@xNAIv+%}
+
+literal 0
+HcmV?d00001
+
+diff --git a/YUViewLib/images/img_step_back@2x.png b/YUViewLib/images/img_step_back@2x.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..81f1bae83c706abc898d69d750d5a90175849703
+GIT binary patch
+literal 282
+zcmV+#0p<RQP)<h;3K|Lk000e1NJLTq001xm001xu1ONa4{R=S+0002tNkl<Zc%1Fj
+zp%Q{X6ouhmvkyTe8i@v@kq0msjXr?EXrvpAMjpUmFcJ+0oiQ2+MuG-|D2v{Oy~Wu>
+zW0>>ZU0}h-$H%8p0`8?to>UW<kjsa$1p>BqtF;4W+-$c~4utHRye}y*r+9nPDG-r;
+zlsg5MmDwEv1CGXWM?g|r?f@8Z`C8u+SpO(*1;kth^+up8Bzw~7WOdc4LUx*4^vtw$
+z>L`7t0jVwkFecXp05;kH#Kxb_Apo$_24KiZ7XU~~N4E+95eHoWU_qe^K%dNXyHi8F
+gauyRlK0be&2R7i0A>#>W$^ZZW07*qoM6N<$f(FQH^8f$<
+
+literal 0
+HcmV?d00001
+
+diff --git a/YUViewLib/images/img_step_forward.png b/YUViewLib/images/img_step_forward.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..6895ca0e59e42e72617ddd7d4b4463c34d066c56
+GIT binary patch
+literal 199
+zcmeAS@N?(olHy`uVBq!ia0vp^5+KaM0wlfaz7_+iK2I0Nkcv6U2@;JBf}Obs3z)jQ
+z*i?jg|D?S*sPt?8L;J(^Y^*s_|BU~n?>PIwVOHCJp8t}|CaeNVB(uq1GWnDK<NSsh
+zA-w-3<BVGpvJwt06XvSeFuVJ7+hHE5Bi1jCo%v>I#PQA!T*8@AaehL>RS6lXu*X}(
+t*EO<wYE4Px731ZW00Fs#&51`C7;<CcRatBKR{~we;OXk;vd$@?2>|{$M|A)I
+
+literal 0
+HcmV?d00001
+
+diff --git a/YUViewLib/images/img_step_forward@2x.png b/YUViewLib/images/img_step_forward@2x.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..a2ba78e114207c969f3e129f9660ded4fdd8f228
+GIT binary patch
+literal 282
+zcmeAS@N?(olHy`uVBq!ia0vp^1|ZDA0wn)(8}b0Dhn_BuAr*7pUR^81m?(1Wqy0_S
+zjzt<=i(W9X1eP#1X}oIE*u~%|;Odx=ws=G0<2HB0V>cqJuf3ZocrX3+=Xv*M&i&gk
+z0SM$bYhS#2`|39Nu9-iWoZk4dYcVJ#KI7&nT=JN^W6Dl_g(IEw^c8}p?Q0Ma{{<wp
+z^Br7xY8e&H?ltT%-o)U$dZy>;efefbf6K?c-+oxvYsRyZY{oMA<Sf>tWAVF18*>x4
+zGYQzrd#NYnzWK)zBROOD(ngcdnX5%Dp8re9Vh9pjI!%*v&Wotkt`3K7H1yv)=TBYU
+e+S2kTRZe4Gk7CwB%NC$#89ZJ6T-G@yGywo<<#DzE
+
+literal 0
+HcmV?d00001
+

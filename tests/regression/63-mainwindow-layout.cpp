@@ -12,6 +12,8 @@
 //   * Full screen hides every visible dock and brings back exactly those. The old fixed list
 //     missed three docks.
 //   * The title says bd-analyzer and the status bar is shown (messages were written to a hidden one).
+//   * Step back / step forward buttons sit right of play and stop and move one frame (patch 0085).
+//     Needs a sequence as the first argument; skipped without one.
 //
 // With BDA_LAYOUT_SCREENSHOT=<path.png> the window is also saved as an image for a look by eye.
 #include <QAction>
@@ -20,12 +22,15 @@
 #include <QMap>
 #include <QMenu>
 #include <QMenuBar>
+#include <QPushButton>
 #include <QSettings>
 #include <QStatusBar>
 #include <iostream>
+#include <unistd.h>
 #include <string>
 
 #include "ui/Mainwindow.h"
+#include "ui/PlaybackController.h"
 #include "ui/widgets/BlockInfoWidget.h"
 
 namespace
@@ -68,6 +73,15 @@ void collectShortcuts(QMenu *menu, QMap<QString, QStringList> &out)
 }
 
 QDockWidget *dock(MainWindow *w, const char *name) { return w->findChild<QDockWidget *>(name); }
+
+void settle(int ms)
+{
+  for (int i = 0; i < ms / 10; ++i)
+  {
+    QCoreApplication::processEvents();
+    usleep(10000);
+  }
+}
 } // namespace
 
 int main(int argc, char **argv)
@@ -168,7 +182,39 @@ int main(int argc, char **argv)
       visibleAfter.push_back(d);
   check(visibleAfter == visibleBefore, "leaving full screen brings back exactly the docks that were shown");
 
-  delete w;
+  // --- step buttons ------------------------------------------------------------------------------
+  auto *playback = w->findChild<PlaybackController *>();
+  auto *stop     = w->findChild<QPushButton *>("stopButton");
+  auto *back     = w->findChild<QPushButton *>("stepBackButton");
+  auto *forward  = w->findChild<QPushButton *>("stepForwardButton");
+  check(back && forward && !back->icon().isNull() && !forward->icon().isNull(),
+        "step back and step forward buttons exist with icons");
+  if (stop && back && forward)
+  {
+    auto *layout = stop->parentWidget()->layout();
+    check(layout->indexOf(back) == layout->indexOf(stop) + 1 &&
+              layout->indexOf(forward) == layout->indexOf(back) + 1,
+          "the step buttons sit right of stop, back then forward");
+  }
+  if (argc > 1 && playback && back && forward)
+  {
+    w->loadFiles({QString(argv[1])});
+    settle(1500);
+    check(back->isEnabled() && forward->isEnabled(), "the step buttons are enabled with a sequence");
+    playback->setCurrentFrameAndUpdate(0);
+    forward->click();
+    forward->click();
+    check(playback->getCurrentFrame() == 2, "two forward steps reach frame 2");
+    back->click();
+    check(playback->getCurrentFrame() == 1, "one back step returns to frame 1");
+    playback->setCurrentFrameAndUpdate(0);
+    back->click();
+    check(playback->getCurrentFrame() == 0, "stepping back at frame 0 stays at frame 0");
+  }
+  else
+    std::cout << "  SKIP  step buttons with a sequence (no file given)" << std::endl;
+
+  // w is never deleted once a file is loaded - see 21-playlist-saved-across-sessions.
   std::cout << (g_failures == 0 ? "PASS" : "FAIL") << std::endl;
   return g_failures == 0 ? 0 : 1;
 }
