@@ -61,6 +61,15 @@ The analysis tools (SB BD-rate, Find diff, Global motion, ME block compare, Y4M 
 open as docks at the bottom, tabbed above the playback controls; closing the dock closes the tool.
 An item's Properties are on two tabs: **Video** (format, conversion, filters, decoder) and
 **Overlays** (the statistics check boxes).
+The **Frame Timeline** (`Ctrl+Shift+T`, top) has one bar per frame: height = coded bytes, colour =
+frame type (AV1 KEY red, INTRA_ONLY orange, INTER blue, SWITCH purple, show_existing a thin grey bar;
+H.264/HEVC I red, P blue, B green). Click to go to a frame; Shift+drag a range to see its total
+bytes, kbps, largest/smallest frame and frames per type, and with two items selected the B
+difference in %. Right-click for log scale. The **Problems** list (`Ctrl+Shift+P`) collects Find diff
+results (differing headers, superblocks, reconstructed frames) and decoder errors; double-click a
+row to go there. In a statistic's style dialog, "Fit colour range to the frame on screen" maps the
+colours over that frame's min..max; the legend then says "frame a .. b" instead of "fixed a .. b".
+File → Save Session / Open Session (`.bdsession`) keeps the playlist, perspective and layout.
 
 **File menu.** Open (`Ctrl+O`), Recent Files, Save Playlist (`Ctrl+S`), Save Playlist on Exit
 (default on), Delete Item (`Del`), Save Screenshot, Settings.

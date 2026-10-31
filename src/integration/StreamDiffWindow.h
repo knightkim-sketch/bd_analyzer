@@ -94,6 +94,8 @@ public:
   const bda::diff::SectionDiffResult &lastResult() const { return this->report.headers; }
   const StreamDiffReport &            lastReport() const { return this->report; }
   bool                                busy() const { return this->running; }
+  // Both compared streams are still there (locate() has somewhere to go).
+  bool hasStreams() const { return !this->itemA.isNull() && !this->itemB.isNull(); }
 
   /* The place "Go to first difference" goes to: the first differing block of step 4 when there is
    * one, else the first frame whose pictures differ. Unset when neither step found anything.

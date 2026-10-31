@@ -32,7 +32,8 @@ void ToolDock::setTool(QDialog *tool)
   tool->setWindowFlags(Qt::Widget);
   tool->setMinimumSize(0, 0);
   this->setWidget(tool);
-  this->placeholder->deleteLater();
+  if (this->placeholder)
+    this->placeholder->deleteLater();
   this->placeholder = nullptr;
 
   // The tool closed itself (Esc -> reject, or a Close button): hide the dock rather than keep an

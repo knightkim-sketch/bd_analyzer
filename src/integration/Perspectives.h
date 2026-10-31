@@ -30,7 +30,8 @@ public:
   // placeDefault puts every dock in its default area and visibility (MainWindow's reset layout).
   Perspectives(QMainWindow *window, std::function<void()> placeDefault);
 
-  static constexpr int kSchema = 1;
+  // 2: the frame timeline and Problems docks were added.
+  static constexpr int kSchema = 2;
 
   QStringList names() const;
   QString     current() const { return this->currentName; }

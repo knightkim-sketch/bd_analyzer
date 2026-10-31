@@ -114,11 +114,17 @@ std::vector<LegendLine> legendLines(playlistItem *item)
         }
         else
         {
+          // The range the last paint used: fitted to the frame, or the type's fixed one.
+          auto shown = mapper;
+          if (type.fittedRange)
+            shown.valueRange = *type.fittedRange;
           line.gradient     = true;
-          line.gradientFrom = functionsGui::toQColor(mapper.getColor(mapper.valueRange.min));
-          line.gradientTo   = functionsGui::toQColor(mapper.getColor(mapper.valueRange.max));
-          line.rangeText =
-              QString("%1 .. %2").arg(mapper.valueRange.min).arg(mapper.valueRange.max);
+          line.gradientFrom = functionsGui::toQColor(shown.getColor(shown.valueRange.min));
+          line.gradientTo   = functionsGui::toQColor(shown.getColor(shown.valueRange.max));
+          line.rangeText    = QString("%1 %2 .. %3")
+                               .arg(type.fittedRange ? "frame" : "fixed")
+                               .arg(shown.valueRange.min)
+                               .arg(shown.valueRange.max);
         }
       }
       if (type.hasVectorData && type.renderVectorData)
@@ -175,6 +181,8 @@ bool overlayLegendEnabled()
 
 void setOverlayLegendEnabled(bool enabled)
 {
+  if (legendEnabled == enabled)
+    return;
   legendEnabled = enabled;
   QSettings().setValue(kLegendSettingKey, enabled);
 }

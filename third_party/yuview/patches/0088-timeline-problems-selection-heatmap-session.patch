@@ -1,0 +1,699 @@
+--- a/YUViewLib/src/filesource/FileSourceFFmpegFile.cpp
++++ b/YUViewLib/src/filesource/FileSourceFFmpegFile.cpp
+@@ -451,6 +451,7 @@
+   {
+     this->nrFrames     = other->nrFrames;
+     this->keyFrameList = other->keyFrameList;
++    this->packetIndex  = other->packetIndex;
+   }
+   else if (parseFile)
+   {
+@@ -518,8 +519,12 @@
+   }
+ 
+   this->nrFrames = 0;
++  this->packetIndex.clear();
+   while (this->goToNextPacket(true))
+   {
++    this->packetIndex.push_back({this->currentPacket.getPTS(),
++                                 this->currentPacket.getDataSize(),
++                                 this->currentPacket.getFlagKeyframe()});
+     DEBUG_FFMPEG("FileSourceFFmpegFile::scanBitstream: frame %d pts %d dts %d%s",
+                  this->nrFrames,
+                  (int)this->currentPacket.getPTS(),
+--- a/YUViewLib/src/filesource/FileSourceFFmpegFile.h
++++ b/YUViewLib/src/filesource/FileSourceFFmpegFile.h
+@@ -52,6 +52,17 @@
+   FileSourceFFmpegFile(const QString &filePath) : FileSourceFFmpegFile() { openFile(filePath); }
+   ~FileSourceFFmpegFile();
+ 
++  /* Every video packet seen by scanBitstream(), in file order (bd-analyzer: the frame timeline).
++   * Filled once when the file is opened and not changed afterwards.
++   */
++  struct PacketInfo
++  {
++    int64_t pts{};
++    int     bytes{};
++    bool    keyframe{};
++  };
++  const std::vector<PacketInfo> &getPacketIndex() const { return this->packetIndex; }
++
+   // Load the ffmpeg libraries and try to open the file. The FileSource will install a watcher for
+   // the file. Return false if anything goes wrong.
+   bool openFile(const QString &       filePath,
+@@ -197,6 +208,7 @@
+ 
+   // These are filled after opening a file (after scanBitstream was called)
+   QList<pictureIdx> keyFrameList; //< A list of pairs (frameNr, PTS) that we can seek to.
++  std::vector<PacketInfo> packetIndex;
+   // pictureIdx getClosestSeekableFrameNumberBeforeBefore(int frameIdx);
+ 
+   // For parsing NAL units from the compressed data:
+--- a/YUViewLib/src/playlistitem/playlistItem.h
++++ b/YUViewLib/src/playlistitem/playlistItem.h
+@@ -376,6 +376,18 @@
+   // overlay
+   virtual stats::StatisticUIHandler *getStatisticsUIHandler() { return nullptr; }
+ 
++  /* bd-analyzer: the coded size of every frame in playback order, for the frame timeline. Empty
++   * when the item cannot tell without decoding (raw video). bytes < 0 for a frame of unknown size.
++   */
++  struct CodedFrame
++  {
++    int64_t bytes{-1};
++    bool    key{};
++  };
++  virtual std::vector<CodedFrame> getCodedFrames() { return {}; }
++  // bd-analyzer: why the item's decoder stopped, or empty (the Problems list).
++  virtual QString getDecoderError() const { return {}; }
++
+   // Return true if something is currently being loaded in the background. (As in: When loading is
+   // done, the item will update itself and look different)
+   virtual bool isLoading() const { return false; }
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.cpp
+@@ -2202,3 +2202,53 @@
+    */
+   return this->properties().name;
+ }
++
++/* bd-analyzer: the frame timeline's sizes, from what opening the file already read - no decoding.
++ * A container's packets (one per temporal unit for AV1) were indexed by the scan, put in
++ * presentation order here; an Annex-B file's frames come from its parser's display-order ranges.
++ */
++std::vector<playlistItem::CodedFrame> playlistItemCompressedVideo::getCodedFrames()
++{
++  std::vector<CodedFrame> frames;
++  if (this->inputFileFFmpegLoading)
++  {
++    auto packets = this->inputFileFFmpegLoading->getPacketIndex();
++    // Without a pts on every packet there is no presentation order to sort by; keep file order.
++    if (std::none_of(packets.begin(), packets.end(), [](const auto &p) {
++          return p.pts == AV_NOPTS_VALUE;
++        }))
++      std::stable_sort(packets.begin(), packets.end(), [](const auto &a, const auto &b) {
++        return a.pts < b.pts;
++      });
++    for (const auto &packet : packets)
++      frames.push_back({packet.bytes, packet.keyframe});
++  }
++  else if (this->inputFileAnnexBParser)
++  {
++    const auto count = this->inputFileAnnexBParser->getNumberPOCs();
++    for (size_t i = 0; i < count; ++i)
++    {
++      CodedFrame frame;
++      if (const auto range = this->inputFileAnnexBParser->getFrameStartEndPosDisplayOrder(
++              parser::FrameIndexDisplayOrder(i)))
++        frame.bytes = int64_t(range->second - range->first); // the end is the next NAL's start
++      frames.push_back(frame);
++    }
++  }
++  return frames;
++}
++
++QString playlistItemCompressedVideo::getDecoderError() const
++{
++  /* The loading thread sets the error while holding the decoder mutex, and holds it for whole
++   * decodes - so only try it, and report what was last seen while a decode is running.
++   */
++  if (!this->decoderAccessMutex.try_lock())
++    return this->lastDecoderError;
++  if (this->loadingDecoder && this->loadingDecoder->state() == decoder::DecoderState::Error)
++    this->lastDecoderError = this->loadingDecoder->decoderErrorString();
++  else
++    this->lastDecoderError.clear();
++  this->decoderAccessMutex.unlock();
++  return this->lastDecoderError;
++}
+--- a/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
++++ b/YUViewLib/src/playlistitem/playlistItemCompressedVideo.h
+@@ -122,6 +122,8 @@
+    * still leave this item alone: they only ask items with providesStatistics, which stays false.
+    */
+   stats::StatisticUIHandler *getStatisticsUIHandler() override { return &this->statisticsUIHandler; }
++  std::vector<CodedFrame>    getCodedFrames() override;
++  QString                    getDecoderError() const override;
+   stats::StatisticUIHandler *getMotionEstimationUIHandler() override
+   {
+     return &this->meStatisticsUIHandler;
+@@ -251,6 +253,7 @@
+   // is a use-after-free.
+   // mutable so that const accessors (getMaxBlockSize) can lock it too.
+   mutable QRecursiveMutex decoderAccessMutex;
++  mutable QString         lastDecoderError; // getDecoderError() while a decode holds the mutex
+ 
+   stats::StatisticUIHandler statisticsUIHandler;
+   stats::StatisticsData     statisticsData;
+--- a/YUViewLib/src/statistics/StatisticsDataPainting.cpp
++++ b/YUViewLib/src/statistics/StatisticsDataPainting.cpp
+@@ -40,6 +40,8 @@
+ #include <QtGui/QPolygon>
+ #include <QtMath>
+ #include <cmath>
++#include <map>
++#include <optional>
+ 
+ namespace
+ {
+@@ -307,6 +309,49 @@
+ 
+   std::unique_lock<std::mutex> lock(statisticsData.accessMutex);
+ 
++  /* bd-analyzer: types that fit their colour range to this frame get a copy of their mapper with the
++   * frame's min..max (StatisticsType::fitRangeToFrame). Discrete maps keep theirs.
++   */
++  std::map<int, stats::color::ColorMapper> fittedMappers;
++  for (auto &type : statsTypes)
++  {
++    type.fittedRange.reset();
++    if (!type.render || !type.renderValueData || !type.fitRangeToFrame ||
++        type.colorMapper.mappingType == stats::color::MappingType::Map ||
++        !statisticsData.hasDataForTypeID(type.typeID))
++      continue;
++    std::optional<double> lo, hi;
++    const auto            take = [&](double v) {
++      if (!std::isfinite(v))
++        return;
++      lo = lo ? std::min(*lo, v) : v;
++      hi = hi ? std::max(*hi, v) : v;
++    };
++    // The values as they are coloured below: divided by the block area when so scaled.
++    for (const auto &item : statisticsData[type.typeID].valueData)
++      take(type.scaleValueToBlockSize ? double(item.value) / (item.size[0] * item.size[1])
++                                      : double(item.value));
++    for (const auto &item : statisticsData[type.typeID].polygonValueData)
++    {
++      const auto box = convertToQPolygon(item.corners).boundingRect();
++      take(type.scaleValueToBlockSize ? double(item.value) / (box.width() * box.height())
++                                      : double(item.value));
++    }
++    if (!lo)
++      continue;
++    auto mapper       = type.colorMapper;
++    mapper.valueRange = {int(std::floor(*lo)), int(std::ceil(*hi))};
++    if (mapper.valueRange.max <= mapper.valueRange.min)
++      mapper.valueRange.max = mapper.valueRange.min + 1; // getColor divides by the width
++    type.fittedRange = mapper.valueRange;
++    fittedMappers.emplace(type.typeID, mapper);
++  }
++  const auto mapperOf = [&fittedMappers](const stats::StatisticsType &type)
++      -> const stats::color::ColorMapper & {
++    const auto fitted = fittedMappers.find(type.typeID);
++    return fitted == fittedMappers.end() ? type.colorMapper : fitted->second;
++  };
++
+   // Draw all the block types. Also, if the zoom factor is larger than STATISTICS_DRAW_VALUES_ZOOM,
+   // also save a list of all the values of the blocks and their position in order to draw the values
+   // in the next step.
+@@ -342,9 +387,9 @@
+         Color rectColor;
+         if (it->scaleValueToBlockSize)
+           rectColor =
+-              it->colorMapper.getColor(float(value) / (valueItem.size[0] * valueItem.size[1]));
++              mapperOf(*it).getColor(float(value) / (valueItem.size[0] * valueItem.size[1]));
+         else
+-          rectColor = it->colorMapper.getColor(value);
++          rectColor = mapperOf(*it).getColor(value);
+         rectColor.setAlpha(rectColor.alpha() * ((float)it->alphaFactor / 100.0));
+ 
+         auto rectQColor = functionsGui::toQColor(rectColor);
+@@ -428,10 +473,10 @@
+           // Get the right color for the item and draw it.
+           Color color;
+           if (it->scaleValueToBlockSize)
+-            color = it->colorMapper.getColor(
++            color = mapperOf(*it).getColor(
+                 float(value) / (boundingRect.size().width() * boundingRect.size().height()));
+           else
+-            color = it->colorMapper.getColor(value);
++            color = mapperOf(*it).getColor(value);
+           color.setAlpha(color.alpha() * ((float)it->alphaFactor / 100.0));
+ 
+           // Fill polygon
+--- a/YUViewLib/src/statistics/StatisticsType.h
++++ b/YUViewLib/src/statistics/StatisticsType.h
+@@ -32,6 +32,8 @@
+ 
+ #pragma once
+ 
++#include <optional>
++
+ #include <common/Typedef.h>
+ #include <common/YUViewDomElement.h>
+ 
+@@ -145,6 +147,14 @@
+   ArrowHead arrowHead{
+       ArrowHead::arrow}; // Do we draw an arrow, a circle or nothing at the end of the arrow?
+ 
++  /* bd-analyzer: map the colours over the value range of the frame on screen instead of
++   * colorMapper.valueRange - more contrast, but the same colour no longer means the same value on
++   * another frame. Not a mapping-type change: colorMapper keeps its range (it is what the playlist
++   * saves). fittedRange is the range the last paint used, for the legend; unset when not fitted.
++   */
++  bool                      fitRangeToFrame{};
++  std::optional<Range<int>> fittedRange;
++
+   // Do we (and if yes how) draw a grid around each block (vector or value)
+   bool          renderGrid{true};
+   LineDrawStyle gridStyle;
+--- a/YUViewLib/src/ui/Mainwindow.cpp
++++ b/YUViewLib/src/ui/Mainwindow.cpp
+@@ -40,6 +40,7 @@
+ #include <integration/AppTheme.h>
+ #include <integration/MotionEstimationWidget.h>
+ #include <integration/Perspectives.h>
++#include <integration/SessionFile.h>
+ #include <integration/ToolDock.h>
+ #include <integration/LcevcSeparateOpen.h>
+ #include <integration/StabilizedY4mExport.h>
+@@ -48,7 +49,9 @@
+ #include <playlistitem/playlistItemWithVideo.h>
+ 
+ #include <QByteArray>
++#include <QDomDocument>
+ #include <QFileDialog>
++#include <QSaveFile>
+ #include <QFileInfo>
+ #include <QLocale>
+ #include <QImageWriter>
+@@ -273,6 +276,78 @@
+       "Y4M sequence generator", "sequenceGeneratorDock", "Use Tools > Generate Y4M Sequence.");
+   this->perspectives =
+       new bda::integration::Perspectives(this, [this] { this->placeDocksByDefault(); });
++
++  /* One selection for every panel that follows a clicked block (integration/SelectionContext): the
++   * views report clicks to it, the panels listen to it instead of to both views each.
++   */
++  using SelectionSource = bda::integration::SelectionContext::Source;
++  this->selection       = new bda::integration::SelectionContext(this);
++  connect(ui.displaySplitView,
++          &splitViewWidget::blockSelected,
++          this->selection,
++          [this](playlistItem *item, QPoint pixelPos, int frameIdx)
++          { this->selection->setBlock(item, pixelPos, frameIdx, SelectionSource::PrimaryView); });
++  connect(&separateViewWindow.splitView,
++          &splitViewWidget::blockSelected,
++          this->selection,
++          [this](playlistItem *item, QPoint pixelPos, int frameIdx)
++          { this->selection->setBlock(item, pixelPos, frameIdx, SelectionSource::SeparateView); });
++  connect(ui.playlistTreeWidget,
++          &PlaylistTreeWidget::selectionRangeChanged,
++          this->selection,
++          &bda::integration::SelectionContext::forget);
++
++  /* The frame timeline above the picture (one bar per frame, click to go there) and the Problems
++   * list at the bottom, tabbed with the tools (integration/FrameTimeline, ProblemsWidget).
++   */
++  this->frameTimeline     = new bda::integration::FrameTimeline(this);
++  this->frameTimelineDock = new QDockWidget("Frame Timeline", this);
++  this->frameTimelineDock->setObjectName("frameTimelineDock");
++  this->frameTimelineDock->setWidget(this->frameTimeline);
++  this->addDockWidget(Qt::TopDockWidgetArea, this->frameTimelineDock);
++  this->problems     = new bda::integration::ProblemsWidget(this);
++  this->problemsDock = new QDockWidget("Problems", this);
++  this->problemsDock->setObjectName("problemsDock");
++  this->problemsDock->setWidget(this->problems);
++  this->addDockWidget(Qt::BottomDockWidgetArea, this->problemsDock);
++  this->tabifyDockWidget(ui.rateDistortionPlotDock, this->problemsDock);
++  this->problemsDock->hide();
++  connect(ui.playlistTreeWidget,
++          &PlaylistTreeWidget::selectionRangeChanged,
++          this->frameTimeline,
++          &bda::integration::FrameTimeline::currentSelectedItemsChanged);
++  connect(ui.bitstreamAnalysis,
++          &BitstreamAnalysisWidget::packetItemModelChanged,
++          this->frameTimeline,
++          &bda::integration::FrameTimeline::setBitstreamModel);
++  connect(ui.displaySplitView,
++          &splitViewWidget::viewFrameChanged,
++          this->frameTimeline,
++          [this](playlistItem *item, int frameIdx)
++          {
++            if (item && item == ui.playlistTreeWidget->getSelectedItems()[0])
++              this->frameTimeline->setCurrentFrame(frameIdx);
++            this->refreshDecoderProblems();
++          });
++  connect(this->frameTimeline,
++          &bda::integration::FrameTimeline::seekRequested,
++          this,
++          [this](int frameIdx) { ui.playbackController->setCurrentFrameAndUpdate(frameIdx); });
++  connect(ui.playlistTreeWidget,
++          &PlaylistTreeWidget::selectionRangeChanged,
++          this,
++          [this] { this->refreshDecoderProblems(); });
++  // A Problems row goes where Find diff would go for it, or just to its frame without the tool.
++  connect(this->problems,
++          &bda::integration::ProblemsWidget::locateRequested,
++          this,
++          [this](bda::integration::StreamDiffLocation where)
++          {
++            if (this->streamDiffWindow && this->streamDiffWindow->hasStreams())
++              this->streamDiffWindow->locate(where);
++            else if (where.frameIdx >= 0)
++              ui.playbackController->setCurrentFrameAndUpdate(where.frameIdx);
++          });
+   // Shift+click in either view opens the ME compare popup on that block.
+   connect(ui.displaySplitView,
+           &splitViewWidget::blockCompareRequested,
+@@ -300,12 +375,8 @@
+             &PlaylistTreeWidget::selectedItemChanged,
+             cachingBlockInfo,
+             &BlockInfoWidget::refresh);
+-    connect(ui.displaySplitView,
+-            &splitViewWidget::blockSelected,
+-            cachingBlockInfo,
+-            &BlockInfoWidget::setSelectedBlock);
+-    connect(&separateViewWindow.splitView,
+-            &splitViewWidget::blockSelected,
++    connect(this->selection,
++            &bda::integration::SelectionContext::blockChanged,
+             cachingBlockInfo,
+             &BlockInfoWidget::setSelectedBlock);
+     connect(ui.displaySplitView,
+@@ -325,12 +396,8 @@
+           &PlaylistTreeWidget::selectedItemChanged,
+           ui.frameInfoWidget,
+           &FrameInfoWidget::refresh);
+-  connect(ui.displaySplitView,
+-          &splitViewWidget::blockSelected,
+-          ui.frameInfoWidget,
+-          &FrameInfoWidget::setSelectedBlock);
+-  connect(&separateViewWindow.splitView,
+-          &splitViewWidget::blockSelected,
++  connect(this->selection,
++          &bda::integration::SelectionContext::blockChanged,
+           ui.frameInfoWidget,
+           &FrameInfoWidget::setSelectedBlock);
+   // The grid checkbox and the View menu are two ways to the same setting, so keep them in step.
+@@ -374,16 +441,9 @@
+           &PlaylistTreeWidget::selectedItemChanged,
+           ui.hexdumpViewer,
+           &HexdumpViewerWidget::refresh);
+-  connect(ui.displaySplitView,
+-          &splitViewWidget::blockSelected,
+-          [this](playlistItem *item, QPoint pixelPos, int frameIdx)
+-          {
+-            ui.hexdumpViewer->setSelectedBlock(item, pixelPos, frameIdx);
+-            if (item)
+-              this->revealItemDumpPane();
+-          });
+-  connect(&separateViewWindow.splitView,
+-          &splitViewWidget::blockSelected,
++  connect(this->selection,
++          &bda::integration::SelectionContext::blockChanged,
++          ui.hexdumpViewer,
+           [this](playlistItem *item, QPoint pixelPos, int frameIdx)
+           {
+             ui.hexdumpViewer->setSelectedBlock(item, pixelPos, frameIdx);
+@@ -406,10 +466,14 @@
+    * context-driven panels do. blockSelected carries the item as well as the click, which is why
+    * the stream description is refreshed from both signals rather than from a separate connect.
+    */
+-  connect(ui.displaySplitView,
+-          &splitViewWidget::blockSelected,
++  connect(this->selection,
++          &bda::integration::SelectionContext::blockChanged,
++          ui.assistPanelWidget,
+           [this](playlistItem *item, QPoint pixelPos, int)
+           {
++            // The primary view only, as before the selection was shared.
++            if (this->selection->source() != bda::integration::SelectionContext::Source::PrimaryView)
++              return;
+             pushAssistStream(ui.assistPanelWidget, item);
+             ui.assistPanelWidget->setSelectedPosition(pixelPos, item != nullptr);
+           });
+@@ -746,6 +810,8 @@
+                   ui.playlistTreeWidget,
+                   &PlaylistTreeWidget::savePlaylistToFile,
+                   Qt::CTRL | Qt::Key_S);
++  connect(fileMenu->addAction("Open Session..."), &QAction::triggered, this, [this] { this->openSession(); });
++  connect(fileMenu->addAction("Save Session..."), &QAction::triggered, this, [this] { this->saveSession(); });
+   /* Keeping the playlist across sessions is on by default. The snapshot that used to exist only
+    * for crash recovery is now written on a normal quit as well and restored without asking, so
+    * this toggle is the only thing standing between the two behaviours. It lives in the menu
+@@ -873,6 +939,8 @@
+   addDockViewAction(this->globalMotionDock, "Show Global motion");
+   addDockViewAction(this->meCompareDock, "Show ME block compare");
+   addDockViewAction(this->sequenceGeneratorDock, "Show Y4M sequence generator");
++  addDockViewAction(this->frameTimelineDock, "Show Frame &Timeline", Qt::CTRL | Qt::SHIFT | Qt::Key_T);
++  addDockViewAction(this->problemsDock, "Show Pro&blems", Qt::CTRL | Qt::SHIFT | Qt::Key_P);
+   viewMenu->addSeparator();
+   addDockViewAction(ui.playbackControllerDock, "Show Playback &Controls", Qt::CTRL | Qt::Key_D);
+   auto overlayToolBarAction = this->overlayToolBar->toggleViewAction();
+@@ -1069,6 +1137,18 @@
+   {
+     this->streamDiffWindow = new bda::integration::StreamDiffWindow(this);
+     connect(this->streamDiffWindow,
++            &bda::integration::StreamDiffWindow::comparisonFinished,
++            this->problems,
++            [this]
++            {
++              this->problems->setDiffReport(this->streamDiffWindow->lastReport());
++              if (this->problems->count() > 0)
++              {
++                this->problemsDock->show();
++                this->problemsDock->raise();
++              }
++            });
++    connect(this->streamDiffWindow,
+             &bda::integration::StreamDiffWindow::locateRequested,
+             this,
+             &MainWindow::showStreamDiffLocation);
+@@ -1306,11 +1386,15 @@
+      * frame on screen, so both follow the view rather than freezing at whatever was showing when
+      * the window opened.
+      */
+-    connect(ui.displaySplitView,
+-            &splitViewWidget::blockSelected,
++    connect(this->selection,
++            &bda::integration::SelectionContext::blockChanged,
+             this->bdRateWindow.data(),
+-            [window = this->bdRateWindow.data()](playlistItem *item, QPoint pixelPos, int)
+-            { window->setSelectedPosition(pixelPos, item != nullptr); });
++            [this, window = this->bdRateWindow.data()](playlistItem *item, QPoint pixelPos, int)
++            {
++              if (this->selection->source() ==
++                  bda::integration::SelectionContext::Source::PrimaryView)
++                window->setSelectedPosition(pixelPos, item != nullptr);
++            });
+     connect(ui.displaySplitView,
+             &splitViewWidget::viewFrameChanged,
+             this->bdRateWindow.data(),
+@@ -2316,7 +2400,10 @@
+                                           this->streamDiffDock,
+                                           this->globalMotionDock,
+                                           this->meCompareDock,
+-                                          this->sequenceGeneratorDock};
++                                          this->sequenceGeneratorDock,
++                                          this->problemsDock};
++  this->addDockWidget(Qt::TopDockWidgetArea, this->frameTimelineDock);
++  this->frameTimelineDock->show();
+   for (auto *dock : toolDocks)
+   {
+     this->addDockWidget(Qt::BottomDockWidgetArea, dock);
+@@ -2415,3 +2502,74 @@
+     }
+   }
+ }
++
++// The decoder errors of the selected items, for the Problems list.
++void MainWindow::refreshDecoderProblems()
++{
++  std::vector<const void *> present;
++  for (auto *item : ui.playlistTreeWidget->getAllPlaylistItems())
++    present.push_back(item);
++  this->problems->keepDecoderErrorsOf(present);
++  for (auto *item : ui.playlistTreeWidget->getSelectedItems())
++    if (item)
++      this->problems->setDecoderError(item, item->properties().name, item->getDecoderError());
++}
++
++bool MainWindow::saveSession(QString path)
++{
++  if (path.isEmpty())
++    path = QFileDialog::getSaveFileName(
++        this, "Save Session", QString(), "bd-analyzer session (*.bdsession)");
++  if (path.isEmpty())
++    return false;
++  if (!path.endsWith(".bdsession"))
++    path += ".bdsession";
++
++  bda::integration::SessionData session;
++  session.playlistXml = ui.playlistTreeWidget->getPlaylistString(QFileInfo(path).absoluteDir());
++  session.perspective = this->perspectives->current();
++  session.windowState = this->saveState(QT_VERSION);
++  session.windowStateVersion = QT_VERSION;
++  QSaveFile file(path);
++  if (!file.open(QIODevice::WriteOnly) || file.write(bda::integration::writeSession(session)) < 0 ||
++      !file.commit())
++  {
++    QMessageBox::warning(this, "Save Session", "Could not write " + path);
++    return false;
++  }
++  return true;
++}
++
++bool MainWindow::openSession(QString path)
++{
++  if (path.isEmpty())
++    path = QFileDialog::getOpenFileName(
++        this, "Open Session", QString(), "bd-analyzer session (*.bdsession)");
++  if (path.isEmpty())
++    return false;
++  QFile   file(path);
++  QString error;
++  const auto session = file.open(QIODevice::ReadOnly)
++                           ? bda::integration::readSession(file.readAll(), &error)
++                           : std::nullopt;
++  if (!session)
++  {
++    QMessageBox::warning(
++        this, "Open Session", error.isEmpty() ? "Could not read " + path : error);
++    return false;
++  }
++  // The playlist is checked before the current one is thrown away for it.
++  if (QDomDocument document; !document.setContent(session->playlistXml))
++  {
++    QMessageBox::warning(this, "Open Session", "The playlist in " + path + " cannot be read.");
++    return false;
++  }
++  // The layout first, so the items open into the panels they were analysed with.
++  if (session->windowState.isEmpty() ||
++      !this->restoreState(session->windowState, session->windowStateVersion))
++    this->perspectives->apply(session->perspective);
++  this->perspectives->markCurrent(session->perspective);
++  ui.playlistTreeWidget->deletePlaylistItems(true);
++  return ui.playlistTreeWidget->loadPlaylistFromByteArray(session->playlistXml.toUtf8(),
++                                                          QFileInfo(path).absoluteFilePath());
++}
+--- a/YUViewLib/src/ui/Mainwindow.h
++++ b/YUViewLib/src/ui/Mainwindow.h
+@@ -48,7 +48,10 @@
+ #include <integration/StreamDiffWindow.h>
+ #include <integration/MeRunner.h>
+ #include <integration/OverlayControls.h>
++#include <integration/FrameTimeline.h>
+ #include <integration/Perspectives.h>
++#include <integration/ProblemsWidget.h>
++#include <integration/SelectionContext.h>
+ #include <integration/ToolDock.h>
+ 
+ #include <handler/UpdateHandler.h>
+@@ -65,6 +68,12 @@
+   Q_OBJECT
+ 
+ public:
++  /* bd-analyzer session file (.bdsession, integration/SessionFile): the playlist, the perspective
++   * and the window layout. An empty path asks for one. Return false on failure or cancel.
++   */
++  bool saveSession(QString path = {});
++  bool openSession(QString path = {});
++
+   explicit MainWindow(bool useAlternativeSources, QWidget *parent = 0);
+ 
+   void closeEvent(QCloseEvent *event) override;
+@@ -294,4 +303,11 @@
+   bda::integration::ToolDock     *sequenceGeneratorDock{};
+   bda::integration::Perspectives *perspectives{};
+   void                            placeDocksByDefault();
++  // Phase 3: the shared block selection, the frame timeline and the Problems list.
++  bda::integration::SelectionContext *selection{};
++  bda::integration::FrameTimeline    *frameTimeline{};
++  QDockWidget                        *frameTimelineDock{};
++  bda::integration::ProblemsWidget   *problems{};
++  QDockWidget                        *problemsDock{};
++  void                                refreshDecoderProblems();
+ };
+--- a/YUViewLib/src/ui/Statisticsstylecontrol.cpp
++++ b/YUViewLib/src/ui/Statisticsstylecontrol.cpp
+@@ -37,7 +37,9 @@
+ #include <statistics/StatisticsType.h>
+ #include <ui/StatisticsStyleControl_ColorMapEditor.h>
+ 
++#include <QCheckBox>
+ #include <QColorDialog>
++#include <QGridLayout>
+ #include <QInputDialog>
+ #include <QMessageBox>
+ #include <algorithm>
+@@ -80,6 +82,28 @@
+   for (auto typeName : stats::color::PredefinedTypeMapper.getNames())
+     this->ui.comboBoxPredefined->addItem(QString::fromStdString(std::string(typeName)));
+   this->refreshComboBoxCustomMapFromStorage();
++
++  /* bd-analyzer: fit the colour range to the frame on screen (StatisticsType::fitRangeToFrame). Next
++   * to "scale to block size", the other switch that changes which value gets which colour.
++   */
++  this->checkBoxFitRangeToFrame = new QCheckBox("Fit colour range to the frame on screen", this);
++  this->checkBoxFitRangeToFrame->setToolTip(
++      "Map the colours over this frame's own minimum to maximum. More contrast, but the same colour "
++      "means a different value on another frame - the legend shows the range in use.");
++  for (auto *grid : this->findChildren<QGridLayout *>())
++    if (const auto index = grid->indexOf(this->ui.checkBoxScaleValueToBlockSize); index >= 0)
++    {
++      int row, column, rowSpan, columnSpan;
++      grid->getItemPosition(index, &row, &column, &rowSpan, &columnSpan);
++      grid->addWidget(this->checkBoxFitRangeToFrame, grid->rowCount(), column);
++      break;
++    }
++  connect(this->checkBoxFitRangeToFrame, &QCheckBox::toggled, this, [this](bool on) {
++    if (!this->currentItem)
++      return;
++    this->currentItem->fitRangeToFrame = on;
++    emit StyleChanged();
++  });
+ }
+ 
+ void StatisticsStyleControl::setStatsItem(stats::StatisticsType *item)
+@@ -94,6 +118,8 @@
+     const auto &colorMapper = this->currentItem->colorMapper;
+ 
+     this->ui.frameDataColor->setColorMapper(colorMapper);
++    const QSignalBlocker blockFit(this->checkBoxFitRangeToFrame);
++    this->checkBoxFitRangeToFrame->setChecked(this->currentItem->fitRangeToFrame);
+ 
+     static const std::map<MappingType, int> MappingTypeToTabIndex(
+         {{MappingType::Predefined, 0}, {MappingType::Gradient, 1}, {MappingType::Map, 2}});
+--- a/YUViewLib/src/ui/Statisticsstylecontrol.h
++++ b/YUViewLib/src/ui/Statisticsstylecontrol.h
+@@ -34,6 +34,7 @@
+ 
+ #include <statistics/CustomColorMapStorage.h>
+ 
++#include <QCheckBox>
+ #include <QDialog>
+ 
+ #include "ui_statisticsstylecontrol.h"
+@@ -100,6 +101,7 @@
+ 
+   Ui::StatisticsStyleControl ui;
+   stats::StatisticsType *    currentItem{};
++  QCheckBox                 *checkBoxFitRangeToFrame{}; // bd-analyzer, added in code
+ 
+   stats::color::CustomColorMapStorage customColorMapStorage;
+ };
+--- a/YUViewLib/src/ui/widgets/PlaylistTreeWidget.h
++++ b/YUViewLib/src/ui/widgets/PlaylistTreeWidget.h
+@@ -120,6 +120,12 @@
+   // implementation for why that has to happen together with the snapshot.
+   void savePlaylistForNextSession();
+ 
++  /* Public for the bd-analyzer session file (integration/SessionFile), which carries a playlist
++   * inside it. filePath is a file whose directory the playlist's relative paths are relative to.
++   */
++  bool    loadPlaylistFromByteArray(QByteArray data, QString filePath);
++  QString getPlaylistString(QDir dirName);
++
+ public slots:
+   void savePlaylistToFile();
+ 
+@@ -211,8 +217,6 @@
+   playlistItem *getDropTarget(const QPoint &pos) const;
+ 
+   bool    loadPlaylistFile(const QString &filePath);
+-  bool    loadPlaylistFromByteArray(QByteArray data, QString filePath);
+-  QString getPlaylistString(QDir dirName);
+ 
+   // Whether slotSelectionChanged should immediately exit
+   bool ignoreSlotSelectionChanged{false};

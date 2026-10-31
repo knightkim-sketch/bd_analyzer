@@ -2,7 +2,7 @@
 title: 보완 작업 검토와 화면 구성 개선 제안
 status: active
 created: 2026-10-30
-updated: 2026-10-31
+updated: 2026-11-01
 author: claude-opus-5
 verified: partial
 ---
@@ -119,3 +119,20 @@ Knight 지시: hex dump 는 지금 자리(그림 아래)를 유지하고 나머�
 - 함께 고친 문서: `assets/assist/system-prompt.md` (AI Assistant 가 안내하는 패널·메뉴), `docs/dev/feature-verification.md` §2.1.
 - 남은 것 (검토에서 나온 외형 문제): 첫 실행의 `resizeDocks` 가 창이 뜨기 전이라 폭이 안 먹을 수 있다. 숨김 dock(ME/AI/YouTube)을 켜면
   오른쪽 열에 세로로 쌓여 Properties 가 좁아진다 — 패치 전과 같은 동작. Phase 2 의 perspective 에서 다룬다.
+
+## 6. Phase 1–3 와 step 버튼 (패치 0085–0088, 2026-10-31 – 11-01)
+
+Knight 지시: Phase 3 까지 진행, 승인 시점은 권장안으로 자체 결정하고 이력을 남길 것, 중요한 결정은 전문가 agent 의견 수렴.
+자체 승인 이력은 `ui-redesign-decisions.md` (D-01 – D-26).
+
+| 패치 | 내용 | 회귀 |
+|---|---|---|
+| 0085 | 재생 컨트롤 step back / step forward 버튼 (stop 오른쪽) | 63 에 추가 |
+| 0086 | Phase 1: overlay toolbar (F1–F8, Properties 와 양방향), 그림 위 범례 (Ctrl+Shift+L), ME/GM 색 체계 (`OverlayPalette.h`), Dark (Fusion) 테마, 앱 글꼴, 문구 규칙 | 64 |
+| 0087 | Phase 2: perspective 5개 (Alt+1–5, 사용자 배치 저장), 분석 도구 5개를 아래쪽 dock 탭으로 (`ToolDock`), Properties Video/Overlays 탭, H.264 기본 디코더 설정 | 65 |
+| 0088 | Phase 3: Frame Timeline (크기·타입 막대, 구간 집계, A/B), `SelectionContext`, Problems 목록 (Find diff·디코더 오류), 통계 색 범위 "프레임에 맞춤", `.bdsession` | 66 |
+
+- 그림: `img/ui-phase-*.png` (생성 `img/ui-phase123-diagrams.py`), 실제 offscreen 캡처 `img/ui-phase-shot-*.png`.
+- 마지막 전체 회귀: PASS 87 / FAIL 1 (gm-estimate, 개편 전부터 실패).
+- Qt ADS 는 도입하지 않았다 (D-05). auto-hide 가 필요해지면 `Perspectives` 뒤에서 교체한다.
+- 알려진 한계는 D-17a, D-25.

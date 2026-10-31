@@ -26,30 +26,32 @@ struct Definition
  *   playlistDockWidget, fileInfoDock (Info), cachingInfoDock (Block Info), propertiesDock,
  *   frameInfoDock, playbackControllerDock, rateDistortionPlotDock, motionEstimationDock,
  *   assistDock, ytTranscodeDock, bdRateDock, streamDiffDock, globalMotionDock, meCompareDock,
- *   sequenceGeneratorDock
+ *   sequenceGeneratorDock, frameTimelineDock (top), problemsDock (bottom, with the tools)
  */
 const std::vector<Definition> &definitions()
 {
   static const std::vector<Definition> list = {
       {"Default",
-       {"playlistDockWidget", "fileInfoDock", "cachingInfoDock", "propertiesDock", "frameInfoDock"},
+       {"frameTimelineDock", "playlistDockWidget", "fileInfoDock", "cachingInfoDock", "propertiesDock", "frameInfoDock"},
        {}},
       // What is in the stream and in the clicked block; the hex dump is under the picture.
       {"Bitstream debug",
-       {"playlistDockWidget", "fileInfoDock", "cachingInfoDock", "propertiesDock"},
+       {"frameTimelineDock", "playlistDockWidget", "fileInfoDock", "cachingInfoDock", "propertiesDock",
+        "problemsDock"},
        {}},
       // Two items side by side: their differences, the histogram, the block under the cursor.
       {"YUV compare",
-       {"playlistDockWidget", "cachingInfoDock", "propertiesDock", "frameInfoDock", "streamDiffDock"},
+       {"frameTimelineDock", "playlistDockWidget", "cachingInfoDock", "propertiesDock", "frameInfoDock", "streamDiffDock",
+        "problemsDock"},
        {"streamDiffDock"}},
       // Rate and distortion: the frame's scatter and the SB BD-rate groups, tabbed at the bottom.
       {"RD / BD-rate",
-       {"playlistDockWidget", "cachingInfoDock", "propertiesDock", "rateDistortionPlotDock",
+       {"frameTimelineDock", "playlistDockWidget", "cachingInfoDock", "propertiesDock", "rateDistortionPlotDock",
         "bdRateDock"},
        {"bdRateDock"}},
       // Motion: the ME controls next to the properties, compare and global motion at the bottom.
       {"ME / GM",
-       {"playlistDockWidget", "cachingInfoDock", "propertiesDock", "motionEstimationDock",
+       {"frameTimelineDock", "playlistDockWidget", "cachingInfoDock", "propertiesDock", "motionEstimationDock",
         "meCompareDock", "globalMotionDock"},
        {"motionEstimationDock", "globalMotionDock"}},
   };
@@ -117,7 +119,10 @@ void Perspectives::markCurrent(const QString &name)
   if (!findDefinition(name))
     return;
   this->currentName = name;
-  QSettings().setValue("Perspectives/current", name);
+  // Written only when it changes: every QSettings write is a file sync, which a busy disk makes slow.
+  QSettings settings;
+  if (settings.value("Perspectives/current").toString() != name)
+    settings.setValue("Perspectives/current", name);
   if (this->actions)
     for (auto *action : this->actions->actions())
       action->setChecked(action->data().toString() == name);

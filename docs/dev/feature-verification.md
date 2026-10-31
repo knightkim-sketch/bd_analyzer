@@ -85,6 +85,10 @@ Qt 없이 도는 코어 단위 테스트 (`tests/unit/`):
       dock 을 떼어(float) 다른 모니터로 옮길 수 있다. dock 을 닫으면 실행 중인 작업이 멈춘다
 - [ ] Properties 의 Video / Overlays 탭이 item 을 바꿔도 마지막에 고른 탭으로 열린다
 - [ ] Settings → Decoders → H.264 Default Decoder 를 FFMpeg 로 바꾸면 새로 연 H.264 가 FFmpeg 로 열린다
+- [ ] Frame Timeline: 막대 클릭으로 이동, Shift+드래그 구간 집계, 우클릭 Log Scale, 두 item 선택 시 B 윤곽선 (`66`)
+- [ ] Find diff 후 Problems 에 행이 생기고 더블클릭이 그 프레임·블록으로 간다
+- [ ] 통계 style 대화상자의 "Fit colour range to the frame on screen" 이 대비를 바꾸고 범례가 "frame a .. b" 로 바뀐다
+- [ ] File → Save Session / Open Session 이 playlist·perspective·배치를 되돌린다
 - [ ] View → Save / Restore View State (`Ctrl+1`~`Ctrl+8`) 가 레이아웃을 저장·복원한다
 - [ ] Zoom `Ctrl+0` (1:1) / `Ctrl+9` (fit) / `Ctrl++` / `Ctrl+-`
 - [ ] Split View 가 좌우 비교로 전환된다
