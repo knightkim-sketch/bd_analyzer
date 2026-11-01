@@ -46,15 +46,36 @@ features refuse to run on it and say so.
 | Motion Estimation | `Ctrl+M` | ME re-run controls (see below) |
 | AI Assistant | `Ctrl+K` | This panel |
 | YouTube Transcode | `Ctrl+Y` | Download and transcode a YouTube clip |
-| Playback Controls | `Ctrl+D` | Frame stepping and playback |
+| Playback Controls | `Ctrl+D` | Play, stop, step back / step forward buttons (also Left / Right keys), frame slider |
 
 The bitstream hexdump of the clicked block sits under the picture. `Ctrl+F` is full screen.
+The **overlay toolbar** above the picture has one button per overlay group of the selected item
+(the same rows as the Properties panel); the first eight are `F1`–`F8`. With an overlay on, a
+**legend** in the top right corner of the picture names its colours (View → Show Overlay Legend,
+`Ctrl+Shift+L`). Settings → Theme offers Dark (Fusion) besides the YUView themes.
 Help → Reset Window Layout puts every panel back in its default place.
+**Perspectives** (View → Perspective) switch the panels for a task: Default `Alt+1`, Bitstream debug
+`Alt+2`, YUV compare `Alt+3`, RD / BD-rate `Alt+4`, ME / GM `Alt+5`. "Save Layout to This
+Perspective" keeps the user's own arrangement; "Reset This Perspective" goes back to the default one.
+The analysis tools (SB BD-rate, Find diff, Global motion, ME block compare, Y4M sequence generator)
+open as docks at the bottom, tabbed above the playback controls; closing the dock closes the tool.
+An item's Properties are on two tabs: **Video** (format, conversion, filters, decoder) and
+**Overlays** (the statistics check boxes).
+The **Frame Timeline** (`Ctrl+Shift+T`, top) has one bar per frame: height = coded bytes, colour =
+frame type (AV1 KEY red, INTRA_ONLY orange, INTER blue, SWITCH purple, show_existing a thin grey bar;
+H.264/HEVC I red, P blue, B green). Click to go to a frame; Shift+drag a range to see its total
+bytes, kbps, largest/smallest frame and frames per type, and with two items selected the B
+difference in %. Right-click for log scale. The **Problems** list (`Ctrl+Shift+P`) collects Find diff
+results (differing headers, superblocks, reconstructed frames) and decoder errors; double-click a
+row to go there. In a statistic's style dialog, "Fit colour range to the frame on screen" maps the
+colours over that frame's min..max; the legend then says "frame a .. b" instead of "fixed a .. b".
+File → Save Session / Open Session (`.bdsession`) keeps the playlist, perspective and layout.
 
 **File menu.** Open (`Ctrl+O`), Recent Files, Save Playlist (`Ctrl+S`), Save Playlist on Exit
 (default on), Delete Item (`Del`), Save Screenshot, Settings.
 
-**View menu.** Save / Restore View State (`Ctrl+1`–`Ctrl+8`), Dock Panels, Split View, zoom 1:1
+**View menu.** Save / Restore View State (`Ctrl+1`–`Ctrl+8`), Dock Panels, Show Overlay Toolbar,
+Show Overlay Legend (`Ctrl+Shift+L`), Split View, zoom 1:1
 (`Ctrl+0`), zoom to fit (`Ctrl+9`), `Ctrl++` / `Ctrl+-`.
 
 **Analysis menu.** SB BD-rate from Selection (`Ctrl+R`), Find diff between two Streams (`Ctrl+J`),
