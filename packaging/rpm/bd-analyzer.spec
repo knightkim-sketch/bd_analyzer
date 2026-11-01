@@ -33,7 +33,7 @@
 %global __requires_exclude ^(%{__requires_exclude_bundled}|%{__requires_exclude_optional})$
 
 Name:           bd-analyzer
-Version:        %{?bda_version}%{!?bda_version:0.5.3}
+Version:        %{?bda_version}%{!?bda_version:0.5.4}
 Release:        %{?bda_release}%{!?bda_release:1}%{?dist}
 Summary:        Video bitstream and YUV analysis toolset
 Summary(ko):    비디오 비트스트림·YUV 분석 도구
@@ -146,6 +146,14 @@ fi
 %{_datadir}/icons/hicolor/*/apps/%{name}.png
 
 %changelog
+* Sun Nov 01 2026 knight.kim <knight.kim@blue-dot.io> - 0.5.4-1
+- Step back / step forward buttons next to play and stop.
+- Overlay toolbar above the picture (F1-F8), an on-picture legend (Ctrl+Shift+L), one overlay colour
+  palette for ME/GM, and a Dark (Fusion) theme.
+- Perspectives (Alt+1-5); BD-rate, Find diff, Global motion, ME compare and the Y4M generator open as
+  docks; Properties split into Video / Overlays tabs; an H.264 default decoder setting.
+- Frame timeline (Ctrl+Shift+T), one shared block selection, a Problems list (Ctrl+Shift+P), a
+  fit-to-frame colour range for statistics, and .bdsession files (File > Open/Save Session).
 * Sat Oct 31 2026 knight.kim <knight.kim@blue-dot.io> - 0.5.3-1
 - LCEVC analysis decoding is about 2x faster (1080p 38.6 -> 18.5 ms/frame): faster LTM kernels,
   a Huffman lookup table and a thread pool (LTM patch 0002).

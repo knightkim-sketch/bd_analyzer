@@ -8,6 +8,22 @@
 
 ---
 
+## 0.5.4 (2026-11-01)
+
+- 재생 버튼 줄의 stop 오른쪽에 **한 프레임 뒤로 / 앞으로** 버튼이 생겼습니다 (←/→ 키와 같습니다).
+- 그림 위에 overlay 도구 막대가 생겼습니다. F1–F8 로 overlay 를 켜고 끄며, 그림 오른쪽 위에 범례가 나옵니다 (Ctrl+Shift+L).
+- ME/GM overlay 색을 정리했습니다. 밝은 영상에서도 ME 벡터가 보입니다. Settings 의 Theme 에 Dark (Fusion) 이 추가됐습니다.
+- 작업별 화면 배치(perspective) 5개를 Alt+1–5 로 바꿀 수 있습니다 (View > Perspective).
+- SB BD-rate / Find diff / Global motion / ME compare / Y4M 생성 창이 따로 뜨지 않고 아래쪽 탭 패널로 열립니다.
+- Properties 가 **Video / Overlays** 탭으로 나뉘었습니다. Settings 에 H.264 기본 디코더(JM / FFmpeg) 선택이 추가됐습니다.
+- 위쪽 **Frame Timeline** 에 프레임별 크기·타입 막대가 나옵니다 (Ctrl+Shift+T). Shift+드래그로 구간 합계를 봅니다.
+- 블록 선택이 모든 패널에 같이 반영됩니다. **Problems** 패널(Ctrl+Shift+P)에 디코더 오류와 Find diff 결과가 모이고, 행을 더블클릭하면 해당 위치로 갑니다.
+- 통계 overlay 의 색 범위를 "화면 프레임에 맞춤" 으로 바꿀 수 있습니다 (Properties > Overlays 의 스타일 설정).
+- File > Open/Save Session 으로 playlist 와 화면 배치를 `.bdsession` 파일 하나로 저장·복원합니다.
+- 업그레이드 후 처음 실행하면 이전 배치가 복원됩니다. 새 배치는 **Help > Reset Window Layout** 으로 적용합니다.
+
+---
+
 ## 0.5.3 (2026-10-31)
 
 - LCEVC 분석 디코딩이 약 2배 빨라졌습니다 (1080p 기준 프레임당 38.6 → 18.5 ms).
