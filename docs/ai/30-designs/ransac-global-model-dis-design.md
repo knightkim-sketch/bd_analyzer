@@ -57,8 +57,8 @@
 |---|---|
 | `src/filter/AffineWarp.{h,cpp}` | uint16 plane 의 bilinear affine warp (8/10 bit), 4:2:0 frame warp. Qt·OpenCV free |
 | `src/filter/Stabilizer.{h,cpp}` | 프레임 간 모델 → 누적 궤적 → 평활 (이동평균 / Gaussian / Kalman causal / Kalman RTS) → 보정 warp, 궤적 CSV, 절대 프레임 번호용 `stabilizeByFrame`. Qt free |
-| `src/integration/StabilizedY4mExport.{h,cpp}` | File > Export Stabilized Y4M (2 pass), 비대화형 오버로드, 모델을 받아 pass 2 만 하는 오버로드 (GM 창용) |
-| 패치 `0071-stabilized-y4m-export.patch` | upstream `Mainwindow.cpp` 의 File 메뉴 1 항목 + include |
+| `src/integration/StabilizedY4mExport.{h,cpp}` | Tools > Export Stabilized Y4M (2 pass, 0.5.3 이전에는 File 메뉴), 비대화형 오버로드, 모델을 받아 pass 2 만 하는 오버로드 (GM 창용) |
+| 패치 `0071-stabilized-y4m-export.patch` | upstream `Mainwindow.cpp` 의 File 메뉴 1 항목 + include (패치 0084 가 Tools 메뉴로 옮김) |
 | `src/generator/Scene.{h,cpp}` | `CameraMotion` (Off / RandomWalk / Sine), `cameraAt`, `cameraInOutput`, `writeTrajectoryCsv` |
 | `src/integration/SequenceGeneratorWindow.{h,cpp}` | Sequence 그룹의 Camera shake UI, JSON `camera`, Generate 시 `<y4m>.camera.csv` |
 

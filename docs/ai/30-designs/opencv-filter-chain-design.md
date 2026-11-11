@@ -15,7 +15,7 @@ YUV 속성 pane 의 "Convolution filter (luma)" 를 3x3 행렬 하나에서 **�
 - 드롭다운에서 필터를 고르고 옆의 **Add** 로 끝에 붙인다. 위에서 아래로 실행되며 앞 stage 출력이
   다음 stage 입력이다. stage 마다 체크(우회), Remove / Up / Down, 선택한 stage 의 파라미터 폼.
 - **Use as ME input** 을 켜면 ME 패널과 ME compare 팝업이 필터 출력 프레임을 읽는다.
-- **File > Export filtered Y4M...** 은 item 의 frame range 를 체인에 통과시켜 Y4M 으로 쓴다.
+- **Tools > Export Filtered Y4M...** 은 (0.5.3 이전에는 File 메뉴) item 의 frame range 를 체인에 통과시켜 Y4M 으로 쓴다.
   파일을 직접 읽는 Global motion 창과 CLI 가 필터 출력을 쓰려면 이 경로를 쓴다.
 
 ## 구조

@@ -97,7 +97,7 @@ cp libHMDecoder.so bd-analyzer-<version>/decoder/
 ```
 
 root 권한이 없으면 아무 폴더에 두고 **Settings > Decoders > Decoder Search Path** 에 그 폴더를
-지정한다. 앱을 다시 시작한 뒤 HEVC 파일을 열고 Properties 의 **Decoder** 콤보에서 `HM` 을 고른다.
+지정한다. 앱을 다시 시작한 뒤 HEVC 파일을 열고 Properties 의 **Video** 탭 **Decoder** 콤보에서 `HM` 을 고른다.
 패치 0082 가 들어간 버전은 처음부터 HM 으로 연다. 열리지 않으면 콤보 옆 오류
 메시지에 `Error loading library: ...` 가 나온다.
 

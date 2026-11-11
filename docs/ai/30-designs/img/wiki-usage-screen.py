@@ -54,7 +54,7 @@ def fig_layout():
         "Problems (Ctrl+Shift+P)\n→ Analysis / Tools 메뉴나 perspective 로 열림", fc="#DDE8F5")
     # right column
     box(ax, 10.5, 3.6, 3.4, 2.5, "Properties  (Ctrl+P)",
-        "탭 Video:\n  형식 · 필터 체인 · Decoder 콤보\n탭 Overlays:\n  통계 overlay 체크박스\n  (ME · GM 포함)")
+        "탭 Video:\n  형식 · 필터 체인 · Decoder 콤보\n탭 Overlays (통계마다 한 행):\n  체크 · Opacity slider · Style 버튼\n  (ME · GM 포함)")
     box(ax, 10.5, 1.35, 3.4, 2.15, "Frame Info  (Ctrl+Shift+F)",
         "현재 프레임 정보\n\n숨김 시작 (오른쪽):\nMotion Estimation (Ctrl+M)\nAI Assistant (Ctrl+K)\nYouTube Transcode (Ctrl+Y)",
         bfs=8.0)
